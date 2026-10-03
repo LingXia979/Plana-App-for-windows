@@ -9,13 +9,161 @@ import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:archive/archive.dart' show getCrc32, ZLibDecoder;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/foundation.dart' show compute;
+import 'package:image/image.dart' as image_lib;
 
 import '../../core/store/app_stores.dart';
+import '../generate/models.dart';
+import '../generate/char_position.dart';
 import 'dart:ui' as ui;
 
 /// 像素矩形(整数坐标),用于裁切框/发送框。
 typedef IntRect = ({int x, int y, int w, int h});
+
+enum MaskBrushShape { square, circle }
+
+/// 扩展画布沿用参考编辑器的单边上限；本应用整张扩图直接送往重绘。
+const kInpaintMaxSide = 4096;
+const kInpaintMaxPixels = 1024 * 3072;
+const kFocusMaxPixels = 768 * 768;
+
+/// Coordinates stored in the workspace refer to the original canvas. Only the
+/// request copy is remapped to the focused crop; history keeps the originals.
+GenerateState focusedRequestState(GenerateState state) {
+  final paste = state.inpaint?.paste;
+  final focus = paste?.focus;
+  if (paste == null || focus == null || !state.params.useCoords) return state;
+  return state.copyWith(
+    characters: state.characters.map((character) {
+      final point = resolveCharacterCenter(character.position);
+      if (!character.enabled || point == null) return character;
+      return character.copyWith(
+        position: formatFreeformPosition(
+          (point.x * paste.outW - focus.x) / focus.width,
+          (point.y * paste.outH - focus.y) / focus.height,
+        ),
+      );
+    }).toList(),
+  );
+}
+
+IntRect focusedInnerRect(IntRect outer, int context) => (
+  x: outer.x + context,
+  y: outer.y + context,
+  w: outer.w - context * 2,
+  h: outer.h - context * 2,
+);
+
+String? focusRegionError(IntRect outer, int context, int width, int height) {
+  if ([outer.x, outer.y, outer.w, outer.h, context].any((v) => v % 8 != 0) ||
+      outer.x < 0 ||
+      outer.y < 0 ||
+      outer.x + outer.w > width ||
+      outer.y + outer.h > height ||
+      context < 32 ||
+      context > 96 ||
+      math.min(outer.w, outer.h) <= context * 2 ||
+      outer.w * outer.h > kFocusMaxPixels) {
+    return '框选范围无效：请扩大选区内部或减小上下文边距';
+  }
+  try {
+    focusedSendSize(outer.w, outer.h);
+  } on ArgumentError {
+    return '选区长宽比过大，请调整框选范围';
+  }
+  return null;
+}
+
+({int width, int height}) focusedSendSize(int width, int height) {
+  if (width <= 0 || height <= 0) throw ArgumentError('框选尺寸无效');
+  final ratio = math.sqrt(1048576 / (width * height));
+  final w = (width * ratio).floor() ~/ 64 * 64;
+  final h = (height * ratio).floor() ~/ 64 * 64;
+  if (math.min(w, h) < 64 || math.max(w, h) > kInpaintMaxSide) {
+    throw ArgumentError('选区长宽比过大，请调整框选范围');
+  }
+  return (width: w, height: h);
+}
+
+IntRect? boundedFocusRect(
+  ui.Offset start,
+  ui.Offset end,
+  int width,
+  int height,
+) {
+  // 屏幕缩放换回图坐标后，8 的倍数可能成为 7.99999999999998。
+  int snap(double value, int max) =>
+      ((value / 8 + 1e-7).floor() * 8).clamp(0, max ~/ 8 * 8).toInt();
+  final sx = snap(start.dx, width), sy = snap(start.dy, height);
+  final ex = snap(end.dx, width), ey = snap(end.dy, height);
+  var w = (ex - sx).abs(), h = (ey - sy).abs();
+  if (w == 0 || h == 0) return null;
+  final ratio = math.min(1.0, math.sqrt(kFocusMaxPixels / (w * h)));
+  w = (w * ratio).floor() ~/ 8 * 8;
+  h = (h * ratio).floor() ~/ 8 * 8;
+  if (w == 0 || h == 0) return null;
+  return (x: ex >= sx ? sx : sx - w, y: ey >= sy ? sy : sy - h, w: w, h: h);
+}
+
+IntRect moveFocusRect(IntRect rect, ui.Offset delta, int width, int height) => (
+  x:
+      ((rect.x + delta.dx) / 8)
+          .round()
+          .clamp(0, math.max(0, (width - rect.w) ~/ 8))
+          .toInt() *
+      8,
+  y:
+      ((rect.y + delta.dy) / 8)
+          .round()
+          .clamp(0, math.max(0, (height - rect.h) ~/ 8))
+          .toInt() *
+      8,
+  w: rect.w,
+  h: rect.h,
+);
+
+typedef ExpandMargins = ({int left, int top, int right, int bottom});
+
+int alignExpandMargin(int pixels) => math.max(0, (pixels / 64).ceil() * 64);
+
+String? expansionError(int width, int height, ExpandMargins margins) {
+  final sides = [margins.left, margins.top, margins.right, margins.bottom];
+  if (width <= 0 || height <= 0 || width % 64 != 0 || height % 64 != 0) {
+    return '原图宽高需要为 64 的倍数';
+  }
+  if (sides.any((v) => v < 0 || v % 64 != 0)) {
+    return '扩展量需要为非负的 64 像素倍数';
+  }
+  final w = width + margins.left + margins.right;
+  final h = height + margins.top + margins.bottom;
+  if (w > kInpaintMaxSide || h > kInpaintMaxSide) {
+    return '扩图后每边最多 $kInpaintMaxSide 像素';
+  }
+  if (w * h > kInpaintMaxPixels) {
+    return '整图重绘最多 3,145,728 像素，请减少扩展量';
+  }
+  return null;
+}
+
+/// 移动发送框而不改宽高，原点沿 64 网格且始终在图内。
+IntRect moveCropRect(IntRect rect, ui.Offset delta, int width, int height) => (
+  x:
+      ((rect.x + delta.dx) / 64)
+          .round()
+          .clamp(0, math.max(0, (width - rect.w) ~/ 64))
+          .toInt() *
+      64,
+  y:
+      ((rect.y + delta.dy) / 64)
+          .round()
+          .clamp(0, math.max(0, (height - rect.h) ~/ 64))
+          .toInt() *
+      64,
+  w: rect.w,
+  h: rect.h,
+);
 
 /// 8×8 网格遮罩位图。cells 一格一字节,非 0 = 重绘区。
 class MaskGrid {
@@ -67,9 +215,29 @@ class MaskGrid {
 
   void clear() => cells.fillRange(0, cells.length, 0);
 
+  void fill() => cells.fillRange(0, cells.length, 1);
+
+  void fillRegion(IntRect rect) {
+    for (
+      var y = math.max(0, rect.y ~/ 8);
+      y < math.min(gh, (rect.y + rect.h) ~/ 8);
+      y++
+    ) {
+      final start = y * gw + math.max(0, rect.x ~/ 8);
+      final end = y * gw + math.min(gw, (rect.x + rect.w) ~/ 8);
+      if (end > start) cells.fillRange(start.toInt(), end.toInt(), 1);
+    }
+  }
+
   /// 方形笔刷落格(对齐 web 桌面端 drawBrush 方块模式):
   /// 以所在格为中心、round(brush/8) 个格的正方形块,网格锚定。
-  void paintDot(double cx, double cy, double brush, {bool erase = false}) {
+  void paintDot(
+    double cx,
+    double cy,
+    double brush, {
+    bool erase = false,
+    MaskBrushShape shape = MaskBrushShape.square,
+  }) {
     final v = erase ? 0 : 1;
     final gridCount = math.max(1, (brush / 8).round());
     final half = gridCount ~/ 2;
@@ -79,6 +247,11 @@ class MaskGrid {
     final gy1 = math.min(gh, sy + gridCount);
     for (var gy = math.max(0, sy); gy < gy1; gy++) {
       for (var gx = math.max(0, sx); gx < gx1; gx++) {
+        if (shape == MaskBrushShape.circle) {
+          final dx = gx - sx + .5 - gridCount / 2;
+          final dy = gy - sy + .5 - gridCount / 2;
+          if (dx * dx + dy * dy > gridCount * gridCount / 4) continue;
+        }
         cells[gy * gw + gx] = v;
       }
     }
@@ -90,6 +263,7 @@ class MaskGrid {
     ui.Offset to,
     double brush, {
     bool erase = false,
+    MaskBrushShape shape = MaskBrushShape.square,
   }) {
     final dist = (to - from).distance;
     const step = 4.0;
@@ -97,7 +271,7 @@ class MaskGrid {
     for (var i = 0; i <= n; i++) {
       final t = n == 0 ? 0.0 : i / n;
       final p = ui.Offset.lerp(from, to, t)!;
-      paintDot(p.dx, p.dy, brush, erase: erase);
+      paintDot(p.dx, p.dy, brush, erase: erase, shape: shape);
     }
   }
 
@@ -383,6 +557,17 @@ Future<Uint8List> buildExpandImage(
 }) async {
   final codec = await ui.instantiateImageCodec(src);
   final img = (await codec.getNextFrame()).image;
+  codec.dispose();
+  final error = expansionError(img.width, img.height, (
+    left: padL,
+    top: padT,
+    right: padR,
+    bottom: padB,
+  ));
+  if (error != null) {
+    img.dispose();
+    throw ArgumentError(error);
+  }
   final w = img.width + padL + padR;
   final h = img.height + padT + padB;
 
@@ -411,7 +596,15 @@ Future<Uint8List> buildExpandMask({
   required int padT,
   required int padR,
   required int padB,
+  MaskGrid? grid,
 }) async {
+  final error = expansionError(imgW, imgH, (
+    left: padL,
+    top: padT,
+    right: padR,
+    bottom: padB,
+  ));
+  if (error != null) throw ArgumentError(error);
   final w = imgW + padL + padR;
   final h = imgH + padT + padB;
 
@@ -425,12 +618,373 @@ Future<Uint8List> buildExpandMask({
     ui.Rect.fromLTWH(padL * 1.0, padT * 1.0, imgW * 1.0, imgH * 1.0),
     ui.Paint()..color = const ui.Color(0xFF000000),
   );
+  if (grid != null && grid.imgW == imgW && grid.imgH == imgH) {
+    canvas.save();
+    canvas.translate(padL.toDouble(), padT.toDouble());
+    canvas.clipRect(ui.Rect.fromLTWH(0, 0, imgW.toDouble(), imgH.toDouble()));
+    final white = ui.Paint()..color = const ui.Color(0xFFFFFFFF);
+    for (final rect in grid.displayRects()) {
+      canvas.drawRect(rect, white);
+    }
+    canvas.restore();
+  }
   final picture = recorder.endRecording();
   final out = await picture.toImage(w, h);
   final data = await out.toByteData(format: ui.ImageByteFormat.png);
   out.dispose();
   picture.dispose();
   return data!.buffer.asUint8List();
+}
+
+/// Select only painted cells inside the context border. With no interior
+/// strokes, the entire interior is selected; marks elsewhere do not prevent it.
+MaskGrid focusedSelection(MaskGrid grid, IntRect outer, int context) {
+  final error = focusRegionError(outer, context, grid.imgW, grid.imgH);
+  if (error != null) throw ArgumentError(error);
+  final inner = focusedInnerRect(outer, context);
+  final selected = MaskGrid(grid.imgW, grid.imgH);
+  var painted = false;
+  for (var y = inner.y ~/ 8; y < (inner.y + inner.h) ~/ 8; y++) {
+    for (var x = inner.x ~/ 8; x < (inner.x + inner.w) ~/ 8; x++) {
+      if (grid.cells[y * grid.gw + x] != 0) {
+        selected.cells[y * selected.gw + x] = 1;
+        painted = true;
+      }
+    }
+  }
+  if (!painted) selected.fillRegion(inner);
+  return selected;
+}
+
+/// Prepare a focused request while retaining the unscaled source geometry.
+/// The caller supplies a snapshot; this method also copies the editable grid
+/// before yielding, so subsequent edits cannot alter a request in preparation.
+Future<({InpaintJob job, int width, int height})> prepareFocusedInpaint({
+  required Uint8List original,
+  required MaskGrid grid,
+  required IntRect outer,
+  int context = 32,
+  required double strength,
+  String? sourceId,
+}) async {
+  final error = focusRegionError(outer, context, grid.imgW, grid.imgH);
+  if (error != null) throw ArgumentError(error);
+  final rawGrid = grid.encode();
+  final prepared = await compute(_prepareFocus, (
+    original: original,
+    grid: rawGrid,
+    width: grid.imgW,
+    height: grid.imgH,
+    outer: outer,
+    context: context,
+  ));
+  final inner = focusedInnerRect(outer, context);
+  final size = focusedSendSize(outer.w, outer.h);
+  return (
+    width: size.width,
+    height: size.height,
+    job: InpaintJob(
+      image: prepared.image,
+      mask: prepared.mask,
+      strength: strength,
+      sourceId: sourceId,
+      grid: rawGrid,
+      paste: InpaintPaste(
+        original: original,
+        sendX: outer.x,
+        sendY: outer.y,
+        tightX: inner.x,
+        tightY: inner.y,
+        tightW: inner.w,
+        tightH: inner.h,
+        outW: grid.imgW,
+        outH: grid.imgH,
+        focus: InpaintFocus(
+          x: outer.x,
+          y: outer.y,
+          width: outer.w,
+          height: outer.h,
+          context: context,
+        ),
+        focusMask: prepared.selection,
+      ),
+    ),
+  );
+}
+
+typedef _FocusPreparation = ({
+  Uint8List original,
+  Uint8List grid,
+  int width,
+  int height,
+  IntRect outer,
+  int context,
+});
+
+({Uint8List image, Uint8List mask, Uint8List selection}) _prepareFocus(
+  _FocusPreparation input,
+) {
+  final decoded = image_lib.decodeImage(input.original);
+  if (decoded == null ||
+      decoded.width != input.width ||
+      decoded.height != input.height) {
+    throw ArgumentError('重绘底图尺寸与蒙版不一致');
+  }
+  final source = decoded.hasPalette
+      ? decoded.convert(format: image_lib.Format.uint8, numChannels: 4)
+      : decoded;
+  final grid = MaskGrid(input.width, input.height);
+  if (!grid.decodeInto(input.grid)) throw ArgumentError('重绘蒙版无效');
+  final selection = focusedSelection(grid, input.outer, input.context);
+  final outer = input.outer;
+  final size = focusedSendSize(outer.w, outer.h);
+  final crop = image_lib.copyCrop(
+    source,
+    x: outer.x,
+    y: outer.y,
+    width: outer.w,
+    height: outer.h,
+  );
+  final image = image_lib.copyResize(
+    crop,
+    width: size.width,
+    height: size.height,
+    interpolation: image_lib.Interpolation.cubic,
+  );
+  final raw = image_lib.Image(width: outer.w, height: outer.h, numChannels: 3);
+  final white = image_lib.ColorRgb8(255, 255, 255);
+  for (final rect in selection.displayRects()) {
+    image_lib.fillRect(
+      raw,
+      x1: rect.left.toInt() - outer.x,
+      y1: rect.top.toInt() - outer.y,
+      x2: rect.right.toInt() - outer.x - 1,
+      y2: rect.bottom.toInt() - outer.y - 1,
+      color: white,
+    );
+  }
+  final resized = image_lib.copyResize(
+    raw,
+    width: size.width,
+    height: size.height,
+    interpolation: image_lib.Interpolation.nearest,
+  );
+  // Resizing can split a latent cell. Any selected request pixel selects its
+  // whole 8×8 cell, just as when a mask is painted at the request resolution.
+  final requestGrid = MaskGrid(size.width, size.height);
+  for (final pixel in resized) {
+    if (pixel.r > 128) {
+      requestGrid.cells[(pixel.y ~/ 8) * requestGrid.gw + pixel.x ~/ 8] = 1;
+    }
+  }
+  final mask = image_lib.Image(
+    width: size.width,
+    height: size.height,
+    numChannels: 3,
+  );
+  for (final rect in requestGrid.displayRects()) {
+    image_lib.fillRect(
+      mask,
+      x1: rect.left.toInt(),
+      y1: rect.top.toInt(),
+      x2: rect.right.toInt() - 1,
+      y2: rect.bottom.toInt() - 1,
+      color: white,
+    );
+  }
+  return (
+    image: Uint8List.fromList(image_lib.encodePng(image)),
+    mask: Uint8List.fromList(image_lib.encodePng(mask)),
+    selection: selection.encode(),
+  );
+}
+
+/// Resize the generated request to its original outer rectangle and replace
+/// only its effective interior mask. Context and unselected pixels remain
+/// byte-for-byte unchanged, including transparent source pixels.
+Future<Uint8List> pasteFocusedInpaint({
+  required InpaintJob job,
+  required Uint8List patch,
+  bool preview = false,
+}) {
+  final paste = job.paste;
+  if (paste == null || paste.focus == null || paste.focusMask == null) {
+    throw ArgumentError('缺少框选重绘的原图或蒙版');
+  }
+  return compute(_pasteFocus, (
+    original: paste.original,
+    patch: patch,
+    focus: paste.focus!,
+    selection: paste.focusMask!,
+    width: paste.outW,
+    height: paste.outH,
+    preview: preview,
+  ));
+}
+
+typedef _FocusComposite = ({
+  Uint8List original,
+  Uint8List patch,
+  InpaintFocus focus,
+  Uint8List selection,
+  int width,
+  int height,
+  bool preview,
+});
+
+Uint8List _pasteFocus(_FocusComposite input) {
+  final focus = input.focus;
+  final outer = (x: focus.x, y: focus.y, w: focus.width, h: focus.height);
+  final error = focusRegionError(
+    outer,
+    focus.context,
+    input.width,
+    input.height,
+  );
+  if (error != null) throw ArgumentError(error);
+  final base = image_lib.decodeImage(input.original);
+  final patch = image_lib.decodeImage(input.patch);
+  if (base == null ||
+      base.width != input.width ||
+      base.height != input.height ||
+      patch == null) {
+    throw ArgumentError('重绘图像尺寸与画布不一致');
+  }
+  final size = focusedSendSize(focus.width, focus.height);
+  if (!input.preview &&
+      (patch.width != size.width || patch.height != size.height)) {
+    throw ArgumentError('重绘结果尺寸与发送尺寸不一致，已停止合成');
+  }
+  final selected = MaskGrid(input.width, input.height);
+  if (!selected.decodeInto(input.selection) || selected.isEmpty) {
+    throw ArgumentError('框选重绘蒙版缺失或损坏');
+  }
+  var generated = image_lib.copyResize(
+    patch.hasPalette
+        ? patch.convert(format: image_lib.Format.uint8, numChannels: 4)
+        : patch,
+    width: focus.width,
+    height: focus.height,
+    interpolation: image_lib.Interpolation.cubic,
+  );
+  final inner = focusedInnerRect(outer, focus.context);
+  // Indexed and grayscale pixels cannot accept arbitrary generated colors.
+  // Expand them to RGBA while preserving the source's actual color values.
+  final output = base.hasPalette
+      ? base.convert(format: image_lib.Format.uint8, numChannels: 4)
+      : base.numChannels == 4
+      ? base
+      : base.convert(numChannels: 4);
+  if (generated.format != output.format) {
+    generated = generated.convert(format: output.format, numChannels: 4);
+  }
+  for (var y = inner.y; y < inner.y + inner.h; y++) {
+    for (var x = inner.x; x < inner.x + inner.w; x++) {
+      if (selected.cells[(y ~/ 8) * selected.gw + x ~/ 8] == 0) continue;
+      output.setPixel(x, y, generated.getPixel(x - focus.x, y - focus.y));
+    }
+  }
+  // Source pixels stay exact, while exported parameters must describe the new
+  // generation. Do not clear alpha LSBs here: that would change protected pixels.
+  output.textData = null;
+  final png = Uint8List.fromList(image_lib.encodePng(output));
+  final encoded = BytesBuilder(copy: false)
+    ..add(Uint8List.sublistView(png, 0, png.length - 12));
+  for (final chunk in _focusResultTextChunks(
+    input.patch,
+    input.width,
+    input.height,
+  )) {
+    encoded.add(chunk);
+  }
+  encoded.add(Uint8List.sublistView(png, png.length - 12));
+  return encoded.takeBytes();
+}
+
+/// Retain the generated PNG's text chunks, including UTF-8 iTXt unsupported by
+/// the image package. Rewrite only Comment dimensions for the pasted canvas.
+Iterable<Uint8List> _focusResultTextChunks(
+  Uint8List patch,
+  int width,
+  int height,
+) sync* {
+  const signature = [137, 80, 78, 71, 13, 10, 26, 10];
+  if (patch.length < 8) return;
+  for (var i = 0; i < 8; i++) {
+    if (patch[i] != signature[i]) return;
+  }
+  final data = ByteData.sublistView(patch);
+  for (var offset = 8; offset + 12 <= patch.length;) {
+    final length = data.getUint32(offset);
+    final end = offset + 12 + length;
+    if (end > patch.length) return;
+    final type = String.fromCharCodes(patch, offset + 4, offset + 8);
+    if (type == 'tEXt' || type == 'iTXt' || type == 'zTXt') {
+      final payload = Uint8List.sublistView(patch, offset + 8, end - 4);
+      final split = payload.indexOf(0);
+      Uint8List? replacement;
+      if (split > 0 &&
+          latin1.decode(payload.sublist(0, split)).toLowerCase() == 'comment') {
+        try {
+          var start = split + 1;
+          var compressed = false;
+          if (type == 'iTXt') {
+            compressed = payload[start] == 1;
+            if (payload[start] > 1 || payload[start + 1] != 0) {
+              throw const FormatException('Unsupported PNG text compression');
+            }
+            start += 2;
+            for (var segment = 0; segment < 2; segment++) {
+              final zero = payload.indexOf(0, start);
+              if (zero < 0) throw const FormatException('Invalid PNG text');
+              start = zero + 1;
+            }
+          } else if (type == 'zTXt') {
+            if (payload[start++] != 0) {
+              throw const FormatException('Unsupported PNG text compression');
+            }
+            compressed = true;
+          }
+          final raw = payload.sublist(start);
+          final text = compressed ? const ZLibDecoder().decodeBytes(raw) : raw;
+          final comment = jsonDecode(
+            type == 'iTXt' ? utf8.decode(text) : latin1.decode(text),
+          );
+          if (comment is Map<String, dynamic>) {
+            comment['width'] = width;
+            comment['height'] = height;
+            final body = Uint8List.fromList([
+              ...ascii.encode('iTXtComment'),
+              0,
+              0,
+              0,
+              0,
+              0,
+              ...utf8.encode(jsonEncode(comment)),
+            ]);
+            replacement =
+                (BytesBuilder(copy: false)
+                      ..add(
+                        (ByteData(
+                          4,
+                        )..setUint32(0, body.length - 4)).buffer.asUint8List(),
+                      )
+                      ..add(body)
+                      ..add(
+                        (ByteData(
+                          4,
+                        )..setUint32(0, getCrc32(body))).buffer.asUint8List(),
+                      ))
+                    .takeBytes();
+          }
+        } catch (_) {
+          // Invalid optional metadata must not discard a successful image.
+        }
+      }
+      yield replacement ?? Uint8List.sublistView(patch, offset, end);
+    }
+    offset = end;
+  }
 }
 
 /// 局部重绘结果贴回:以原图为底,把 patch(发送框尺寸)中对应
@@ -489,6 +1043,7 @@ class InpaintPrefs {
     this.brush = 50, // 笔刷直径(图像素),对齐 web 默认
     this.strength = 0.7,
     this.assist = false,
+    this.brushShape = MaskBrushShape.square,
     this.mode = 'paint',
     this.censorStyle = 'mosaic',
     this.censorColor = 0xFF000000,
@@ -499,6 +1054,7 @@ class InpaintPrefs {
 
   /// 偏位套杆:光标偏于触点上方,手指不挡涂抹点。用不用是个人习惯。
   final bool assist;
+  final MaskBrushShape brushShape;
 
   /// 上次停在哪一档:`paint` / `expand` / `censor`。
   ///
@@ -516,6 +1072,7 @@ class InpaintPrefs {
     'brush': brush,
     'strength': strength,
     'assist': assist,
+    'brushShape': brushShape.name,
     'mode': mode,
     'censorStyle': censorStyle,
     'censorColor': censorColor,
@@ -525,6 +1082,9 @@ class InpaintPrefs {
     brush: ((j['brush'] as num?)?.toDouble() ?? 50).clamp(4, 400),
     strength: ((j['strength'] as num?)?.toDouble() ?? 0.7).clamp(0.01, 1.0),
     assist: j['assist'] == true,
+    brushShape: j['brushShape'] == 'circle'
+        ? MaskBrushShape.circle
+        : MaskBrushShape.square,
     mode: switch (j['mode']) {
       'expand' => 'expand',
       'censor' => 'censor',

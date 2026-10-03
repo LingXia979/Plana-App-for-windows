@@ -135,6 +135,7 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                 // Anima:与 NAI 两套独立采样参数,范围对齐 web animaOptions
                 ParamSlider(
                   label: '步数 Steps',
+                  snapInputToDivisions: true,
                   help: Help.animaSteps,
                   value: draft.animaSteps.toDouble(),
                   min: animaStepsRange.min.toDouble(),
@@ -211,6 +212,7 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                 // 采样器/调度器选择框等于骗用户,所以连字段都不存。
                 ParamSlider(
                   label: '步数 Steps',
+                  snapInputToDivisions: true,
                   help: Help.kreaSteps,
                   value: draft.kreaSteps.toDouble(),
                   min: kreaStepsRange.min.toDouble(),
@@ -303,6 +305,7 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
               ] else ...[
                 ParamSlider(
                   label: '步数 Steps',
+                  snapInputToDivisions: true,
                   help: Help.steps,
                   value: draft.steps.toDouble(),
                   min: 1,

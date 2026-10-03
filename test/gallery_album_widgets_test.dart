@@ -479,6 +479,16 @@ void main() {
           await tester.pumpAndSettle();
           expect(find.text('松手删除'), findsOneWidget);
           await gesture.up();
+          // File verification and managed outputs complete before the record
+          // and the adjacent selection are removed. This body is in runAsync.
+          for (
+            var i = 0;
+            i < 200 && c.read(galleryProvider).results.any((r) => r.id == id);
+            i++
+          ) {
+            await Future<void>.delayed(const Duration(milliseconds: 10));
+            await tester.pump();
+          }
           await stores.gallery.idle;
           await stores.albums.idle;
           await tester.pumpAndSettle();

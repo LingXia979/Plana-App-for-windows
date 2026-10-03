@@ -79,9 +79,9 @@ final _liveTail = RegExp(r'(?:<[A-Za-z/]{0,6}|`{1,3}[ \t]*[A-Za-z_]{1,9})$');
 /// 附图:MIME + base64。
 typedef DirectImage = ({String mime, String data});
 
-/// 发给模型的一条消息。[image] 只挂在本轮用户那条上 —— 历史里的图不回带,
+/// 发给模型的一条消息。图片只挂在本轮用户那条上 —— 历史里的图不回带,
 /// 与服务端那条一致。
-typedef DirectMsg = ({String role, String content, DirectImage? image});
+typedef DirectMsg = ({String role, String content, List<DirectImage> images});
 
 /// 按文件头认图片类型,认不出按 PNG —— 与服务端 `_sniff_image_mime` 同一张表。
 /// 标签和字节对不上时有的接口整条拒收,而相册里挑的多半是 JPEG。
@@ -119,6 +119,12 @@ Future<DirectImage> prepareDirectImage(Uint8List bytes) async {
     } catch (_) {}
   }
   return (mime: imageMimeOf(bytes), data: base64Encode(bytes));
+}
+
+Future<List<DirectImage>> _prepareDirectImages(List<Uint8List> images) async {
+  // Large attachments are resized one at a time, avoiding simultaneous decoded
+  // copies of every full-resolution image while preserving the selected order.
+  return [for (final image in images) await prepareDirectImage(image)];
 }
 
 /// 文字里认得出的完整画师串折成占位符(映射见 [ArtistPlan.tokens])。
@@ -207,6 +213,7 @@ Stream<AgentEvent> streamDirectPrompt({
 
   /// 用户这轮附的图(原始字节)。挂在本轮 user 消息上,每一跳都带着。
   Uint8List? image,
+  List<Uint8List> images = const [],
 
   /// 这一轮用的规则(预设 + app 工具层,见 [withToolLayer])。按段给,条件段在这里筛。
   required List<PresetRule> rules,
@@ -253,7 +260,7 @@ Stream<AgentEvent> streamDirectPrompt({
 
     // 后端那两块彼此不相干,并着取 —— 串着取等于在第一次模型调用前白等两个往返。
     // 附图要缩的话也在这时候缩。
-    final (toolsBlock, server, img) = await (
+    final (toolsBlock, server, attached) = await (
       _fetchToolsBlock(client, backendBase, sessionId),
       _fetchServerPrequery(
         client,
@@ -262,7 +269,7 @@ Stream<AgentEvent> streamDirectPrompt({
         text: userRequest,
         libraryScope: libraryScope,
       ),
-      image == null ? Future<DirectImage?>.value() : prepareDirectImage(image),
+      _prepareDirectImages([?image, ...images]),
     ).wait;
     final pre = buildLocalPrequery(
       text: userRequest,
@@ -307,7 +314,7 @@ Stream<AgentEvent> streamDirectPrompt({
         (
           role: h['role'] ?? 'user',
           content: collapseArtistStrings(h['content'] ?? '', tokens),
-          image: null,
+          images: const [],
         ),
       (
         role: 'user',
@@ -316,7 +323,7 @@ Stream<AgentEvent> streamDirectPrompt({
           collapseArtistStrings(canvasBlock, tokens),
           pre.block,
         ].where((s) => s.isNotEmpty).join('\n\n'),
-        image: img,
+        images: attached,
       ),
     ];
 
@@ -325,8 +332,11 @@ Stream<AgentEvent> streamDirectPrompt({
         {
           'role': m.role,
           'content': m.content,
-          if (m.image case final i?)
-            'image': '<${i.mime} base64 ${i.data.length} 字符>',
+          if (m.images.isNotEmpty)
+            'images': [
+              for (var i = 0; i < m.images.length; i++)
+                '#${i + 1} <${m.images[i].mime} base64 ${m.images[i].data.length} 字符>',
+            ].join(', '),
         },
     ];
 
@@ -380,7 +390,7 @@ Stream<AgentEvent> streamDirectPrompt({
         return;
       }
 
-      msgs.add((role: 'assistant', content: raw, image: null));
+      msgs.add((role: 'assistant', content: raw, images: const []));
       hopRec['tool_calls'] = [
         for (final c in calls) {'name': c.name, 'arguments': c.args},
       ];
@@ -419,7 +429,7 @@ Stream<AgentEvent> streamDirectPrompt({
             '[tool_result 共 ${calls.length} 条] 以下是你上一条回复里 tool_call 的执行结果。'
             '请基于结果给出**最终回复**(不要再重复调用同样的工具)。\n\n'
             '${chunks.join("\n\n")}',
-        image: null,
+        images: const [],
       ));
     }
   } finally {
@@ -476,7 +486,10 @@ _fetchServerPrequery(
         .post(
           Uri.parse('$base/api/agent/prequery'),
           headers: {'Content-Type': 'application/json', ..._auth(sessionId)},
-          body: jsonEncode({'user_request': text, 'library_scope': libraryScope}),
+          body: jsonEncode({
+            'user_request': text,
+            'library_scope': libraryScope,
+          }),
         )
         .timeout(const Duration(seconds: 20));
     if (r.statusCode != 200) return empty;
@@ -594,7 +607,8 @@ Future<Object?> _runTool(
     case 'random_artist':
       final count = intArg(call.args['count'], 1).clamp(1, 5);
       final pool = <Object?>[
-        if (mine) for (final a in artists) artistToolEntry(a),
+        if (mine)
+          for (final a in artists) artistToolEntry(a),
         if (withPublic) ...await remote(quiet: mine && artists.isNotEmpty),
       ]..shuffle();
       return pool.take(count).toList();
@@ -800,8 +814,10 @@ Object? _tryJson(String s) {
       final d = first['delta'];
       // 老式补全接口没有 delta,只有 text
       if (d is! Map) {
-        return (text: first['text'] is String ? first['text'] as String : '',
-                reasoning: '');
+        return (
+          text: first['text'] is String ? first['text'] as String : '',
+          reasoning: '',
+        );
       }
       final r = d['reasoning_content'] ?? d['reasoning'];
       return (
@@ -899,15 +915,16 @@ Object? _tryJson(String s) {
           for (final m in msgs)
             {
               'role': m.role,
-              'content': switch (m.image) {
-                final i? => [
-                  {
-                    'type': 'image_url',
-                    'image_url': {'url': 'data:${i.mime};base64,${i.data}'},
-                  },
+              'content': switch (m.images) {
+                [] => m.content,
+                _ => [
+                  for (final i in m.images)
+                    {
+                      'type': 'image_url',
+                      'image_url': {'url': 'data:${i.mime};base64,${i.data}'},
+                    },
                   if (m.content.isNotEmpty) {'type': 'text', 'text': m.content},
                 ],
-                null => m.content,
               },
             },
         ],
@@ -929,11 +946,11 @@ Object? _tryJson(String s) {
               // Gemini 只认 user / model 两种
               'role': m.role == 'assistant' ? 'model' : 'user',
               'parts': [
-                if (m.image case final i?)
+                for (final i in m.images)
                   {
                     'inlineData': {'mimeType': i.mime, 'data': i.data},
                   },
-                if (m.image == null || m.content.isNotEmpty)
+                if (m.images.isEmpty || m.content.isNotEmpty)
                   {'text': m.content},
               ],
             },
@@ -953,19 +970,20 @@ Object? _tryJson(String s) {
           for (final m in msgs)
             {
               'role': m.role,
-              'content': switch (m.image) {
-                final i? => [
-                  {
-                    'type': 'image',
-                    'source': {
-                      'type': 'base64',
-                      'media_type': i.mime,
-                      'data': i.data,
+              'content': switch (m.images) {
+                [] => m.content,
+                _ => [
+                  for (final i in m.images)
+                    {
+                      'type': 'image',
+                      'source': {
+                        'type': 'base64',
+                        'media_type': i.mime,
+                        'data': i.data,
+                      },
                     },
-                  },
                   if (m.content.isNotEmpty) {'type': 'text', 'text': m.content},
                 ],
-                null => m.content,
               },
             },
         ],

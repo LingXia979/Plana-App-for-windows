@@ -9,6 +9,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/net/remote_image.dart';
+import '../../../core/platform/desktop.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../editor/editor_models.dart' show draftOf, outputOf, pickEditorText;
 import '../../generate/generate_state.dart';
@@ -30,13 +31,49 @@ import '../../../core/util/haptics.dart';
 
 /// 法典的三个弹层:词条详情、法典选择、来源致谢。
 
-Future<T?> _sheet<T>(BuildContext context, Widget child) =>
-    showModalBottomSheet<T>(
+Future<T?> _sheet<T>(BuildContext context, Widget child) {
+  if (ProviderScope.containerOf(
+        context,
+        listen: false,
+      ).read(desktopModeProvider) &&
+      MediaQuery.sizeOf(context).width >= 700) {
+    return showDialog<T>(
       context: context,
-      isScrollControlled: true,
-      useSafeArea: true,
-      builder: (_) => child,
+      builder: (context) => Dialog(
+        key: const ValueKey('codex-desktop-dialog'),
+        insetPadding: const EdgeInsets.all(24),
+        clipBehavior: Clip.antiAlias,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxWidth: child is _DetailSheet || child is _FavoritesSheet
+                ? 940
+                : 600,
+            maxHeight: min(780, MediaQuery.sizeOf(context).height - 48),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Align(
+                alignment: Alignment.centerRight,
+                child: Padding(
+                  padding: EdgeInsets.only(top: 6, right: 8),
+                  child: CloseButton(),
+                ),
+              ),
+              Flexible(child: child),
+            ],
+          ),
+        ),
+      ),
     );
+  }
+  return showModalBottomSheet<T>(
+    context: context,
+    isScrollControlled: true,
+    useSafeArea: true,
+    builder: (_) => child,
+  );
+}
 
 /// 把一条法典词条追加进创作页,返回角色卡的落地情况(供调用方措辞)。
 ///
@@ -421,8 +458,24 @@ class _DetailSheetState extends ConsumerState<_DetailSheet>
 
   @override
   Widget build(BuildContext context) {
+    final desktop = ref.watch(desktopModeProvider);
+    final detail = _detailBody(context, desktop: desktop);
+    if (!desktop) return detail;
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.arrowLeft): () => _step(-1),
+        const SingleActivator(LogicalKeyboardKey.arrowRight): () => _step(1),
+      },
+      child: Focus(autofocus: true, child: detail),
+    );
+  }
+
+  Widget _detailBody(BuildContext context, {required bool desktop}) {
     final scheme = context.scheme;
     final e = _entry;
+    if (desktop && MediaQuery.sizeOf(context).width >= 700) {
+      return _desktopDetail(scheme, e);
+    }
     final canReroll = widget.pool != null && _canStep;
     final imgCount = e.images.isNotEmpty
         ? e.images.length
@@ -569,6 +622,132 @@ class _DetailSheetState extends ConsumerState<_DetailSheet>
           ],
         ),
       ),
+    );
+  }
+
+  Widget _desktopDetail(ColorScheme scheme, CodexEntry e) {
+    final url = codexImageItemUrl(widget.codex, e, widget.media, _imgPage);
+    return Column(
+      key: const ValueKey('desktop-codex-detail'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      e.title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: _titleStyle(context),
+                    ),
+                    if (e.path.isNotEmpty)
+                      Text(e.path.join(' / '), style: context.texts.bodySmall),
+                  ],
+                ),
+              ),
+              if (_canStep) ...[
+                IconButton(
+                  tooltip: '上一条',
+                  onPressed: _hasPrev ? () => _step(-1) : null,
+                  icon: const Icon(Icons.chevron_left),
+                ),
+                Text(
+                  widget.pool == null
+                      ? '${_index + 1} / ${_list.length}'
+                      : '随机灵感',
+                ),
+                IconButton(
+                  tooltip: '下一条',
+                  onPressed: _hasNext ? () => _step(1) : null,
+                  icon: const Icon(Icons.chevron_right),
+                ),
+              ],
+            ],
+          ),
+        ),
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(24, 0, 24, 20),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Expanded(
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: scheme.surfaceContainerLow,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    clipBehavior: Clip.antiAlias,
+                    child: Column(
+                      children: [
+                        Expanded(
+                          child: url == null
+                              ? Center(
+                                  child: Icon(
+                                    Icons.menu_book_outlined,
+                                    size: 64,
+                                    color: scheme.outline,
+                                  ),
+                                )
+                              : RemoteImage(
+                                  url,
+                                  fit: BoxFit.contain,
+                                  errorBuilder: (_, _, _) => const Center(
+                                    child: Icon(Icons.broken_image_outlined),
+                                  ),
+                                ),
+                        ),
+                        if (_imgCount > 1)
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              IconButton(
+                                tooltip: '上一张例图',
+                                onPressed: _imgPage > 0
+                                    ? () => setState(() => _imgPage--)
+                                    : null,
+                                icon: const Icon(Icons.chevron_left),
+                              ),
+                              Text('${_imgPage + 1} / $_imgCount'),
+                              IconButton(
+                                tooltip: '下一张例图',
+                                onPressed: _imgPage < _imgCount - 1
+                                    ? () => setState(() => _imgPage++)
+                                    : null,
+                                icon: const Icon(Icons.chevron_right),
+                              ),
+                            ],
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 20),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text('提示词', style: context.texts.titleSmall),
+                      const SizedBox(height: 12),
+                      Expanded(
+                        child: SingleChildScrollView(
+                          child: _codexChips(ref, widget.codex.id, e),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        _bottomActions(scheme, e, widget.pool != null && _canStep),
+      ],
     );
   }
 
@@ -1537,11 +1716,7 @@ class _BlurredBackdropState extends State<_BlurredBackdrop> {
 /// 对照表在这层 watch 而不是交给芯片自己:表到了芯片换字、宽度会变,
 /// 这层跟着重建才会重新量一遍。
 class _PromptFace extends ConsumerStatefulWidget {
-  const _PromptFace({
-    required this.codexId,
-    required this.entry,
-    this.bgUrl,
-  });
+  const _PromptFace({required this.codexId, required this.entry, this.bgUrl});
 
   final String codexId;
   final CodexEntry entry;
@@ -1845,15 +2020,16 @@ class _FavoritesSheet extends ConsumerWidget {
                   ? _empty(context)
                   : GridView.builder(
                       padding: const EdgeInsets.fromLTRB(14, 2, 14, 18),
-                      gridDelegate:
-                          const SliverGridDelegateWithFixedCrossAxisCount(
-                            crossAxisCount: 2,
-                            mainAxisSpacing: 10,
-                            crossAxisSpacing: 10,
-                            // 收藏夹走等比网格,不做瀑布流:这里是「翻自己存的
-                            // 那几条」,整齐比错落好扫
-                            childAspectRatio: 0.78,
-                          ),
+                      gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+                        maxCrossAxisExtent: ref.watch(desktopModeProvider)
+                            ? 240
+                            : MediaQuery.sizeOf(context).width / 2,
+                        mainAxisSpacing: 10,
+                        crossAxisSpacing: 10,
+                        // 收藏夹走等比网格,不做瀑布流:这里是「翻自己存的
+                        // 那几条」,整齐比错落好扫
+                        childAspectRatio: 0.78,
+                      ),
                       itemCount: favs.length,
                       itemBuilder: (context, i) {
                         final f = favs[i];

@@ -129,6 +129,10 @@ class CharLibrary extends AsyncNotifier<List<CharRefEntry>> {
 
   Future<void> _setEntries(List<CharRefEntry> list) async {
     state = AsyncData(List.unmodifiable(list));
+    await _writeIndex(list);
+  }
+
+  Future<void> _writeIndex(List<CharRefEntry> list) async {
     try {
       await _indexFile.writeAsString(
         jsonEncode({
@@ -172,7 +176,9 @@ class CharLibrary extends AsyncNotifier<List<CharRefEntry>> {
         }
       }
       out.sort((a, b) => b.recency.compareTo(a.recency));
-      await _setEntries(out);
+      // build 尚未结束时不能提前发布 AsyncData。否则 importImageBytes 的
+      // await future 会提前放行，随后 build 返回旧列表又覆盖新导入的条目。
+      await _writeIndex(out);
     } catch (e) {
       logd('[char-lib] 重建失败: $e');
     }

@@ -12,6 +12,8 @@ import '../../core/store/storage_settings.dart';
 import '../../core/util/image_ops.dart';
 import '../generate/vibe_cache.dart';
 import 'naiv4vibe_codec.dart';
+import 'local_vibe_folder.dart';
+import '../../core/util/preview_cache.dart';
 
 /// 顶层函数:后台 isolate 算图片字节哈希(编码缓存的内容寻址键)。
 String sha256HexOfBytes(Uint8List bytes) => sha256.convert(bytes).toString();
@@ -564,7 +566,7 @@ class VibeLibrary extends AsyncNotifier<List<VibeEntry>> {
   /// 单条导出为 .naiv4vibe 文本:文件本体 + 缓存里该图的全部编码合并。
   Future<String> exportText(VibeEntry e) async {
     final raw = await _readRawMerged(e);
-    return jsonEncode(raw);
+    return buildVibeText(raw);
   }
 
   /// 多条打包为 .naiv4vibebundle 文本。
@@ -593,7 +595,7 @@ class VibeLibrary extends AsyncNotifier<List<VibeEntry>> {
         );
       }
     }
-    return raw;
+    return canonicalVibeExport(raw);
   }
 
   /// 云端备份要推的完整 vibe JSON:文件本体 + 缓存里该图的全部编码。
@@ -836,44 +838,24 @@ class VibeLibrary extends AsyncNotifier<List<VibeEntry>> {
 
   /// 取「可生成」数据:有图 → 原图字节 + 哈希(编码走统一编码服务);
   /// 纯编码 → 每模型键选一条编码(优先贴近默认 IE)+ 固定 IE。
-  Future<VibeForGenerate?> loadForGenerate(VibeEntry e) async {
+  Future<VibeForGenerate?> loadForGenerate(
+    VibeEntry e, {
+    String? modelKey,
+  }) async {
+    final source = fileOf(e).path;
+    final preferredIE = e.defaultInfoExtracted ?? 1.0;
+    final selectedModel = modelKey ?? e.supportedModels.firstOrNull ?? '';
     try {
-      final raw =
-          jsonDecode(await fileOf(e).readAsString()) as Map<String, dynamic>;
-      final p = ParsedVibe(raw);
-      final img = p.imageBase64;
-      if (img != null) {
-        final bytes = base64Decode(img);
-        final hash = e.imageHash ?? await compute(sha256HexOfBytes, bytes);
-        return (
-          image: bytes,
-          imageHash: hash,
-          encodedByModel: null,
-          fixedInfoExtracted: e.defaultInfoExtracted ?? 1.0,
-        );
-      }
-      final prefer = e.defaultInfoExtracted ?? p.defaultInfoExtracted ?? 1.0;
-      final byModel = <String, String>{};
-      double? pickedIe;
-      for (final it in p.encodingItems) {
-        final cur = byModel[it.modelKey];
-        if (cur == null) {
-          byModel[it.modelKey] = it.encoding;
-          pickedIe ??= it.infoExtracted;
-        } else if (it.infoExtracted != null &&
-            (pickedIe == null ||
-                (it.infoExtracted! - prefer).abs() <
-                    (pickedIe - prefer).abs())) {
-          byModel[it.modelKey] = it.encoding;
-          pickedIe = it.infoExtracted;
-        }
-      }
-      if (byModel.isEmpty) return null;
+      final data = await _readGenerateDataInBackground(
+        source,
+        selectedModel,
+        preferredIE,
+      );
       return (
-        image: null,
-        imageHash: null,
-        encodedByModel: byModel,
-        fixedInfoExtracted: pickedIe ?? prefer,
+        image: data.image,
+        imageHash: data.imageHash,
+        encodedByModel: data.encodedByModel,
+        fixedInfoExtracted: data.infoExtracted,
       );
     } catch (_) {
       return null;
@@ -913,3 +895,18 @@ class VibeLibrary extends AsyncNotifier<List<VibeEntry>> {
     return out;
   }
 }
+
+Future<FolderVibeData> _readGenerateData(
+  String source,
+  String modelKey,
+  double preferredIE,
+) async {
+  final parsed = parseVibeFileText(await File(source).readAsString()).first;
+  return dataForParsedVibe(parsed, modelKey, preferredIE);
+}
+
+Future<FolderVibeData> _readGenerateDataInBackground(
+  String source,
+  String modelKey,
+  double ie,
+) => PreviewWorkQueue.run(() => _readGenerateData(source, modelKey, ie));

@@ -38,6 +38,7 @@ import '../inspiration/tag_models.dart';
 import 'agent_model.dart';
 import 'agent_trace.dart';
 import 'assistant_mode.dart';
+import 'assistant_images.dart';
 import 'assistant_models.dart';
 import 'assistant_settings.dart';
 import 'custom_endpoint.dart' show CustomEndpoint;
@@ -211,6 +212,7 @@ const _keepFences = 2;
 
 class AssistantNotifier extends Notifier<AssistantState> {
   StreamSubscription<AgentEvent>? _sub;
+  bool _preparing = false;
 
   /// 发号作废:取消 / 又发了一次时,回来的旧事件对不上号,整轮丢弃。
   int _seq = 0;
@@ -288,11 +290,12 @@ class AssistantNotifier extends Notifier<AssistantState> {
   /// 看见自己改成什么样,勾一下「引用创作页」就是了,那份是全量的、也不会说错;
   /// 合成消息反而会跟用户打架 —— 它写死「别改回去」,而用户下一句完全可能就是
   /// 「还是把刚才那个加回来吧」。
-  List<Map<String, String>> _history() {
-    final withFence = historyFenceIds(state.msgs, _keepFences);
+  List<Map<String, String>> _history([List<AssistantMsg>? messages]) {
+    final msgs = messages ?? state.msgs;
+    final withFence = historyFenceIds(msgs, _keepFences);
     final out = <Map<String, String>>[];
     String? pendingUser;
-    for (final m in state.msgs) {
+    for (final m in msgs) {
       switch (m.role) {
         case MsgRole.user:
           pendingUser = m.text;
@@ -409,7 +412,8 @@ class AssistantNotifier extends Notifier<AssistantState> {
     return lines.join('\n');
   }
 
-  /// 发一轮。[image] 是用户带的图(原始字节),会 base64 发给模型并存进 blob。
+  /// 发一轮。[images] 是用户带的全部原图，按顺序存进 blob。
+  /// [image] 保留旧单图调用兼容；同时传入时放在 [images] 前面。
   ///
   /// [withCanvas] = 把创作页**当前**的正向/负向/角色一并发过去,让 AI 在它上面改。
   /// **默认不发**,与「导入」同一个道理:AI 碰用户的画布,两个方向都得用户按一下。
@@ -424,264 +428,334 @@ class AssistantNotifier extends Notifier<AssistantState> {
   Future<void> send(
     String text, {
     Uint8List? image,
+    List<Uint8List> images = const [],
     bool withCanvas = false,
+    void Function()? onAccepted,
+  }) => _send(
+    text,
+    images: [?image, ...images],
+    withCanvas: withCanvas,
+    onAccepted: onAccepted,
+  );
+
+  Future<void> _send(
+    String text, {
+    List<Uint8List> images = const [],
+    bool withCanvas = false,
+    AssistantMsg? replacing,
+    void Function()? onAccepted,
   }) async {
-    if (state.running) return;
+    if (state.running || _preparing) return;
     final trimmed = text.trim();
-    if (trimmed.isEmpty && image == null) return;
-
-    // 界面已经挡了(见 _ModelGate),这儿再挡一道:自动生成、重试这些不经过界面。
-    final model = ref.read(generateProvider).params.model;
-    if (!assistantSupportsModel(model)) {
-      _pushError(
-        'AI 助手暂不支持 Anima / Krea,去创作页换成 NAI 再来',
-        AssistErrorKind.unknown,
-      );
-      return;
-    }
-
-    final base = ref.read(backendBaseProvider).value ?? '';
-    final sid = (await ref.read(botSessionProvider.future))?.sessionId ?? '';
-    // 选了自定义接口就在本机跑 agent 循环,否则打 Plana 后端那条 SSE。
-    // 没有 Bot 授权只能走前一条:后端渠道要授权(界面上也不列)。
-    final endpoint = ref.read(assistantEndpointProvider);
-    if (sid.isEmpty && endpoint == null) {
-      _pushError('没有 Bot 授权时只能用自定义接口,先在顶部选一个', AssistErrorKind.auth);
-      return;
-    }
-
-    // 历史必须在把这条 user 消息追进去**之前**取,否则本轮问题会重复一遍。
-    final history = _history();
-
-    // 画布是空的就当没勾 —— 记在消息上的也是这个结果,免得气泡挂着「引用了创作页」
-    // 而实际什么都没发出去。
-    final g = ref.read(generateProvider);
-    final canvas = withCanvas && canvasHasContent(g);
-    final picked = state.mode;
-    final noDraw = assistantSettingsOf(ref).noDraw;
-
-    String? hash;
-    String? b64;
-    if (image != null) {
-      b64 = base64Encode(image);
-      hash = await _store.putImage(image);
-    }
-
-    final seq = ++_seq;
-    _set(
-      state.copyWith(
-        msgs: [
-          ...state.msgs,
-          AssistantMsg(
-            id: _newId(),
-            role: MsgRole.user,
-            text: trimmed,
-            at: _now,
-            imageHash: hash,
-            withCanvas: canvas,
-            mode: picked,
-          ),
-        ],
-        running: true,
-        liveTools: const [],
-        liveText: '',
-        liveReasoning: '',
-        // 一开始是模型在想,不是在查资料:大多数轮次根本不调工具,开场就报「查资料」
-        // 是在说一件还没发生、多半也不会发生的事。真调了工具再切过去(见下面的事件)。
-        stage: '思考中',
-      ),
-    );
-    // 记录跟着这条提问一起开:下面还要等灵感库、规则这些,这期间按了停止也得收尾。
-    // 设置快照等那些取齐了再补上。
-    final trace = AgentTrace(
-      startedAt: _now,
-      route: endpoint != null
-          ? AgentTrace.routeCustom
-          : AgentTrace.routeBackend,
-      userText: trimmed,
-      settings: <String, Object?>{},
-    );
-    _liveTrace = trace;
-
-    // 「资料库范围」:默认只认用户自己那份库,选了「+ 公共库」才让服务端并进去,
-    // 选了「不使用」则一份都不发、也让服务端别回落公共库。
-    // 预匹配、工具代查、直连那条都吃同一个值 —— 分开传迟早有一处漏掉。
-    // 公共库要 Bot 授权,没授权时按本地库发(后端对匿名调用也只给本地库)。
-    final scope = effectiveLibraryScope(
-      assistantSettingsOf(ref).libraryScope,
-      botAuthorized: sid.isNotEmpty,
-    );
-    final lib = scope == LibraryScope.none
-        ? (
-            artists: const <Map<String, dynamic>>[],
-            ocs: const <Map<String, dynamic>>[],
-          )
-        : await _webLibrary();
-    final tools = <ToolTrace>[];
-
-    // 两条路([endpoint] 在上面取的)吐的是同一串事件、同一个 AgentResult,
-    // 下面这段 listen 不用分叉。
-    final imageModel = agentImageModel(g.params.model);
-    // 规则主体:自定义过就用自定义的。**要 await** —— 和灵感库同一个坑,偏好没读完
-    // 同步取到的是 null,会悄悄当成「没自定义」发出去。
-    final family = rulesFamilyOf(imageModel);
-    List<PresetRule>? custom;
+    if (trimmed.isEmpty && images.isEmpty) return;
+    final original = state.msgs;
+    final replaceAt = replacing == null
+        ? original.length
+        : original.indexOf(replacing);
+    if (replaceAt < 0) return;
+    _preparing = true;
+    int? startedSeq;
     try {
-      custom = (await ref.read(
-        rulesLibraryProvider.future,
-      )).customRulesFor(family);
-    } catch (_) {
-      custom = null;
-    }
-    // 模式靠预设里那一段:在用的预设没写就什么都不加 —— 比如 NAI5 的对话里选了漫画,
-    // 创作页又换成了 4.5,而 4.5 的预设里没有漫画段。消息上照旧记着用户选的那个。
-    // 「无」不用查:走服务端又没自定义规则时,这一查就是白取一份默认规则。
-    // 认的是和界面同一份([assistantModesProvider]):按钮上显示成「无」,就什么都不加。
-    var effective = picked;
-    if (modeNeedsPresetSection(picked)) {
-      Set<AssistantMode> supported;
-      try {
-        supported = await ref.read(assistantModesProvider(family).future);
-      } catch (_) {
-        supported = const {AssistantMode.normal};
+      if (images.length > kAssistantMaxAttachments) {
+        throw StateError('一条消息最多添加 $kAssistantMaxAttachments 张图片');
       }
-      if (!supported.contains(picked)) effective = AssistantMode.normal;
-    }
-    final modeKeys = assistantModeKeys(effective);
-    trace.settings.addAll({
-      ..._modelSnapshot(endpoint),
-      'image_model': imageModel,
-      'rules': '${family.name} · ${custom == null ? '默认' : '自定义'}',
-      'mode': effective.name,
-      'mode_keys': modeKeys,
-      'no_draw': noDraw,
-      'library_scope': scope.name,
-      'history_turns': assistantSettingsOf(ref).historyTurns,
-      'history_entries': history.length,
-      'with_canvas': canvas,
-      if (image != null) 'image_bytes': image.length,
-    });
-    final stream = endpoint != null
-        ? streamDirectPrompt(
-            endpoint: endpoint,
-            backendBase: base,
-            sessionId: sid,
-            userRequest: trimmed,
-            image: image,
-            // 直连没有外壳,规则直接当系统提示:在用的预设(没自定义就是服务端默认那份)
-            // 挂上 app 的工具层,再补上出图格式 —— 这两样后端那条由服务端自己发
-            rules: withToolLayer(
-              custom ??
-                  await defaultRules(family, backendBase: base, sessionId: sid),
-              await appToolLayer(),
+      if (images.any((image) => image.isEmpty)) {
+        throw StateError('图片附件为空，未发送本轮消息。');
+      }
+      // 界面已经挡了(见 _ModelGate),这儿再挡一道:自动生成、重试这些不经过界面。
+      final model = ref.read(generateProvider).params.model;
+      if (!assistantSupportsModel(model)) {
+        _pushError(
+          'AI 助手暂不支持 Anima / Krea,去创作页换成 NAI 再来',
+          AssistErrorKind.unknown,
+        );
+        return;
+      }
+
+      final base = ref.read(backendBaseProvider).value ?? '';
+      final sid = (await ref.read(botSessionProvider.future))?.sessionId ?? '';
+      if (!ref.mounted || !identical(state.msgs, original) || state.running) {
+        return;
+      }
+      // 选了自定义接口就在本机跑 agent 循环,否则打 Plana 后端那条 SSE。
+      // 没有 Bot 授权只能走前一条:后端渠道要授权(界面上也不列)。
+      final endpoint = ref.read(assistantEndpointProvider);
+      if (sid.isEmpty && endpoint == null) {
+        _pushError('没有 Bot 授权时只能用自定义接口,先在顶部选一个', AssistErrorKind.auth);
+        return;
+      }
+      if (endpoint == null && base.trim().isEmpty) {
+        _pushError('未配置后端地址，原对话已保留。', AssistErrorKind.unknown);
+        return;
+      }
+
+      // 历史必须在把这条 user 消息追进去**之前**取,否则本轮问题会重复一遍。
+      final preceding = original.take(replaceAt).toList();
+      final history = _history(preceding);
+
+      // 画布是空的就当没勾 —— 记在消息上的也是这个结果,免得气泡挂着「引用了创作页」
+      // 而实际什么都没发出去。
+      final g = ref.read(generateProvider);
+      final canvas = withCanvas && canvasHasContent(g);
+      final picked = state.mode;
+      final noDraw = assistantSettingsOf(ref).noDraw;
+
+      var hashes = const <String>[];
+      String? b64;
+      if (images.isNotEmpty) {
+        if (endpoint == null) {
+          b64 = base64Encode(await prepareAssistantReferenceSheet(images));
+        }
+        hashes = replacing?.imageHashes ?? await _store.putImages(images);
+      }
+      if (!ref.mounted || !identical(state.msgs, original) || state.running) {
+        return;
+      }
+
+      final seq = ++_seq;
+      startedSeq = seq;
+      _set(
+        state.copyWith(
+          msgs: [
+            ...preceding,
+            AssistantMsg(
+              id: _newId(),
+              role: MsgRole.user,
+              text: trimmed,
+              at: _now,
+              imageHashes: hashes,
+              withCanvas: canvas,
+              mode: picked,
             ),
-            outputFormat: await appOutputFormat(),
-            // 直连没有独立的「当前画面」通道,画布当一段文本发过去
-            canvasBlock: canvas ? _canvasBlock(g) : '',
-            history: history,
-            // 库只在本机用:预匹配、占位符、记账、查库工具都在 app 里做,
-            // 不发给后端(见 local_library.dart)
-            webArtists: lib.artists,
-            webOcs: lib.ocs,
-            resources: latestResources(state.msgs),
-            libraryScope: libraryScopeWire(scope),
-            chosenModes: modeKeys,
-            think: assistantSettingsOf(ref).thinkLevel,
-            stream: assistantSettingsOf(ref).stream,
-            trace: trace,
-          )
-        : streamAgentPrompt(
-            baseUrl: base,
-            sessionId: sid,
-            userRequest: trimmed,
-            // 空串 = 用后端的全局默认。用户在顶栏选过才带 key 出去。
-            model: ref.read(assistantModelKeyProvider),
-            imageModel: imageModel,
-            imageB64: b64,
-            history: history,
-            historyTurns: assistantSettingsOf(ref).historyTurns,
-            currentPositive: canvas ? g.prompt : '',
-            currentNegative: canvas ? g.negativePrompt : '',
-            currentCharacters: canvas ? _charsForAgent(g) : const [],
-            webArtists: lib.artists,
-            webOcs: lib.ocs,
-            // 沿用中的画风 / OC:预匹配逐条消息做,用户这轮没再提「A1」块就不出现,
-            // 出处断在那儿。账本由服务端算、客户端存(这条链路没有服务端会话)。
-            resources: latestResources(state.msgs),
-            libraryScope: libraryScopeWire(scope),
-            // 没自定义就不发,服务端用它自己那份(自带工具说明,永远是最新的);
-            // 自定义的预设只讲写提示词,挂上 app 的工具层再发 —— 服务端换掉的是
-            // 整段规则主体,不挂的话它自己那份工具说明也跟着被换没了
-            presetRules: [
-              if (custom != null)
-                for (final r in withToolLayer(custom, await appToolLayer()))
-                  r.toJson(),
-            ],
-            modes: modeKeys,
-            onRequest: (body) => trace.request = body,
-            onEvent: trace.event,
-          );
-    // 上面几处 await(读规则、灵感库,慢的时候十几秒)期间可能已经点了停止,
-    // 或者又发了一条:这一轮作废。两个流都是 listen 才发请求,在这儿拦住就不花钱,
-    // 也不会把新一轮刚挂上的订阅掐掉。
-    if (seq != _seq) return;
-    await _sub?.cancel();
-    if (seq != _seq) return;
-    _sub = stream.listen(
-      (ev) {
-        if (seq != _seq) return;
-        switch (ev) {
-          case AgentToolCall(:final name, :final args):
-            // 参数里的「查什么」当场留下 —— tool_result 只回计数,过了这一刻
-            // 就再也拿不到「查的是普拉娜」这件事了。
-            tools.add(ToolTrace(name: name, subject: toolSubject(args)));
-            _set(
-              state.copyWith(liveTools: List.of(tools), stage: '查资料中'),
-              persist: false,
-            );
-          case AgentToolResult(:final name, :final summary):
-            final i = tools.lastIndexWhere((t) => t.name == name && !t.done);
-            if (i >= 0) {
-              tools[i] = tools[i].copyWith(summary: summary);
-            } else {
-              tools.add(ToolTrace(name: name, summary: summary));
-            }
-            _set(
-              // 结果回来之后模型接着想:可能再查一轮,可能出图,也可能只是回答个问题
-              // (「芙兰是谁」查完就答,没有提示词可写)—— 所以不报「写提示词」
-              state.copyWith(liveTools: List.of(tools), stage: '思考中'),
-              persist: false,
-            );
-          case AgentDelta(:final text, :final reasoning):
-            // 整块替换,不往后拼(见 AgentDelta 的说明)。这一段不落盘 ——
-            // 半截话没有存的价值,真存了下次启动还得当完整回复显示。
-            _set(
-              state.copyWith(liveText: text, liveReasoning: reasoning),
-              persist: false,
-            );
-          case AgentDegraded():
-            tools.add(
-              const ToolTrace(name: kDegradedTool, summary: '已降级到安全模式'),
-            );
-            _set(state.copyWith(liveTools: List.of(tools)), persist: false);
-          case AgentDone(:final result):
-            _finish(result, tools, canvas, picked, noDraw);
+          ],
+          running: true,
+          liveTools: const [],
+          liveText: '',
+          liveReasoning: '',
+          // 一开始是模型在想,不是在查资料:大多数轮次根本不调工具,开场就报「查资料」
+          // 是在说一件还没发生、多半也不会发生的事。真调了工具再切过去(见下面的事件)。
+          stage: '思考中',
+        ),
+      );
+      _preparing = false;
+      onAccepted?.call();
+      // 记录跟着这条提问一起开:下面还要等灵感库、规则这些,这期间按了停止也得收尾。
+      // 设置快照等那些取齐了再补上。
+      final trace = AgentTrace(
+        startedAt: _now,
+        route: endpoint != null
+            ? AgentTrace.routeCustom
+            : AgentTrace.routeBackend,
+        userText: trimmed,
+        settings: <String, Object?>{},
+      );
+      _liveTrace = trace;
+
+      // 「资料库范围」:默认只认用户自己那份库,选了「+ 公共库」才让服务端并进去,
+      // 选了「不使用」则一份都不发、也让服务端别回落公共库。
+      // 预匹配、工具代查、直连那条都吃同一个值 —— 分开传迟早有一处漏掉。
+      // 公共库要 Bot 授权,没授权时按本地库发(后端对匿名调用也只给本地库)。
+      final scope = effectiveLibraryScope(
+        assistantSettingsOf(ref).libraryScope,
+        botAuthorized: sid.isNotEmpty,
+      );
+      final lib = scope == LibraryScope.none
+          ? (
+              artists: const <Map<String, dynamic>>[],
+              ocs: const <Map<String, dynamic>>[],
+            )
+          : await _webLibrary();
+      final tools = <ToolTrace>[];
+
+      // 两条路([endpoint] 在上面取的)吐的是同一串事件、同一个 AgentResult,
+      // 下面这段 listen 不用分叉。
+      final imageModel = agentImageModel(g.params.model);
+      // 规则主体:自定义过就用自定义的。**要 await** —— 和灵感库同一个坑,偏好没读完
+      // 同步取到的是 null,会悄悄当成「没自定义」发出去。
+      final family = rulesFamilyOf(imageModel);
+      List<PresetRule>? custom;
+      try {
+        custom = (await ref.read(
+          rulesLibraryProvider.future,
+        )).customRulesFor(family);
+      } catch (_) {
+        custom = null;
+      }
+      // 模式靠预设里那一段:在用的预设没写就什么都不加 —— 比如 NAI5 的对话里选了漫画,
+      // 创作页又换成了 4.5,而 4.5 的预设里没有漫画段。消息上照旧记着用户选的那个。
+      // 「无」不用查:走服务端又没自定义规则时,这一查就是白取一份默认规则。
+      // 认的是和界面同一份([assistantModesProvider]):按钮上显示成「无」,就什么都不加。
+      var effective = picked;
+      if (modeNeedsPresetSection(picked)) {
+        Set<AssistantMode> supported;
+        try {
+          supported = await ref.read(assistantModesProvider(family).future);
+        } catch (_) {
+          supported = const {AssistantMode.normal};
         }
-      },
-      onError: (Object e) {
-        if (seq != _seq) return;
-        final msg = e is BackendException ? e.message : '$e';
-        _pushError(msg, _kindOf(e));
-      },
-      onDone: () {
-        if (seq != _seq) return;
-        // final 已经把 running 收掉了;还开着说明流是空落地的。
-        if (state.running) {
-          _pushError('AI 这轮没跑完就断了,再试一次', AssistErrorKind.network);
-        }
-      },
-      cancelOnError: true,
-    );
+        if (!supported.contains(picked)) effective = AssistantMode.normal;
+      }
+      final modeKeys = assistantModeKeys(effective);
+      trace.settings.addAll({
+        ..._modelSnapshot(endpoint),
+        'image_model': imageModel,
+        'rules': '${family.name} · ${custom == null ? '默认' : '自定义'}',
+        'mode': effective.name,
+        'mode_keys': modeKeys,
+        'no_draw': noDraw,
+        'library_scope': scope.name,
+        'history_turns': assistantSettingsOf(ref).historyTurns,
+        'history_entries': history.length,
+        'with_canvas': canvas,
+        if (images.isNotEmpty) ...{
+          'image_count': images.length,
+          'image_bytes': images.fold<int>(
+            0,
+            (sum, image) => sum + image.length,
+          ),
+          'image_delivery': endpoint == null && images.length > 1
+              ? 'numbered_reference_sheet'
+              : 'separate_images',
+        },
+      });
+      final stream = endpoint != null
+          ? streamDirectPrompt(
+              endpoint: endpoint,
+              backendBase: base,
+              sessionId: sid,
+              userRequest: trimmed,
+              images: images,
+              // 直连没有外壳,规则直接当系统提示:在用的预设(没自定义就是服务端默认那份)
+              // 挂上 app 的工具层,再补上出图格式 —— 这两样后端那条由服务端自己发
+              rules: withToolLayer(
+                custom ??
+                    await defaultRules(
+                      family,
+                      backendBase: base,
+                      sessionId: sid,
+                    ),
+                await appToolLayer(),
+              ),
+              outputFormat: await appOutputFormat(),
+              // 直连没有独立的「当前画面」通道,画布当一段文本发过去
+              canvasBlock: canvas ? _canvasBlock(g) : '',
+              history: history,
+              // 库只在本机用:预匹配、占位符、记账、查库工具都在 app 里做,
+              // 不发给后端(见 local_library.dart)
+              webArtists: lib.artists,
+              webOcs: lib.ocs,
+              resources: latestResources(state.msgs),
+              libraryScope: libraryScopeWire(scope),
+              chosenModes: modeKeys,
+              think: assistantSettingsOf(ref).thinkLevel,
+              stream: assistantSettingsOf(ref).stream,
+              trace: trace,
+            )
+          : streamAgentPrompt(
+              baseUrl: base,
+              sessionId: sid,
+              userRequest: images.length > 1
+                  ? assistantReferenceSheetPrompt(trimmed, images.length)
+                  : trimmed,
+              // 空串 = 用后端的全局默认。用户在顶栏选过才带 key 出去。
+              model: ref.read(assistantModelKeyProvider),
+              imageModel: imageModel,
+              imageB64: b64,
+              history: history,
+              historyTurns: assistantSettingsOf(ref).historyTurns,
+              currentPositive: canvas ? g.prompt : '',
+              currentNegative: canvas ? g.negativePrompt : '',
+              currentCharacters: canvas ? _charsForAgent(g) : const [],
+              webArtists: lib.artists,
+              webOcs: lib.ocs,
+              // 沿用中的画风 / OC:预匹配逐条消息做,用户这轮没再提「A1」块就不出现,
+              // 出处断在那儿。账本由服务端算、客户端存(这条链路没有服务端会话)。
+              resources: latestResources(state.msgs),
+              libraryScope: libraryScopeWire(scope),
+              // 没自定义就不发,服务端用它自己那份(自带工具说明,永远是最新的);
+              // 自定义的预设只讲写提示词,挂上 app 的工具层再发 —— 服务端换掉的是
+              // 整段规则主体,不挂的话它自己那份工具说明也跟着被换没了
+              presetRules: [
+                if (custom != null)
+                  for (final r in withToolLayer(custom, await appToolLayer()))
+                    r.toJson(),
+              ],
+              modes: modeKeys,
+              onRequest: (body) => trace.request = body,
+              onEvent: trace.event,
+            );
+      // 上面几处 await(读规则、灵感库,慢的时候十几秒)期间可能已经点了停止,
+      // 或者又发了一条:这一轮作废。两个流都是 listen 才发请求,在这儿拦住就不花钱,
+      // 也不会把新一轮刚挂上的订阅掐掉。
+      if (seq != _seq) return;
+      await _sub?.cancel();
+      if (seq != _seq) return;
+      _sub = stream.listen(
+        (ev) {
+          if (seq != _seq) return;
+          switch (ev) {
+            case AgentToolCall(:final name, :final args):
+              // 参数里的「查什么」当场留下 —— tool_result 只回计数,过了这一刻
+              // 就再也拿不到「查的是普拉娜」这件事了。
+              tools.add(ToolTrace(name: name, subject: toolSubject(args)));
+              _set(
+                state.copyWith(liveTools: List.of(tools), stage: '查资料中'),
+                persist: false,
+              );
+            case AgentToolResult(:final name, :final summary):
+              final i = tools.lastIndexWhere((t) => t.name == name && !t.done);
+              if (i >= 0) {
+                tools[i] = tools[i].copyWith(summary: summary);
+              } else {
+                tools.add(ToolTrace(name: name, summary: summary));
+              }
+              _set(
+                // 结果回来之后模型接着想:可能再查一轮,可能出图,也可能只是回答个问题
+                // (「芙兰是谁」查完就答,没有提示词可写)—— 所以不报「写提示词」
+                state.copyWith(liveTools: List.of(tools), stage: '思考中'),
+                persist: false,
+              );
+            case AgentDelta(:final text, :final reasoning):
+              // 整块替换,不往后拼(见 AgentDelta 的说明)。这一段不落盘 ——
+              // 半截话没有存的价值,真存了下次启动还得当完整回复显示。
+              _set(
+                state.copyWith(liveText: text, liveReasoning: reasoning),
+                persist: false,
+              );
+            case AgentDegraded():
+              tools.add(
+                const ToolTrace(name: kDegradedTool, summary: '已降级到安全模式'),
+              );
+              _set(state.copyWith(liveTools: List.of(tools)), persist: false);
+            case AgentDone(:final result):
+              _finish(result, tools, canvas, picked, noDraw);
+          }
+        },
+        onError: (Object e) {
+          if (seq != _seq) return;
+          final msg = e is BackendException ? e.message : '$e';
+          _pushError(msg, _kindOf(e));
+        },
+        onDone: () {
+          if (seq != _seq) return;
+          // final 已经把 running 收掉了;还开着说明流是空落地的。
+          if (state.running) {
+            _pushError('AI 这轮没跑完就断了,再试一次', AssistErrorKind.network);
+          }
+        },
+        cancelOnError: true,
+      );
+    } catch (error) {
+      // 校验/附件准备失败时原会话尚未被替换；开始后的失败保留提问供重试。
+      if (ref.mounted && (startedSeq == null || startedSeq == _seq)) {
+        _pushError(
+          error is BackendException ? error.message : '$error',
+          _kindOf(error),
+        );
+      }
+    } finally {
+      if (startedSeq == null) _preparing = false;
+    }
   }
 
   AssistErrorKind _kindOf(Object e) {
@@ -1037,6 +1111,7 @@ class AssistantNotifier extends Notifier<AssistantState> {
 
   /// 「从这里重新开始」:丢掉这条及之后的全部消息,返回它的原文供输入框回填。
   String? truncateFrom(String msgId) {
+    if (state.running || _preparing) return null;
     final i = state.msgs.indexWhere((m) => m.id == msgId);
     if (i < 0) return null;
     final text = state.msgs[i].text;
@@ -1044,19 +1119,50 @@ class AssistantNotifier extends Notifier<AssistantState> {
     return text;
   }
 
-  /// 从某一句提问重新来:丢掉它和之后的对话,把原话再发一次。
-  Future<void> retryFrom(String userMsgId) async {
-    if (state.running) return;
+  /// 保存 AI 回复正文，保留提议、附件和之后的对话。
+  bool editReply(String msgId, String text) {
+    if (state.running || _preparing || text.trim().isEmpty) return false;
+    final i = state.msgs.indexWhere(
+      (m) => m.id == msgId && m.role == MsgRole.ai,
+    );
+    if (i < 0) return false;
+    final msgs = [...state.msgs];
+    msgs[i] = msgs[i].copyWith(text: text.trim());
+    _set(state.copyWith(msgs: msgs));
+    return true;
+  }
+
+  /// 原提问（或确认后的新正文）与附件准备好后，再原子替换这轮及后续对话。
+  Future<void> retryFrom(String userMsgId, {String? text}) async {
+    if (state.running || _preparing) return;
     final i = state.msgs.indexWhere(
       (m) => m.id == userMsgId && m.role == MsgRole.user,
     );
     if (i < 0) return;
     final m = state.msgs[i];
-    final img = await _store.image(m.imageHash);
-    _set(state.copyWith(msgs: state.msgs.take(i).toList()));
+    final images = <Uint8List>[];
+    for (final hash in m.imageHashes) {
+      final image = await _store.image(hash);
+      if (!ref.mounted || state.running || _preparing || _msg(m.id) != m) {
+        return;
+      }
+      if (image == null) {
+        _pushError('这条消息的图片附件无法读取，原对话已保留。', AssistErrorKind.unknown);
+        return;
+      }
+      images.add(image);
+    }
+    if (!ref.mounted || state.running || _preparing || _msg(m.id) != m) {
+      return;
+    }
     // 重来一次得连「引没引创作页」一起重来,否则同一句话换了上下文,
     // 用户看到的是「重试之后 AI 答得完全不一样」。模式用按钮上现在选着的(见 [send])。
-    await send(m.text, image: img, withCanvas: m.withCanvas);
+    await _send(
+      text ?? m.text,
+      images: images,
+      withCanvas: m.withCanvas,
+      replacing: m,
+    );
   }
 
   /// 「这轮重新生成」:回到最后一次提问之前,把原话再发一次。

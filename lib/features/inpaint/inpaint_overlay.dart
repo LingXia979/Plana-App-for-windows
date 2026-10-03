@@ -10,6 +10,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/store/app_stores.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/platform/desktop.dart';
 import '../../core/ui/param_input.dart';
 import '../generate/gen_modules.dart';
 import '../generate/generate_state.dart';
@@ -23,6 +24,7 @@ import 'censor_detect.dart';
 import 'censor_infer.dart';
 import 'censor_ops.dart';
 import 'inpaint_ops.dart';
+import 'expand_canvas_dialog.dart';
 import '../../core/util/haptics.dart';
 
 /// 内容层功能色(画在图片上,与 app 主题无关):
@@ -32,10 +34,15 @@ const _maskFill = Color(0x8CA855F7); // 遮罩填充 ~55% 紫
 // 局部框用 app 主题金(scheme.primary),不硬编码 web 色值。
 
 /// NAI img2img/inpaint 像素上限(与 img2imgResolution 一致)。
-const _maxSendPixels = 1024 * 3072;
+const _maxSendPixels = kInpaintMaxPixels;
 
 /// 局部框单边上限(框即发送尺寸)。
 const _cropMaxSide = 1024;
+
+Rect _focusResizeGripRect(Rect outer, double scale) {
+  final side = math.min(22 / scale, outer.shortestSide / 3);
+  return Rect.fromLTWH(outer.right - side, outer.bottom - side, side, side);
+}
 
 /// 一次重绘编辑会话:进入编辑器所需的底图。
 ///
@@ -70,7 +77,7 @@ class InpaintSessionNotifier extends Notifier<InpaintSession?> {
   void close() => state = null;
 }
 
-enum _Tool { brush, eraser }
+enum _Tool { brush, eraser, fill, crop }
 
 /// 顶栏三档。**共用同一张遮罩和同一套涂抹手势** —— 涂一次,既可以送去重绘,
 /// 也可以就地打码,不必退出面板换个工具重涂一遍。
@@ -85,6 +92,27 @@ const _assistGapPx = 110.0;
 enum _SliderTarget { brush, strength, block }
 
 enum _ExpandHandle { top, bottom, left, right }
+
+class _EditSnapshot {
+  _EditSnapshot({
+    required this.cells,
+    required this.crop,
+    required this.cropMode,
+    required this.cropOptOut,
+    required this.cropResized,
+    required this.margins,
+    required this.mode,
+    required this.tool,
+    required this.context,
+  });
+  final Uint8List cells;
+  final IntRect? crop;
+  final bool cropMode, cropOptOut, cropResized;
+  final ExpandMargins margins;
+  final _Mode mode;
+  final _Tool tool;
+  final int context;
+}
 
 /// 重绘编辑面板:嵌在图库页 Stack 顶层原地切入(非路由页)。
 /// 涂抹遮罩(8×8 网格)→ 整图/局部 infill;入场=整层渐显+顶栏/面板对滑,
@@ -120,9 +148,14 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
 
   ui.Image? _img;
   MaskGrid? _grid;
-  final List<Uint8List> _undo = [];
+  final List<_EditSnapshot> _undo = [];
+  final List<_EditSnapshot> _redo = [];
+
+  bool get _desktop => ref.read(desktopModeProvider);
 
   _Tool _tool = _Tool.brush;
+  MaskBrushShape _brushShape = MaskBrushShape.square;
+  Offset? _hoverPoint;
   bool _assist = false; // 偏位套杆:光标偏于触点上方,手指不挡涂抹点
   Offset? _fingerAt; // 偏位模式下手指把手位置(图坐标),painter 画杆用
   bool _cropMode = false;
@@ -138,7 +171,12 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
   ({int h, int v})? _cropDrag;
   IntRect? _cropStart;
   Offset? _cropDragFrom;
+  bool _cropCreating = false;
+  bool _cropUndoSaved = false;
+  Offset? _cropDismissOrigin; // 框外按下先等点击/拖动确认，避免取消时误涂。
   IntRect? _crop; // 发送框(w/h 恒 64 倍数,单边 ≤ _cropMaxSide)
+  int _focusContext = 32;
+  bool _contextUndoSaved = false;
   double _brush = 50; // 笔刷直径(图像素),对齐 web 默认
   double _strength = 0.7;
   _SliderTarget? _slider;
@@ -173,6 +211,7 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
   int _expandStartPad = 0;
   Offset? _expandDragScreen; // 拖拽起点(屏幕坐标;pad 按屏幕位移/scale 折算)
   bool _expandDragMoved = false; // 未移动即抬手 = 点按把手,+64 一个单位
+  bool _expandUndoSaved = false;
   // 扩图完成后旧图在新图中的位置:「按住对比」按位对齐,新增区露底=遮挡。
   // 生成搬走之后 _prevImg 恒为 null(没人再往里塞旧图),这一对现在是死的 ——
   // 「按住对比」不再出现。留着是为了下一步把对比接到图库那份结果上,别删。
@@ -230,7 +269,8 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
     final p = ref.read(inpaintPrefsProvider);
     _brush = p.brush;
     _strength = p.strength;
-    _assist = p.assist;
+    _assist = !_desktop && p.assist;
+    _brushShape = p.brushShape;
     _censorStyle = p.censorStyle == 'solid'
         ? CensorStyle.solid
         : CensorStyle.mosaic;
@@ -248,6 +288,7 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
           brush: _brush,
           strength: _strength,
           assist: _assist,
+          brushShape: _brushShape,
           mode: switch (_mode) {
             _Mode.paint => 'paint',
             _Mode.expand => 'expand',
@@ -263,6 +304,8 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
   ///
   /// 扩图对图有 64 对齐的硬要求,对不上就老实回落涂抹档,不弹提示打扰人。
   void _restoreMode(ui.Image img) {
+    // 回到已保存的框选任务时，优先继续该任务，而非进入上次别处用过的扩图/打码档。
+    if (_desktop && _cropMode && _crop != null) return;
     final want = ref.read(inpaintPrefsProvider).mode;
     if (want == 'expand') {
       if (img.width % 64 != 0 || img.height % 64 != 0) return;
@@ -282,6 +325,7 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
     try {
       final codec = await ui.instantiateImageCodec(widget.session.imageBytes);
       final frame = await codec.getNextFrame();
+      codec.dispose();
       if (!mounted) {
         frame.image.dispose();
         return;
@@ -306,9 +350,22 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
     final grid = _grid;
     final job = ref.read(generateProvider).inpaint;
     final data = job?.grid;
-    if (grid == null || data == null) return;
-    if (job!.sourceId != widget.session.sourceId) return;
-    if (grid.decodeInto(data)) setState(() => _rev++);
+    if (grid == null || job == null) return;
+    if (job.sourceId != widget.session.sourceId) return;
+    _strength = job.strength.clamp(.1, 1.0).toDouble();
+    if (data != null && grid.decodeInto(data)) setState(() => _rev++);
+    final focus = job.paste?.focus;
+    if (_desktop && focus != null) {
+      final outer = (x: focus.x, y: focus.y, w: focus.width, h: focus.height);
+      if (focusRegionError(outer, focus.context, grid.imgW, grid.imgH) ==
+          null) {
+        _crop = outer;
+        _focusContext = focus.context;
+        _cropMode = true;
+        _cropResized = true;
+        _cropOptOut = false;
+      }
+    }
   }
 
   @override
@@ -331,7 +388,9 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
   }
 
   /// 画布光标:涂抹中为最近落笔点;偏位模式下按住未动时也显示悬置光标。
-  Offset? get _cursorPoint => _lastPaint ?? (_assist ? _pendingStroke : null);
+  Offset? get _cursorPoint => (_tool == _Tool.brush || _tool == _Tool.eraser)
+      ? _lastPaint ?? (_assist ? _pendingStroke : _hoverPoint)
+      : null;
 
   List<ui.Rect> get _maskRects {
     if (_rectsRev != _rev || _rectsCache == null) {
@@ -367,8 +426,8 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
     _viewport = size;
     _fitKey = key;
     // 扩图模式:按「图+扩展区」总尺寸适配,四周留出拖拽把手与标签空间
-    final cw = (img.width + _padL + _padR).toDouble();
-    final ch = (img.height + _padT + _padB).toDouble();
+    final cw = (img.width + (_expandMode ? _padL + _padR : 0)).toDouble();
+    final ch = (img.height + (_expandMode ? _padT + _padB : 0)).toDouble();
     final margin = _expandMode ? 56.0 : 0.0;
     final availW = math.max(64.0, size.width - margin * 2);
     final availH = math.max(64.0, size.height - margin * 2);
@@ -377,8 +436,8 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
       _scale = _fitScale;
       // 总区域(图坐标系 [-padL, imgW+padR]×[-padT, imgH+padB])居中
       final center = Offset(
-        (img.width + _padR - _padL) / 2,
-        (img.height + _padB - _padT) / 2,
+        (img.width + (_expandMode ? _padR - _padL : 0)) / 2,
+        (img.height + (_expandMode ? _padB - _padT : 0)) / 2,
       );
       _offset = Offset(size.width / 2, size.height / 2) - center * _scale;
     }
@@ -388,27 +447,92 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
 
   // ---------- 笔画 ----------
 
+  _EditSnapshot _snapshot() => _EditSnapshot(
+    cells: Uint8List.fromList(_grid!.cells),
+    crop: _crop,
+    cropMode: _cropMode,
+    cropOptOut: _cropOptOut,
+    cropResized: _cropResized,
+    margins: _margins,
+    mode: _mode,
+    tool: _tool,
+    context: _focusContext,
+  );
+
   void _pushUndo() {
     if (_undo.length >= 20) _undo.removeAt(0);
-    _undo.add(Uint8List.fromList(_grid!.cells));
+    _undo.add(_snapshot());
+    _redo.clear();
+  }
+
+  void _restoreEdit(_EditSnapshot snapshot) {
+    _grid!.restore(snapshot.cells);
+    _crop = snapshot.crop;
+    _cropMode = snapshot.cropMode;
+    _cropOptOut = snapshot.cropOptOut;
+    _cropResized = snapshot.cropResized;
+    _applyMargins(snapshot.margins);
+    _mode = snapshot.mode;
+    _tool = snapshot.tool;
+    _focusContext = snapshot.context;
+    _lastPaint = null;
+    _hoverPoint = null;
+    _rev++;
+    _maskTouched();
+  }
+
+  bool _insideImage(Offset p) =>
+      _img != null &&
+      p.dx >= 0 &&
+      p.dy >= 0 &&
+      p.dx < _img!.width &&
+      p.dy < _img!.height;
+
+  void _fillMask() {
+    final grid = _grid;
+    if (grid == null || grid.cells.every((v) => v != 0)) return;
+    _pushUndo();
+    grid.fill();
+    setState(() {
+      _rev++;
+      _maskTouched();
+      if (!_desktop) _slider = null;
+    });
   }
 
   void _beginStroke(Offset p) {
+    if (_tool == _Tool.fill) {
+      if (_insideImage(p)) _fillMask();
+      return;
+    }
+    if (_tool == _Tool.crop || !_insideImage(p)) return;
     _pushUndo();
     _stroking = true;
-    _grid!.paintDot(p.dx, p.dy, _brush, erase: _tool == _Tool.eraser);
+    _grid!.paintDot(
+      p.dx,
+      p.dy,
+      _brush,
+      erase: _tool == _Tool.eraser,
+      shape: _brushShape,
+    );
     setState(() {
       _lastPaint = p;
       _rev++;
       _maskTouched();
-      _slider = null; // 落笔即收浮动滑杆,给画布让位
+      if (!_desktop) _slider = null; // 手机落笔收浮动滑杆；桌面滑条不遮画布。
     });
   }
 
   void _strokeTo(Offset p) {
     final from = _lastPaint;
     if (from == null) return;
-    _grid!.paintLine(from, p, _brush, erase: _tool == _Tool.eraser);
+    _grid!.paintLine(
+      from,
+      p,
+      _brush,
+      erase: _tool == _Tool.eraser,
+      shape: _brushShape,
+    );
     setState(() {
       _lastPaint = p;
       _rev++;
@@ -422,10 +546,16 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
       setState(() => _tool = t);
       return;
     }
-    if (t != _Tool.brush) return;
+    if (t != _Tool.brush || _desktop) return;
     Haptics.selection();
     setState(() => _assist = !_assist);
   }
+
+  void _toggleBrushShape() => setState(() {
+    _brushShape = _brushShape == MaskBrushShape.square
+        ? MaskBrushShape.circle
+        : MaskBrushShape.square;
+  });
 
   /// 偏位模式:笔刷光标 = 触点上方 [_assistGapPx](屏幕距离)处。
   Offset _cursorFor(Offset touch) =>
@@ -450,7 +580,7 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
   void _autoCrop() {
     // 局部框是「发送范围」,只有涂抹模式有意义 —— 打码不发送,让它自动弹出来
     // 只会拿黄框和框外 40% 暗化盖住打码预览。
-    if (_mode != _Mode.paint) return;
+    if (_mode != _Mode.paint || _desktop) return;
     final img = _img, grid = _grid;
     if (img == null || grid == null) return;
     final tight = tightCropRect(grid);
@@ -482,11 +612,14 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
 
   void _undoOnce() {
     if (_undo.isEmpty) return;
-    _grid!.restore(_undo.removeLast());
-    setState(() {
-      _rev++;
-      _maskTouched();
-    });
+    _redo.add(_snapshot());
+    setState(() => _restoreEdit(_undo.removeLast()));
+  }
+
+  void _redoOnce() {
+    if (_redo.isEmpty) return;
+    _undo.add(_snapshot());
+    setState(() => _restoreEdit(_redo.removeLast()));
   }
 
   void _clearAll() {
@@ -502,6 +635,16 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
   // ---------- 扩图 ----------
 
   bool get _hasExpand => _padL + _padT + _padR + _padB > 0;
+
+  ExpandMargins get _margins =>
+      (left: _padL, top: _padT, right: _padR, bottom: _padB);
+
+  void _applyMargins(ExpandMargins margins) {
+    _padL = margins.left;
+    _padT = margins.top;
+    _padR = margins.right;
+    _padB = margins.bottom;
+  }
 
   void _resetPad() {
     _padL = 0;
@@ -536,7 +679,8 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
     }
     setState(() {
       _mode = m;
-      _resetPad();
+      if (!_desktop) _resetPad();
+      if (m != _Mode.paint && _tool == _Tool.crop) _tool = _Tool.brush;
       _slider = null;
       _viewport = Size.zero; // 强制重 fit + 居中(web 切换时重置视角同款)
       if (m != _Mode.paint) {
@@ -553,7 +697,26 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
     _ExpandHandle.right => _padR,
   };
 
+  int _limitPad(_ExpandHandle d, int v) {
+    final img = _img;
+    if (img == null) return 0;
+    final horizontal = d == _ExpandHandle.left || d == _ExpandHandle.right;
+    final otherSide = switch (d) {
+      _ExpandHandle.left => _padR,
+      _ExpandHandle.right => _padL,
+      _ExpandHandle.top => _padB,
+      _ExpandHandle.bottom => _padT,
+    };
+    final fixed = horizontal
+        ? img.height + _padT + _padB
+        : img.width + _padL + _padR;
+    final base = horizontal ? img.width : img.height;
+    final limit = math.min(kInpaintMaxSide, kInpaintMaxPixels ~/ fixed);
+    return v.clamp(0, math.max(0, (limit - base - otherSide) ~/ 64 * 64));
+  }
+
   void _setPadOf(_ExpandHandle d, int v) {
+    v = _limitPad(d, v);
     switch (d) {
       case _ExpandHandle.top:
         _padT = v;
@@ -610,6 +773,7 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
         _expandStartPad = _padOf(e.key);
         _expandDragScreen = screenPt;
         _expandDragMoved = false;
+        _expandUndoSaved = false;
         return true;
       }
     }
@@ -630,11 +794,17 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
       _ExpandHandle.left => -d.dx,
       _ExpandHandle.right => d.dx,
     };
-    final next = math.max(
-      0,
-      ((_expandStartPad + delta / _scale) / 64).round() * 64,
+    final next = _limitPad(
+      dir,
+      math.max(0, ((_expandStartPad + delta / _scale) / 64).round() * 64),
     );
-    if (next != _padOf(dir)) setState(() => _setPadOf(dir, next));
+    if (next != _padOf(dir)) {
+      if (!_expandUndoSaved) {
+        _pushUndo();
+        _expandUndoSaved = true;
+      }
+      setState(() => _setPadOf(dir, next));
+    }
   }
 
   // ---------- 局部框 ----------
@@ -646,6 +816,25 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
   }
 
   void _toggleCrop() {
+    if (_desktop) {
+      if (_img == null) return;
+      if (_img!.width < 8 || _img!.height < 8) {
+        hintSnack(context, '图片过小，无法框选重绘', icon: Icons.crop);
+        return;
+      }
+      if (!_cropMode) {
+        _pushUndo();
+        _crop = _defaultFocus(_img!.width, _img!.height);
+      }
+      setState(() {
+        _tool = _Tool.crop;
+        _cropMode = true;
+        _cropResized = true;
+        _cropOptOut = false;
+        _hoverPoint = null;
+      });
+      return;
+    }
     if (_cropMode) {
       setState(() {
         _cropMode = false;
@@ -673,6 +862,58 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
     });
   }
 
+  void _clearCrop() {
+    if (!_cropMode) return;
+    _pushUndo();
+    setState(() {
+      _crop = null;
+      _cropMode = false;
+      _cropResized = false;
+      _cropOptOut = true;
+      if (_tool == _Tool.crop) _tool = _Tool.brush;
+    });
+  }
+
+  IntRect _defaultFocus(int width, int height) {
+    final w = math.max(
+      8,
+      math.min(width ~/ 8 * 8, math.max(72, (width * .55) ~/ 8 * 8)),
+    );
+    final h = math.max(
+      8,
+      math.min(height ~/ 8 * 8, math.max(72, (height * .55) ~/ 8 * 8)),
+    );
+    final outer = boundedFocusRect(
+      Offset.zero,
+      Offset(w.toDouble(), h.toDouble()),
+      width,
+      height,
+    )!;
+    return moveFocusRect(
+      outer,
+      Offset((width - outer.w) / 2, (height - outer.h) / 2),
+      width,
+      height,
+    );
+  }
+
+  String? get _focusError {
+    final img = _img, crop = _crop;
+    return !_desktop || !_cropMode || img == null || crop == null
+        ? null
+        : focusRegionError(crop, _focusContext, img.width, img.height);
+  }
+
+  void _changeFocusContext(double value) {
+    final next = (value / 8).round() * 8;
+    if (next == _focusContext) return;
+    if (!_contextUndoSaved) {
+      _pushUndo();
+      _contextUndoSaved = true;
+    }
+    setState(() => _focusContext = next);
+  }
+
   /// 居中默认框(约 55% 边长、不超过上限、64 对齐,原点也落 64 网格)。
   IntRect _defaultCrop(int imgW, int imgH) {
     final w = _snap64(imgW * 0.55, max: math.min(imgW, _cropMaxSide));
@@ -685,12 +926,52 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
     );
   }
 
-  /// 拉杆命中:四条边各一条窄带(屏幕 26px),横竖两条带交叠的四个角
-  /// 两条边一起拉;框内其余地方一律落笔。
-  /// 整框移动没有 —— 框跟着遮罩走,移开就失去意义,而且会把"框内能涂"吃掉。
+  /// 桌面框选工具中：八个手柄缩放，框内平移，框外点击取消、拖动重新框选。
+  /// 触屏继续沿用四边较宽的拉伸命中带。
   bool _hitCropHandle(Offset imgPoint) {
     final c = _crop;
     if (c == null) return false;
+    _cropUndoSaved = false;
+    _cropCreating = false;
+    if (_desktop) {
+      final rect = Rect.fromLTWH(
+        c.x.toDouble(),
+        c.y.toDouble(),
+        c.w.toDouble(),
+        c.h.toDouble(),
+      );
+      if (_focusResizeGripRect(rect, _scale).contains(imgPoint)) {
+        _cropDrag = (h: 1, v: 1);
+        _cropStart = c;
+        _cropDragFrom = imgPoint;
+        return true;
+      }
+      final targets = <(Offset, int, int)>[
+        (rect.topLeft, -1, -1),
+        (rect.topRight, 1, -1),
+        (rect.bottomLeft, -1, 1),
+        (rect.bottomRight, 1, 1),
+        (rect.topCenter, 0, -1),
+        (rect.bottomCenter, 0, 1),
+        (rect.centerLeft, -1, 0),
+        (rect.centerRight, 1, 0),
+      ];
+      for (final (point, h, v) in targets) {
+        if ((point - imgPoint).distance * _scale <= 13) {
+          _cropDrag = (h: h, v: v);
+          _cropStart = c;
+          _cropDragFrom = imgPoint;
+          return true;
+        }
+      }
+      if (rect.contains(imgPoint)) {
+        _cropDrag = (h: 0, v: 0);
+        _cropStart = c;
+        _cropDragFrom = imgPoint;
+        return true;
+      }
+      return false;
+    }
     final band = 26 / _scale;
     final l = c.x.toDouble(), t = c.y.toDouble();
     final r = (c.x + c.w).toDouble(), b = (c.y + c.h).toDouble();
@@ -717,6 +998,61 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
     final drag = _cropDrag, start = _cropStart, from = _cropDragFrom;
     final img = _img;
     if (drag == null || start == null || from == null || img == null) return;
+    if (_desktop && (drag.h == 0 && drag.v == 0 || _cropCreating)) {
+      final delta = imgPoint - from;
+      final IntRect next;
+      if (_cropCreating) {
+        final selected = boundedFocusRect(
+          from,
+          imgPoint,
+          img.width,
+          img.height,
+        );
+        if (selected == null) return;
+        next = selected;
+      } else {
+        next = moveFocusRect(start, delta, img.width, img.height);
+      }
+      _applyCropDrag(next);
+      return;
+    }
+    if (_desktop) {
+      final delta = imgPoint - from;
+      int span(int length, double change, int side, int available) => side == 0
+          ? length
+          : (length + side * (change / 8 + change.sign * 1e-7).truncate() * 8)
+                .clamp(8, available ~/ 8 * 8);
+      var w = span(
+        start.w,
+        delta.dx,
+        drag.h,
+        drag.h < 0 ? start.x + start.w : img.width - start.x,
+      );
+      var h = span(
+        start.h,
+        delta.dy,
+        drag.v,
+        drag.v < 0 ? start.y + start.h : img.height - start.y,
+      );
+      if (w * h > kFocusMaxPixels) {
+        if (drag.h == 0) {
+          h = kFocusMaxPixels ~/ w ~/ 8 * 8;
+        } else if (drag.v == 0) {
+          w = kFocusMaxPixels ~/ h ~/ 8 * 8;
+        } else {
+          final ratio = math.sqrt(kFocusMaxPixels / (w * h));
+          w = (w * ratio) ~/ 8 * 8;
+          h = (h * ratio) ~/ 8 * 8;
+        }
+      }
+      _applyCropDrag((
+        x: drag.h < 0 ? start.x + start.w - w : start.x,
+        y: drag.v < 0 ? start.y + start.h - h : start.y,
+        w: w,
+        h: h,
+      ));
+      return;
+    }
     // 对边固定,拖的边动;角 = 横竖各拖一条。宽高 64 步进、256 ~ 上限
     final (x, w) = _dragSpan(
       start.x,
@@ -733,10 +1069,20 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
       img.height,
     );
     final next = (x: x, y: y, w: w, h: h);
-    if (next != _crop) {
-      _cropResized = true;
-      setState(() => _crop = next);
+    _applyCropDrag(next);
+  }
+
+  void _applyCropDrag(IntRect next) {
+    if (next == _crop && _cropMode) return;
+    if (!_cropUndoSaved) {
+      _pushUndo();
+      _cropUndoSaved = true;
     }
+    setState(() {
+      _crop = next;
+      _cropMode = true;
+      _cropResized = true;
+    });
   }
 
   /// 单方向拉伸,返回 (起点, 长度)。[side] -1 拖起始边(左/上)、1 拖末端边
@@ -744,11 +1090,19 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
   (int, int) _dragSpan(int pos, int len, double delta, int side, int limit) {
     if (side < 0) {
       final end = pos + len; // 末端固定
-      final l = _snap64(len - delta, max: math.min(end, _cropMaxSide));
+      final l = _snap64(
+        len - delta,
+        min: _desktop ? 64 : 256,
+        max: math.min(end, _cropMaxSide),
+      );
       return (end - l, l);
     }
     if (side > 0) {
-      final l = _snap64(len + delta, max: math.min(limit - pos, _cropMaxSide));
+      final l = _snap64(
+        len + delta,
+        min: _desktop ? 64 : 256,
+        max: math.min(limit - pos, _cropMaxSide),
+      );
       return (pos, l);
     }
     return (pos, len);
@@ -758,6 +1112,7 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
 
   void _onScaleStart(ScaleStartDetails d) {
     _lastPointers = d.pointerCount;
+    _cropDismissOrigin = null;
     if (d.pointerCount == 1) {
       // 缩放松手余波:先抬一指时 recognizer 会以剩下那指重启手势,
       // 这不是新涂抹——整轮触摸(直到全部离手)不再落笔。
@@ -768,7 +1123,30 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
         return;
       }
       final p = _toImg(d.localFocalPoint);
-      if (_cropMode && _hitCropHandle(p)) return;
+      if (_desktop && _tool == _Tool.crop) {
+        if (_cropMode && _hitCropHandle(p)) return;
+        if (_cropMode) _cropDismissOrigin = d.localFocalPoint;
+        if (_insideImage(p)) {
+          _cropDrag = (h: 0, v: 0);
+          _cropDragFrom = p;
+          _cropStart = _crop ?? _defaultFocus(_img!.width, _img!.height);
+          _cropCreating = true;
+          _cropUndoSaved = false;
+        }
+        return;
+      }
+      if (_desktop && _cropMode && !_censorMode && _crop != null) {
+        final c = _crop!;
+        if (!Rect.fromLTWH(
+          c.x.toDouble(),
+          c.y.toDouble(),
+          c.w.toDouble(),
+          c.h.toDouble(),
+        ).contains(p)) {
+          _cropDismissOrigin = d.localFocalPoint;
+        }
+      }
+      if (!_desktop && _cropMode && _hitCropHandle(p)) return;
       // 不立即落笔:双指缩放时第一指总会先到一拍,等移动/抬手再确认涂抹
       _pendingStroke = _cursorFor(p);
       if (_assist) setState(() => _fingerAt = p); // 立即显示把手与偏位光标
@@ -786,6 +1164,14 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
   }
 
   void _onScaleUpdate(ScaleUpdateDetails d) {
+    final dismissOrigin = _cropDismissOrigin;
+    if (dismissOrigin != null) {
+      if (d.pointerCount == 1 &&
+          (d.localFocalPoint - dismissOrigin).distance <= 4) {
+        return; // 点击的小幅手抖不画笔迹，也不创建一个很小的选框。
+      }
+      _cropDismissOrigin = null;
+    }
     if (d.pointerCount >= 2) {
       _pendingStroke = null; // 第二指到:确认缩放,悬置起点作废
       _fingerAt = null;
@@ -824,6 +1210,14 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
   }
 
   void _onScaleEnd(ScaleEndDetails d) {
+    if (_cropDismissOrigin != null &&
+        _lastPointers == 1 &&
+        d.pointerCount == 0 &&
+        !_pinchSession) {
+      _pendingStroke = null;
+      _clearCrop();
+    }
+    _cropDismissOrigin = null;
     // 单指按下即抬(点涂一个点):抬手时落笔
     final pending = _pendingStroke;
     _pendingStroke = null;
@@ -836,8 +1230,12 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
     // 点按把手(按下未拖动即抬手):该向 +64 一个单位
     final tapDir = _expandDrag;
     if (tapDir != null && !_expandDragMoved && d.pointerCount == 0) {
-      Haptics.selection();
-      setState(() => _setPadOf(tapDir, _padOf(tapDir) + 64));
+      final next = _limitPad(tapDir, _padOf(tapDir) + 64);
+      if (next != _padOf(tapDir)) {
+        Haptics.selection();
+        _pushUndo();
+        setState(() => _setPadOf(tapDir, next));
+      }
     }
     _expandDrag = null;
     _expandDragScreen = null;
@@ -860,43 +1258,45 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
   /// 扩图发送:白底扩后画布 + 自动 mask(原图区黑/新增区白),
   /// paste 置空 → 结果即完整新图直接入库(尺寸=params 扩后尺寸)。
   Future<void> _fireExpand(ui.Image img, GenerateState input) async {
-    final tw = img.width + _padL + _padR;
-    final th = img.height + _padT + _padB;
-    if (tw * th > _maxSendPixels) {
-      hintSnack(
-        context,
-        '扩图后尺寸过大,请缩小扩展范围',
-        icon: Icons.photo_size_select_large,
-      );
+    final margins = _margins;
+    final grid = _grid?.copy();
+    final strength = _strength;
+    final width = img.width, height = img.height;
+    final tw = width + margins.left + margins.right;
+    final th = height + margins.top + margins.bottom;
+    final error = expansionError(width, height, margins);
+    if (error != null) {
+      hintSnack(context, error, icon: Icons.photo_size_select_large);
       return;
     }
     setState(() => _firing = true);
     try {
       final image = await buildExpandImage(
         _currentBytes,
-        padL: _padL,
-        padT: _padT,
-        padR: _padR,
-        padB: _padB,
+        padL: margins.left,
+        padT: margins.top,
+        padR: margins.right,
+        padB: margins.bottom,
       );
       final mask = await buildExpandMask(
-        imgW: img.width,
-        imgH: img.height,
-        padL: _padL,
-        padT: _padT,
-        padR: _padR,
-        padB: _padB,
+        imgW: width,
+        imgH: height,
+        padL: margins.left,
+        padT: margins.top,
+        padR: margins.right,
+        padB: margins.bottom,
+        grid: grid,
       );
       if (!mounted) return;
       _saveInto(
         InpaintJob(
           image: image,
           mask: mask,
-          strength: _strength,
+          strength: strength,
           sourceId: widget.session.sourceId,
           // 扩图后尺寸变了,这份网格回去会被 decodeInto 拒掉 —— 留着无妨,
           // 图没扩成功时(用户又退回来)还能接着用。
-          grid: _grid?.encode(),
+          grid: grid?.encode(),
         ),
         width: tw,
         height: th,
@@ -1162,7 +1562,7 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
 
   Future<void> _fire() async {
     final img = _img;
-    final grid = _grid;
+    var grid = _grid?.copy();
     if (img == null || grid == null || _firing) return;
     // 打码在模型门禁**之前**分岔:本地重画像素,跟用哪个模型、能不能 infill
     // 一点关系都没有 —— Anima/Krea 下也该照样能打。
@@ -1188,18 +1588,50 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
       await _fireExpand(img, input);
       return;
     }
+    final send = _cropMode ? _crop : null;
+    if (_desktop && send != null) {
+      final error = _focusError;
+      if (error != null) {
+        hintSnack(context, error, icon: Icons.crop);
+        return;
+      }
+      final contextMargin = _focusContext;
+      final strength = _strength;
+      setState(() => _firing = true);
+      try {
+        final prepared = await prepareFocusedInpaint(
+          original: _currentBytes,
+          grid: grid,
+          outer: send,
+          context: contextMargin,
+          strength: strength,
+          sourceId: widget.session.sourceId,
+        );
+        if (!mounted) return;
+        _saveInto(prepared.job, width: prepared.width, height: prepared.height);
+      } catch (e) {
+        if (mounted) {
+          hintSnack(context, '无法保存框选: $e', icon: Icons.error_outline);
+        }
+      } finally {
+        if (mounted) setState(() => _firing = false);
+      }
+      return;
+    }
     if (grid.isEmpty) {
       hintSnack(context, '先用画笔涂抹要重绘的区域', icon: Icons.brush);
       return;
     }
-    final send = _cropMode ? _crop : null;
     if (send != null && !grid.hasCellsIn(send)) {
       hintSnack(context, '黄框内没有涂抹区域', icon: Icons.crop);
       return;
     }
     final sw = send?.w ?? img.width;
     final sh = send?.h ?? img.height;
-    if (sw * sh > _maxSendPixels) {
+    final strength = _strength;
+    if (sw * sh > _maxSendPixels ||
+        sw > kInpaintMaxSide ||
+        sh > kInpaintMaxSide) {
       hintSnack(
         context,
         '发送尺寸过大,请开启「局部」缩小范围',
@@ -1240,7 +1672,7 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
         InpaintJob(
           image: image,
           mask: mask,
-          strength: _strength,
+          strength: strength,
           paste: paste,
           sourceId: widget.session.sourceId,
           grid: grid.encode(),
@@ -1262,7 +1694,9 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
     final hasPrev = _prevImg != null; // 至少重绘过一次才有「前后对比」
     // 编辑中允许切 tab(图库页 keep-alive 保留本面板);仅当图库可见时
     // 返回键收面板,在其他 tab 返回键走系统默认(最小化)。
-    final onGallery = ref.watch(shellIndexProvider) == kTabGallery;
+    final onGallery =
+        ref.watch(shellIndexProvider) ==
+        (ref.watch(desktopModeProvider) ? kTabCreate : kTabGallery);
 
     return PopScope(
       canPop: !onGallery,
@@ -1276,182 +1710,228 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
           opacity: _curve,
           child: ColoredBox(
             color: scheme.surface,
-            child: Column(
-              children: [
-                SlideTransition(
-                  position: _topSlide,
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-                    child: Row(
-                      children: [
-                        _RoundBtn(icon: Icons.close, onTap: _close),
-                        const SizedBox(width: 12),
-                        Expanded(child: _buildSegTabs()),
-                      ],
+            child: AbsorbPointer(
+              absorbing: _firing,
+              child: Column(
+                children: [
+                  SlideTransition(
+                    position: _topSlide,
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+                      child: Row(
+                        children: [
+                          _RoundBtn(icon: Icons.close, onTap: _close),
+                          const SizedBox(width: 12),
+                          Expanded(child: _buildSegTabs()),
+                        ],
+                      ),
                     ),
                   ),
-                ),
-                Expanded(
-                  child: ClipRect(
-                    child: ColoredBox(
-                      // 与图库画布同底色,原地切换视觉连续
-                      color: scheme.surfaceContainerHigh,
-                      child: img == null
-                          ? const Center(child: CircularProgressIndicator())
-                          : LayoutBuilder(
-                              builder: (context, constraints) {
-                                _fit(constraints.biggest);
-                                return Stack(
-                                  fit: StackFit.expand,
-                                  children: [
-                                    Listener(
-                                      // raw 层手指计数:标记双指会话(其
-                                      // 余波单指重启不算涂抹),全离手复位
-                                      onPointerDown: (_) {
-                                        _rawPointers++;
-                                        if (_rawPointers >= 2) {
-                                          _pinchSession = true;
-                                        }
-                                      },
-                                      onPointerUp: (_) {
-                                        if (_rawPointers > 0) _rawPointers--;
-                                        if (_rawPointers == 0) {
-                                          _pinchSession = false;
-                                        }
-                                      },
-                                      onPointerCancel: (_) {
-                                        if (_rawPointers > 0) _rawPointers--;
-                                        if (_rawPointers == 0) {
-                                          _pinchSession = false;
-                                        }
-                                      },
-                                      child: GestureDetector(
-                                        behavior: HitTestBehavior.opaque,
-                                        onScaleStart: _onScaleStart,
-                                        onScaleUpdate: _onScaleUpdate,
-                                        onScaleEnd: _onScaleEnd,
-                                        child: CustomPaint(
-                                          painter: _CanvasPainter(
-                                            // 按住对比:显示重绘前的底图
-                                            // (扩图后旧图对位,新增区露画布底=遮挡)
-                                            image:
-                                                _showOriginal &&
-                                                    _prevImg != null
-                                                ? _prevImg!
-                                                : img,
-                                            imageOffset:
-                                                _showOriginal &&
-                                                    _prevImg != null
-                                                ? _prevImgOffset
-                                                : Offset.zero,
-                                            rects: _showOriginal
-                                                ? const []
-                                                : _maskRects,
-                                            maskOutline:
-                                                _showOriginal || !_maskAsOutline
-                                                ? null
-                                                : _maskOutline,
-                                            rev: _rev,
-                                            scale: _scale,
-                                            offset: _offset,
-                                            crop: _showOriginal ? null : _crop,
-                                            cropActive: _cropMode,
-                                            // 扩图可视化(生成中/对比中隐藏)
-                                            expandUi:
-                                                _expandMode &&
-                                                _previewDst == null &&
-                                                !_showOriginal,
-                                            padL: _padL,
-                                            padT: _padT,
-                                            padR: _padR,
-                                            padB: _padB,
-                                            cursor: _showOriginal
-                                                ? null
-                                                : _cursorPoint,
-                                            finger: _showOriginal
-                                                ? null
-                                                : _fingerAt,
-                                            brush: _brush,
-                                            erasing: _tool == _Tool.eraser,
-                                            // 框用主题浅金(容器色),
-                                            // 外缘黑描边兜底可读性
-                                            accent: scheme.primaryContainer,
-                                            onAccent: scheme.onPrimaryContainer,
-                                            preview: _showOriginal
-                                                ? null
-                                                : _previewImg,
-                                            previewDst: _previewDst,
-                                            previewClip: _previewClip,
-                                            // 打码所见即所得(按住对比时让位)
-                                            censorImg:
-                                                _censorMode &&
+                  Expanded(
+                    child: ClipRect(
+                      child: ColoredBox(
+                        // 与图库画布同底色,原地切换视觉连续
+                        color: scheme.surfaceContainerHigh,
+                        child: img == null
+                            ? const Center(child: CircularProgressIndicator())
+                            : LayoutBuilder(
+                                builder: (context, constraints) {
+                                  _fit(constraints.biggest);
+                                  return Stack(
+                                    fit: StackFit.expand,
+                                    children: [
+                                      Listener(
+                                        // raw 层手指计数:标记双指会话(其
+                                        // 余波单指重启不算涂抹),全离手复位
+                                        onPointerDown: (_) {
+                                          _rawPointers++;
+                                          if (_rawPointers >= 2) {
+                                            _pinchSession = true;
+                                          }
+                                        },
+                                        onPointerUp: (_) {
+                                          if (_rawPointers > 0) _rawPointers--;
+                                          if (_rawPointers == 0) {
+                                            _pinchSession = false;
+                                          }
+                                        },
+                                        onPointerCancel: (_) {
+                                          _cropDismissOrigin = null;
+                                          _pendingStroke = null;
+                                          if (_rawPointers > 0) _rawPointers--;
+                                          if (_rawPointers == 0) {
+                                            _pinchSession = false;
+                                          }
+                                        },
+                                        child: GestureDetector(
+                                          behavior: HitTestBehavior.opaque,
+                                          onScaleStart: _onScaleStart,
+                                          onScaleUpdate: _onScaleUpdate,
+                                          onScaleEnd: _onScaleEnd,
+                                          child: MouseRegion(
+                                            onHover: _desktop
+                                                ? (event) {
+                                                    final p = _toImg(
+                                                      event.localPosition,
+                                                    );
+                                                    setState(
+                                                      () => _hoverPoint =
+                                                          _insideImage(p)
+                                                          ? p
+                                                          : null,
+                                                    );
+                                                  }
+                                                : null,
+                                            onExit: _desktop
+                                                ? (_) => setState(
+                                                    () => _hoverPoint = null,
+                                                  )
+                                                : null,
+                                            child: CustomPaint(
+                                              key: const ValueKey(
+                                                'inpaint-editor-canvas',
+                                              ),
+                                              painter: _CanvasPainter(
+                                                // 按住对比:显示重绘前的底图
+                                                // (扩图后旧图对位,新增区露画布底=遮挡)
+                                                image:
+                                                    _showOriginal &&
+                                                        _prevImg != null
+                                                    ? _prevImg!
+                                                    : img,
+                                                imageOffset:
+                                                    _showOriginal &&
+                                                        _prevImg != null
+                                                    ? _prevImgOffset
+                                                    : Offset.zero,
+                                                rects: _showOriginal
+                                                    ? const []
+                                                    : _maskRects,
+                                                maskOutline:
+                                                    _showOriginal ||
+                                                        !_maskAsOutline
+                                                    ? null
+                                                    : _maskOutline,
+                                                rev: _rev,
+                                                scale: _scale,
+                                                offset: _offset,
+                                                crop: _showOriginal
+                                                    ? null
+                                                    : _crop,
+                                                cropActive: _cropMode,
+                                                focusContext: _desktop
+                                                    ? _focusContext
+                                                    : null,
+                                                focusEditing:
+                                                    _desktop &&
+                                                    _tool == _Tool.crop,
+                                                // 扩图可视化(生成中/对比中隐藏)
+                                                expandUi:
+                                                    _expandMode &&
+                                                    _previewDst == null &&
+                                                    !_showOriginal,
+                                                padL: _padL,
+                                                padT: _padT,
+                                                padR: _padR,
+                                                padB: _padB,
+                                                cursor: _showOriginal
+                                                    ? null
+                                                    : _cursorPoint,
+                                                finger: _showOriginal
+                                                    ? null
+                                                    : _fingerAt,
+                                                brush: _brush,
+                                                brushShape: _brushShape,
+                                                erasing: _tool == _Tool.eraser,
+                                                // 框用主题浅金(容器色),
+                                                // 外缘黑描边兜底可读性
+                                                accent: scheme.primaryContainer,
+                                                onAccent:
+                                                    scheme.onPrimaryContainer,
+                                                preview: _showOriginal
+                                                    ? null
+                                                    : _previewImg,
+                                                previewDst: _previewDst,
+                                                previewClip: _previewClip,
+                                                // 打码所见即所得(按住对比时让位)
+                                                censorImg:
+                                                    _censorMode &&
+                                                        !_showOriginal &&
+                                                        _censorStyle ==
+                                                            CensorStyle.mosaic
+                                                    ? _censorPreview
+                                                    : null,
+                                                censorSolid:
+                                                    _censorMode &&
                                                     !_showOriginal &&
                                                     _censorStyle ==
-                                                        CensorStyle.mosaic
-                                                ? _censorPreview
-                                                : null,
-                                            censorSolid:
-                                                _censorMode &&
-                                                !_showOriginal &&
-                                                _censorStyle ==
-                                                    CensorStyle.solid,
-                                            censorColor: Color(_censorColor),
+                                                        CensorStyle.solid,
+                                                censorColor: Color(
+                                                  _censorColor,
+                                                ),
+                                              ),
+                                            ),
                                           ),
                                         ),
                                       ),
-                                    ),
-                                    // 对比按钮与浮动滑杆同踞下缘,滑杆展开时让位
-                                    if (hasPrev && _slider == null)
-                                      Positioned(
-                                        right: 14,
-                                        bottom: 14,
-                                        child: _CompareButton(
-                                          onChanged: (v) =>
-                                              setState(() => _showOriginal = v),
-                                        ),
-                                      ),
-                                    // 浮动滑杆(笔刷/强度):悬浮画布下缘,不顶布局
-                                    Positioned(
-                                      left: 14,
-                                      right: 14,
-                                      bottom: 12,
-                                      child: AnimatedSwitcher(
-                                        duration: Motion.fast,
-                                        switchInCurve: Curves.easeOutCubic,
-                                        switchOutCurve: Curves.easeIn,
-                                        transitionBuilder: (child, anim) =>
-                                            FadeTransition(
-                                              opacity: anim,
-                                              child: SlideTransition(
-                                                position: Tween<Offset>(
-                                                  begin: const Offset(0, .3),
-                                                  end: Offset.zero,
-                                                ).animate(anim),
-                                                child: child,
-                                              ),
+                                      // 对比按钮与浮动滑杆同踞下缘,滑杆展开时让位
+                                      if (hasPrev && _slider == null)
+                                        Positioned(
+                                          right: 14,
+                                          bottom: 14,
+                                          child: _CompareButton(
+                                            onChanged: (v) => setState(
+                                              () => _showOriginal = v,
                                             ),
-                                        child: _slider == null
-                                            ? const SizedBox.shrink(
-                                                key: ValueKey('noslider'),
-                                              )
-                                            : KeyedSubtree(
-                                                key: ValueKey(_slider),
-                                                child: _buildSliderRow(),
-                                              ),
-                                      ),
-                                    ),
-                                  ],
-                                );
-                              },
-                            ),
+                                          ),
+                                        ),
+                                      // 浮动滑杆(笔刷/强度):悬浮画布下缘,不顶布局
+                                      if (!_desktop)
+                                        Positioned(
+                                          left: 14,
+                                          right: 14,
+                                          bottom: 12,
+                                          child: AnimatedSwitcher(
+                                            duration: Motion.fast,
+                                            switchInCurve: Curves.easeOutCubic,
+                                            switchOutCurve: Curves.easeIn,
+                                            transitionBuilder: (child, anim) =>
+                                                FadeTransition(
+                                                  opacity: anim,
+                                                  child: SlideTransition(
+                                                    position: Tween<Offset>(
+                                                      begin: const Offset(
+                                                        0,
+                                                        .3,
+                                                      ),
+                                                      end: Offset.zero,
+                                                    ).animate(anim),
+                                                    child: child,
+                                                  ),
+                                                ),
+                                            child: _slider == null
+                                                ? const SizedBox.shrink(
+                                                    key: ValueKey('noslider'),
+                                                  )
+                                                : KeyedSubtree(
+                                                    key: ValueKey(_slider),
+                                                    child: _buildSliderRow(),
+                                                  ),
+                                          ),
+                                        ),
+                                    ],
+                                  );
+                                },
+                              ),
+                      ),
                     ),
                   ),
-                ),
-                SlideTransition(
-                  position: _panelSlide,
-                  child: _buildBottomPanel(),
-                ),
-              ],
+                  SlideTransition(
+                    position: _panelSlide,
+                    child: _buildBottomPanel(),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
@@ -1535,55 +2015,116 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
+            _buildTools([
+              _ToolBtn(
+                key: const ValueKey('inpaint-tool-brush'),
+                icon: _assist ? Icons.my_location : Icons.brush,
+                label: _assist ? '偏位' : '画笔',
+                active: _tool == _Tool.brush,
+                onTap: () => _tapTool(_Tool.brush),
+              ),
+              _ToolBtn(
+                key: const ValueKey('inpaint-tool-eraser'),
+                icon: Icons.cleaning_services,
+                label: '橡皮',
+                active: _tool == _Tool.eraser,
+                onTap: () => _tapTool(_Tool.eraser),
+              ),
+              if (_desktop) ...[
                 _ToolBtn(
-                  icon: _assist ? Icons.my_location : Icons.brush,
-                  label: _assist ? '偏位' : '画笔',
-                  active: _tool == _Tool.brush,
-                  onTap: () => _tapTool(_Tool.brush),
+                  key: const ValueKey('inpaint-tool-fill'),
+                  icon: Icons.format_color_fill,
+                  label: '整图蒙版',
+                  active: _tool == _Tool.fill,
+                  onTap: () => _tapTool(_Tool.fill),
                 ),
-                _ToolBtn(
-                  icon: Icons.cleaning_services,
-                  label: '橡皮',
-                  active: _tool == _Tool.eraser,
-                  onTap: () => _tapTool(_Tool.eraser),
-                ),
-                // 局部框是「发送范围」,打码不发送 —— 那一格换成样式切换。
-                // (自动识别不在这排,它挂在 CTA 上,见 _buildCensorCta)
                 if (_censorMode)
                   _ToolBtn(
-                    icon: _censorStyle == CensorStyle.mosaic
-                        ? Icons.blur_on
-                        : Icons.square_rounded,
-                    label: _censorStyle.label,
-                    onTap: _toggleCensorStyle,
-                  )
-                else
-                  _ToolBtn(
-                    icon: Icons.crop,
-                    label: '局部',
-                    active: _cropMode,
-                    onTap: _toggleCrop,
+                    key: const ValueKey('inpaint-brush-shape'),
+                    icon: _brushShape == MaskBrushShape.circle
+                        ? Icons.circle_outlined
+                        : Icons.crop_square,
+                    label: _brushShape == MaskBrushShape.circle ? '圆形刷' : '方形刷',
+                    onTap: _toggleBrushShape,
                   ),
-                _ToolBtn(
-                  icon: Icons.undo,
-                  label: '撤销',
-                  enabled: canUndo,
-                  onTap: _undoOnce,
-                ),
-                _ToolBtn(
-                  icon: Icons.restart_alt,
-                  label: '清空',
-                  enabled: canClear,
-                  tint: scheme.error,
-                  onTap: _clearAll,
-                ),
               ],
-            ),
+              // 局部框是「发送范围」,打码不发送 —— 那一格换成样式切换。
+              // (自动识别不在这排,它挂在 CTA 上,见 _buildCensorCta)
+              if (_censorMode)
+                _ToolBtn(
+                  icon: _censorStyle == CensorStyle.mosaic
+                      ? Icons.blur_on
+                      : Icons.square_rounded,
+                  label: _censorStyle.label,
+                  onTap: _toggleCensorStyle,
+                )
+              else
+                _ToolBtn(
+                  key: const ValueKey('inpaint-tool-crop'),
+                  icon: Icons.crop,
+                  label: _desktop ? '框选' : '局部',
+                  active: _desktop ? _tool == _Tool.crop : _cropMode,
+                  onTap: _toggleCrop,
+                ),
+              _ToolBtn(
+                key: const ValueKey('inpaint-undo'),
+                icon: Icons.undo,
+                label: '撤销',
+                enabled: canUndo,
+                onTap: _undoOnce,
+              ),
+              if (_desktop)
+                _ToolBtn(
+                  key: const ValueKey('inpaint-redo'),
+                  icon: Icons.redo,
+                  label: '恢复',
+                  enabled: _redo.isNotEmpty,
+                  onTap: _redoOnce,
+                ),
+              _ToolBtn(
+                key: const ValueKey('inpaint-clear'),
+                icon: Icons.restart_alt,
+                label: '清空',
+                enabled: canClear,
+                tint: scheme.error,
+                onTap: _clearAll,
+              ),
+            ]),
             const SizedBox(height: 10),
-            const GallerySaveTargetRow(compact: true),
+            if (_desktop && _cropMode && !_censorMode) ...[
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 640),
+                    child: _buildFocusControls(),
+                  ),
+                ),
+              ),
+              // 固定验证行高度，避免拖小选框出现错误时画布缩放、落点随之漂移。
+              SizedBox(
+                height: 18,
+                child: _focusError == null
+                    ? null
+                    : Align(
+                        alignment: Alignment.centerLeft,
+                        child: Tooltip(
+                          message: _focusError!,
+                          child: Text(
+                            _focusError!,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(fontSize: 11, color: scheme.error),
+                          ),
+                        ),
+                      ),
+              ),
+            ],
+            if (_desktop)
+              _buildInlineSlider()
+            else
+              const GallerySaveTargetRow(compact: true),
             Row(
               children: [
                 _ParamChip(
@@ -1598,8 +2139,19 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
                   ),
                 ),
                 const SizedBox(width: 8),
-                // 打码:强度换成块大小(纯色模式与块无关,整条隐掉)
-                if (!_censorMode)
+                // 桌面涂抹把刷形放在笔刷旁；手机保留强度入口。
+                // 打码继续使用块大小 / 颜色。
+                if (_desktop && !_censorMode)
+                  _ParamChip(
+                    key: const ValueKey('inpaint-brush-shape'),
+                    icon: _brushShape == MaskBrushShape.circle
+                        ? Icons.circle_outlined
+                        : Icons.crop_square,
+                    label: _brushShape == MaskBrushShape.circle ? '圆形刷' : '方形刷',
+                    active: false,
+                    onTap: _toggleBrushShape,
+                  )
+                else if (!_censorMode)
                   _ParamChip(
                     icon: Icons.tune,
                     label: '强度',
@@ -1639,7 +2191,11 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
                     height: 46,
                     child: _censorMode
                         ? _buildCensorCta()
-                        : _buildCtaArea('保存遮罩', onPressed: _fire),
+                        : _buildCtaArea(
+                            '保存遮罩',
+                            onPressed: _fire,
+                            disabled: _focusError != null,
+                          ),
                   ),
                 ),
               ],
@@ -1650,7 +2206,63 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
     );
   }
 
-  /// 扩图专属底面板:尺寸(点击弹窗直接输入)/强度/重置 + 全宽 CTA。
+  Widget _buildTools(List<Widget> tools) => _desktop
+      ? Align(
+          alignment: Alignment.centerLeft,
+          child: Wrap(spacing: 4, runSpacing: 4, children: tools),
+        )
+      : Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: tools);
+
+  Widget _buildFocusControls() {
+    final scheme = context.scheme;
+    return Container(
+      key: const ValueKey('inpaint-focus-controls'),
+      height: 44,
+      padding: const EdgeInsets.symmetric(horizontal: 10),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: scheme.outlineVariant.withValues(alpha: .7)),
+      ),
+      child: Row(
+        children: [
+          Text(
+            '上下文边距',
+            style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+          ),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: SliderTheme(
+                data: compactSliderTheme,
+                child: Slider(
+                  key: const ValueKey('inpaint-focus-context'),
+                  value: _focusContext.toDouble(),
+                  min: 32,
+                  max: 96,
+                  divisions: 8,
+                  label: '$_focusContext px',
+                  onChangeStart: (_) => _contextUndoSaved = false,
+                  onChanged: _changeFocusContext,
+                  onChangeEnd: (_) => _contextUndoSaved = false,
+                ),
+              ),
+            ),
+          ),
+          SizedBox(
+            width: 42,
+            child: Text(
+              '$_focusContext px',
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 扩图专属底面板:尺寸与重置 + 全宽 CTA；手机另保留强度入口。
   Widget _buildExpandPanel() {
     final scheme = context.scheme;
     final img = _img;
@@ -1663,15 +2275,15 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Row(
-              children: [
-                _ParamChip(
-                  icon: Icons.aspect_ratio,
-                  label: '尺寸',
-                  value: '$tw×$th',
-                  active: _hasExpand,
-                  onTap: _editExpandSize,
-                ),
+            _buildExpandControls([
+              _ParamChip(
+                icon: Icons.aspect_ratio,
+                label: '尺寸',
+                value: '$tw×$th',
+                active: _hasExpand,
+                onTap: _editExpandSize,
+              ),
+              if (!_desktop) ...[
                 const SizedBox(width: 8),
                 _ParamChip(
                   icon: Icons.tune,
@@ -1685,27 +2297,48 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
                   ),
                 ),
                 const Spacer(),
-                Material(
-                  color: scheme.surfaceContainerHigh,
-                  borderRadius: BorderRadius.circular(13),
-                  clipBehavior: Clip.antiAlias,
-                  child: InkWell(
-                    onTap: _hasExpand ? () => setState(_resetPad) : null,
-                    child: SizedBox(
-                      width: 46,
-                      height: 46,
-                      child: Icon(
-                        Icons.restart_alt,
-                        size: 20,
-                        color: _hasExpand
-                            ? scheme.error
-                            : scheme.onSurfaceVariant.withValues(alpha: .35),
-                      ),
+              ],
+              if (_desktop) ...[
+                _ToolBtn(
+                  key: const ValueKey('inpaint-undo'),
+                  icon: Icons.undo,
+                  label: '撤销',
+                  enabled: _undo.isNotEmpty,
+                  onTap: _undoOnce,
+                ),
+                _ToolBtn(
+                  key: const ValueKey('inpaint-redo'),
+                  icon: Icons.redo,
+                  label: '恢复',
+                  enabled: _redo.isNotEmpty,
+                  onTap: _redoOnce,
+                ),
+              ],
+              Material(
+                color: scheme.surfaceContainerHigh,
+                borderRadius: BorderRadius.circular(13),
+                clipBehavior: Clip.antiAlias,
+                child: InkWell(
+                  onTap: _hasExpand
+                      ? () {
+                          _pushUndo();
+                          setState(_resetPad);
+                        }
+                      : null,
+                  child: SizedBox(
+                    width: 46,
+                    height: 46,
+                    child: Icon(
+                      Icons.restart_alt,
+                      size: 20,
+                      color: _hasExpand
+                          ? scheme.error
+                          : scheme.onSurfaceVariant.withValues(alpha: .35),
                     ),
                   ),
                 ),
-              ],
-            ),
+              ),
+            ]),
             const SizedBox(height: 10),
             SizedBox(
               height: 46,
@@ -1717,6 +2350,18 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
       ),
     );
   }
+
+  Widget _buildExpandControls(List<Widget> controls) => _desktop
+      ? Align(
+          alignment: Alignment.centerLeft,
+          child: Wrap(
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 6,
+            runSpacing: 6,
+            children: controls,
+          ),
+        )
+      : Row(children: controls);
 
   /// 存盘 CTA(涂抹与扩图面板共用)。
   ///
@@ -1792,6 +2437,32 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
   Future<void> _editExpandSize() async {
     final img = _img;
     if (img == null) return;
+    if (_desktop) {
+      final added = await showDialog<ExpandMargins>(
+        context: context,
+        builder: (_) => ExpandCanvasDialog(
+          width: img.width + _padL + _padR,
+          height: img.height + _padT + _padB,
+          image: img,
+          existing: _margins,
+        ),
+      );
+      if (added == null || !mounted) return;
+      final next = (
+        left: _padL + added.left,
+        top: _padT + added.top,
+        right: _padR + added.right,
+        bottom: _padB + added.bottom,
+      );
+      final error = expansionError(img.width, img.height, next);
+      if (error != null) {
+        hintSnack(context, error, icon: Icons.straighten);
+        return;
+      }
+      _pushUndo();
+      setState(() => _applyMargins(next));
+      return;
+    }
     final res = await showDialog<({int w, int h})>(
       context: context,
       builder: (_) => _ExpandSizeDialog(
@@ -1806,6 +2477,7 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
     final th = math.max(img.height, (res.h / 64).round() * 64);
     final ux = (tw - img.width) ~/ 64;
     final uy = (th - img.height) ~/ 64;
+    _pushUndo();
     setState(() {
       _padL = ux ~/ 2 * 64;
       _padR = (ux - ux ~/ 2) * 64;
@@ -1814,7 +2486,24 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
     });
   }
 
-  Widget _buildSliderRow() {
+  Widget _buildInlineSlider() => AnimatedSize(
+    duration: Motion.fast,
+    alignment: Alignment.topLeft,
+    child: _slider == null || _slider == _SliderTarget.strength
+        ? const SizedBox(width: double.infinity)
+        : Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 640),
+                child: _buildSliderRow(inline: true),
+              ),
+            ),
+          ),
+  );
+
+  Widget _buildSliderRow({bool inline = false}) {
     final scheme = context.scheme;
     final t = _slider ?? _SliderTarget.brush;
     final title = switch (t) {
@@ -1829,19 +2518,24 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
       _SliderTarget.block => '${_censorBlock * 8}',
     };
     return Container(
-      height: 48,
-      padding: const EdgeInsets.symmetric(horizontal: 14),
+      key: inline ? const ValueKey('inpaint-inline-slider') : null,
+      height: inline ? 44 : 48,
+      padding: EdgeInsets.symmetric(horizontal: inline ? 10 : 14),
       decoration: BoxDecoration(
-        color: scheme.surface.withValues(alpha: .85),
+        color: inline
+            ? scheme.surfaceContainerLow
+            : scheme.surface.withValues(alpha: .85),
         borderRadius: BorderRadius.circular(24),
         border: Border.all(color: scheme.outlineVariant.withValues(alpha: .7)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: .14),
-            blurRadius: 12,
-            offset: const Offset(0, 4),
-          ),
-        ],
+        boxShadow: inline
+            ? null
+            : [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: .14),
+                  blurRadius: 12,
+                  offset: const Offset(0, 4),
+                ),
+              ],
       ),
       child: Row(
         children: [
@@ -1890,6 +2584,7 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
               final v = await showParamInput(
                 context,
                 title: title,
+                snapToDivisions: t != _SliderTarget.strength,
                 value: switch (t) {
                   _SliderTarget.brush => _brush,
                   _SliderTarget.strength => _strength,
@@ -1940,9 +2635,12 @@ class _CanvasPainter extends CustomPainter {
     required this.offset,
     required this.crop,
     required this.cropActive,
+    this.focusContext,
+    this.focusEditing = false,
     required this.cursor,
     required this.finger,
     required this.brush,
+    this.brushShape = MaskBrushShape.square,
     required this.erasing,
     required this.accent,
     required this.onAccent,
@@ -1970,9 +2668,12 @@ class _CanvasPainter extends CustomPainter {
   final Offset offset;
   final IntRect? crop;
   final bool cropActive;
+  final int? focusContext;
+  final bool focusEditing;
   final Offset? cursor; // 图坐标;非空时画笔刷光标(网格方块)
   final Offset? finger; // 偏位套杆的手指把手位置;非空时画把手+连杆
   final double brush;
+  final MaskBrushShape brushShape;
   final bool erasing;
   final Color accent; // 局部框/标签主题色(scheme.primary)
   final Color onAccent; // 标签文字色(scheme.onPrimary)
@@ -2083,81 +2784,85 @@ class _CanvasPainter extends CustomPainter {
         c.w.toDouble(),
         c.h.toDouble(),
       );
-      final iw = image.width.toDouble();
-      final ih = image.height.toDouble();
-      final dim = Paint()..color = const Color(0x66000000);
-      canvas.drawRect(ui.Rect.fromLTRB(0, 0, iw, rect.top), dim);
-      canvas.drawRect(ui.Rect.fromLTRB(0, rect.bottom, iw, ih), dim);
-      canvas.drawRect(
-        ui.Rect.fromLTRB(0, rect.top, rect.left, rect.bottom),
-        dim,
-      );
-      canvas.drawRect(
-        ui.Rect.fromLTRB(rect.right, rect.top, iw, rect.bottom),
-        dim,
-      );
+      if (focusContext != null) {
+        _paintFocusedCrop(canvas, rect);
+      } else {
+        final iw = image.width.toDouble();
+        final ih = image.height.toDouble();
+        final dim = Paint()..color = const Color(0x66000000);
+        canvas.drawRect(ui.Rect.fromLTRB(0, 0, iw, rect.top), dim);
+        canvas.drawRect(ui.Rect.fromLTRB(0, rect.bottom, iw, ih), dim);
+        canvas.drawRect(
+          ui.Rect.fromLTRB(0, rect.top, rect.left, rect.bottom),
+          dim,
+        );
+        canvas.drawRect(
+          ui.Rect.fromLTRB(rect.right, rect.top, iw, rect.bottom),
+          dim,
+        );
 
-      // 框身:一圈虚线,不画三分线。
-      final dashed = _dashPath(Path()..addRect(rect), 7 / scale, 5 / scale);
-      canvas.drawPath(
-        dashed,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..color = Colors.black.withValues(alpha: .45)
-          ..strokeWidth = 3.4 / scale,
-      );
-      canvas.drawPath(
-        dashed,
-        Paint()
-          ..style = PaintingStyle.stroke
+        // 框身:一圈虚线,不画三分线。
+        final dashed = _dashPath(Path()..addRect(rect), 7 / scale, 5 / scale);
+        canvas.drawPath(
+          dashed,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..color = Colors.black.withValues(alpha: .45)
+            ..strokeWidth = 3.4 / scale,
+        );
+        canvas.drawPath(
+          dashed,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..color = accent
+            ..strokeWidth = 1.8 / scale,
+        );
+
+        // 拉杆:四条边中点各一根短杠(单边拉),四个角各一个 L 形角柄
+        // (两条边一起拉)。
+        final barLen = 22 / scale;
+        final arm = 16 / scale;
+        final bar = Paint()
           ..color = accent
-          ..strokeWidth = 1.8 / scale,
-      );
-
-      // 拉杆:四条边中点各一根短杠(单边拉),四个角各一个 L 形角柄
-      // (两条边一起拉)。
-      final barLen = 22 / scale;
-      final arm = 16 / scale;
-      final bar = Paint()
-        ..color = accent
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 4 / scale
-        ..strokeCap = StrokeCap.round
-        ..strokeJoin = StrokeJoin.round;
-      final corners = Path();
-      for (final (x, y, sx, sy) in [
-        (rect.left, rect.top, 1.0, 1.0),
-        (rect.right, rect.top, -1.0, 1.0),
-        (rect.left, rect.bottom, 1.0, -1.0),
-        (rect.right, rect.bottom, -1.0, -1.0),
-      ]) {
-        corners
-          ..moveTo(x + sx * arm, y)
-          ..lineTo(x, y)
-          ..lineTo(x, y + sy * arm);
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 4 / scale
+          ..strokeCap = StrokeCap.round
+          ..strokeJoin = StrokeJoin.round;
+        final corners = Path();
+        for (final (x, y, sx, sy) in [
+          (rect.left, rect.top, 1.0, 1.0),
+          (rect.right, rect.top, -1.0, 1.0),
+          (rect.left, rect.bottom, 1.0, -1.0),
+          (rect.right, rect.bottom, -1.0, -1.0),
+        ]) {
+          corners
+            ..moveTo(x + sx * arm, y)
+            ..lineTo(x, y)
+            ..lineTo(x, y + sy * arm);
+        }
+        canvas.drawPath(corners, bar);
+        final cx = rect.center.dx, cy = rect.center.dy;
+        canvas.drawLine(
+          Offset(cx - barLen / 2, rect.top),
+          Offset(cx + barLen / 2, rect.top),
+          bar,
+        );
+        canvas.drawLine(
+          Offset(cx - barLen / 2, rect.bottom),
+          Offset(cx + barLen / 2, rect.bottom),
+          bar,
+        );
+        canvas.drawLine(
+          Offset(rect.left, cy - barLen / 2),
+          Offset(rect.left, cy + barLen / 2),
+          bar,
+        );
+        canvas.drawLine(
+          Offset(rect.right, cy - barLen / 2),
+          Offset(rect.right, cy + barLen / 2),
+          bar,
+        );
       }
-      canvas.drawPath(corners, bar);
-      final cx = rect.center.dx, cy = rect.center.dy;
-      canvas.drawLine(
-        Offset(cx - barLen / 2, rect.top),
-        Offset(cx + barLen / 2, rect.top),
-        bar,
-      );
-      canvas.drawLine(
-        Offset(cx - barLen / 2, rect.bottom),
-        Offset(cx + barLen / 2, rect.bottom),
-        bar,
-      );
-      canvas.drawLine(
-        Offset(rect.left, cy - barLen / 2),
-        Offset(rect.left, cy + barLen / 2),
-        bar,
-      );
-      canvas.drawLine(
-        Offset(rect.right, cy - barLen / 2),
-        Offset(rect.right, cy + barLen / 2),
-        bar,
-      );
     }
 
     // 笔刷光标(虚线方框,与落格网格严格一致;橡皮用深色描边)
@@ -2173,7 +2878,13 @@ class _CanvasPainter extends CustomPainter {
       final gy = ((cursor!.dy / 8).floor() - half) * 8.0;
       cursorRect = ui.Rect.fromLTWH(gx, gy, gridCount * 8.0, gridCount * 8.0);
       canvas.drawPath(
-        _dashPath(Path()..addRect(cursorRect), 6 / scale, 5 / scale),
+        _dashPath(
+          brushShape == MaskBrushShape.circle
+              ? (Path()..addOval(cursorRect))
+              : (Path()..addRect(cursorRect)),
+          6 / scale,
+          5 / scale,
+        ),
         p,
       );
     }
@@ -2218,14 +2929,113 @@ class _CanvasPainter extends CustomPainter {
 
     // 屏幕空间:裁切尺寸标签(框左上角上方)
     if (c != null && cropActive) {
+      var label = '${c.w}×${c.h}';
+      if (focusContext != null) {
+        try {
+          final send = focusedSendSize(c.w, c.h);
+          label += ' → ${send.width}×${send.height}';
+        } on ArgumentError {
+          // 拖到过窄的临时选区时仍显示选框，底栏提示调整后再保存。
+        }
+      }
       _screenLabel(
         canvas,
-        '${c.w}×${c.h}',
+        label,
         Offset(offset.dx + c.x * scale, offset.dy + c.y * scale - 26),
       );
     }
 
     if (expandUi) _paintExpandHandles(canvas);
+  }
+
+  void _paintFocusedCrop(Canvas canvas, Rect outer) {
+    final c = focusContext!.toDouble();
+    final imageBounds = Rect.fromLTWH(
+      0,
+      0,
+      image.width.toDouble(),
+      image.height.toDouble(),
+    );
+    final inner = outer.deflate(c);
+    final hasInner = inner.width > 0 && inner.height > 0;
+    canvas.save();
+    canvas.clipRect(imageBounds);
+    canvas.drawPath(
+      Path.combine(
+        PathOperation.difference,
+        Path()..addRect(imageBounds),
+        Path()..addRect(outer),
+      ),
+      Paint()..color = const Color(0x66766B7A),
+    );
+    final band = hasInner
+        ? Path.combine(
+            PathOperation.difference,
+            Path()..addRect(outer),
+            Path()..addRect(inner),
+          )
+        : (Path()..addRect(outer));
+    canvas.drawPath(band, Paint()..color = const Color(0x777D4435));
+    canvas.drawRect(
+      outer,
+      Paint()
+        ..color = const Color(0xCC251D1D)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 4 / scale,
+    );
+    canvas.drawRect(
+      outer,
+      Paint()
+        ..color = const Color(0xFFD69F89)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2 / scale,
+    );
+    if (hasInner) {
+      canvas.drawRect(
+        inner,
+        Paint()
+          ..color = const Color(0xFFB8A8EB)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.2 / scale,
+      );
+    }
+    canvas.restore();
+    if (focusEditing) {
+      for (final point in [
+        outer.topLeft,
+        outer.topCenter,
+        outer.topRight,
+        outer.centerLeft,
+        outer.centerRight,
+        outer.bottomLeft,
+        outer.bottomCenter,
+      ]) {
+        canvas.drawRect(
+          Rect.fromCenter(center: point, width: 7 / scale, height: 7 / scale),
+          Paint()..color = const Color(0xFFE8C1AC),
+        );
+      }
+      final grip = _focusResizeGripRect(outer, scale);
+      canvas.drawRect(grip, Paint()..color = const Color(0xB3504B67));
+      canvas.drawRect(
+        grip,
+        Paint()
+          ..color = const Color(0xFF4B405E)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1 / scale,
+      );
+      final mark = Paint()
+        ..color = const Color(0xFFE8DCF4)
+        ..strokeWidth = 1.5 / scale;
+      final gap = grip.width * .15;
+      for (final fraction in [.35, .65]) {
+        canvas.drawLine(
+          Offset(grip.right - grip.width * fraction, grip.bottom - gap),
+          Offset(grip.right - gap, grip.bottom - grip.height * fraction),
+          mark,
+        );
+      }
+    }
   }
 
   /// 图空间的扩图可视化:新增区白底 + 主题色棋盘(将被生成填充的区域),
@@ -2371,6 +3181,8 @@ class _CanvasPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _CanvasPainter old) =>
+      old.focusContext != focusContext ||
+      old.focusEditing != focusEditing ||
       old.image != image ||
       old.imageOffset != imageOffset ||
       // 实心⇄轮廓的切换不改 rev,得单独比
@@ -2388,6 +3200,7 @@ class _CanvasPainter extends CustomPainter {
       old.cursor != cursor ||
       old.finger != finger ||
       old.brush != brush ||
+      old.brushShape != brushShape ||
       old.erasing != erasing ||
       old.accent != accent ||
       old.preview != preview ||
@@ -2512,6 +3325,7 @@ class _SegTab extends StatelessWidget {
 
 class _ToolBtn extends StatelessWidget {
   const _ToolBtn({
+    super.key,
     required this.icon,
     required this.label,
     required this.onTap,
@@ -2570,9 +3384,10 @@ class _ToolBtn extends StatelessWidget {
 
 class _ParamChip extends StatelessWidget {
   const _ParamChip({
+    super.key,
     required this.icon,
     required this.label,
-    required this.value,
+    this.value = '',
     required this.active,
     required this.onTap,
     this.swatch,
@@ -2630,7 +3445,7 @@ class _ParamChip extends StatelessWidget {
                 Icon(icon, size: 15, color: scheme.onSurfaceVariant),
               const SizedBox(width: 6),
               Text(
-                '$label $value',
+                value.isEmpty ? label : '$label $value',
                 style: TextStyle(
                   fontSize: 12.5,
                   fontWeight: FontWeight.w600,

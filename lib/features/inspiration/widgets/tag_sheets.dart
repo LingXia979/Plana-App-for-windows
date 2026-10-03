@@ -7,7 +7,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/auth/bot_session_store.dart';
 import '../../../core/net/backend_client.dart';
+import '../../../core/platform/desktop.dart';
 import '../../../core/theme/app_theme.dart';
+import '../../../core/ui/desktop_popover.dart';
 import '../../../core/ui/import_picker.dart';
 import '../../../core/util/file_read.dart';
 import '../../generate/widgets/common.dart' show confirmDialog, hintSnack;
@@ -44,13 +46,30 @@ Widget _sheetTitle(BuildContext context, IconData icon, String title) {
 
 // ---- 详情 ----
 
-Future<void> showTagDetailSheet(BuildContext context, TagEntry e) =>
-    _sheet(context, _DetailSheet(e));
+Future<void> showTagDetailSheet(BuildContext context, TagEntry e) {
+  if (ProviderScope.containerOf(
+    context,
+    listen: false,
+  ).read(desktopModeProvider)) {
+    return showDialog<void>(
+      context: context,
+      builder: (_) => Dialog(
+        key: const ValueKey('inspiration-detail-dialog'),
+        constraints: const BoxConstraints(maxWidth: 620, maxHeight: 640),
+        insetPadding: const EdgeInsets.all(24),
+        clipBehavior: Clip.antiAlias,
+        child: SizedBox(width: 620, child: _DetailSheet(e, desktop: true)),
+      ),
+    );
+  }
+  return _sheet(context, _DetailSheet(e));
+}
 
 class _DetailSheet extends ConsumerWidget {
-  const _DetailSheet(this.e);
+  const _DetailSheet(this.e, {this.desktop = false});
 
   final TagEntry e;
+  final bool desktop;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -96,6 +115,7 @@ class _DetailSheet extends ConsumerWidget {
                         ),
                       ),
                     ),
+                  if (desktop) const CloseButton(),
                 ],
               ),
             ),
@@ -206,12 +226,20 @@ Future<void> showTagPoolSheet(
   BuildContext context,
   WidgetRef ref,
   TagCategory cat,
-) => _sheet(context, _PoolSheet(cat));
+) => ref.read(desktopModeProvider)
+    ? showDesktopPopover(
+        context,
+        width: 380,
+        maxHeight: 440,
+        builder: (_) => _PoolSheet(cat, desktop: true),
+      )
+    : _sheet(context, _PoolSheet(cat));
 
 class _PoolSheet extends ConsumerStatefulWidget {
-  const _PoolSheet(this.cat);
+  const _PoolSheet(this.cat, {this.desktop = false});
 
   final TagCategory cat;
+  final bool desktop;
 
   @override
   ConsumerState<_PoolSheet> createState() => _PoolSheetState();
@@ -256,7 +284,19 @@ class _PoolSheetState extends ConsumerState<_PoolSheet> {
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(18, 14, 18, 8),
-            child: _sheetTitle(context, Icons.tune, '${def.label}标签池'),
+            child: Row(
+              children: [
+                Expanded(
+                  child: _sheetTitle(context, Icons.tune, '${def.label}标签池'),
+                ),
+                if (widget.desktop)
+                  IconButton(
+                    tooltip: '关闭',
+                    icon: const Icon(Icons.close, size: 18),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+              ],
+            ),
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(18, 0, 18, 8),
@@ -335,7 +375,7 @@ class _PoolSheetState extends ConsumerState<_PoolSheet> {
                                       message: '$n 个条目会摘掉该标签,条目本身保留。',
                                       confirmLabel: '删除',
                                     );
-                                if (ok) {
+                                if (ok && mounted) {
                                   await notifier.removePoolTag(widget.cat, t);
                                 }
                               },
@@ -458,10 +498,29 @@ class _TagPickSheetState extends ConsumerState<_TagPickSheet> {
 // ---- 数据备份 ----
 
 Future<void> showTagBackupSheet(BuildContext context, WidgetRef ref) =>
-    _sheet(context, const _BackupSheet());
+    ref.read(desktopModeProvider)
+    ? showDialog<void>(
+        context: context,
+        barrierColor: Colors.black.withValues(alpha: .16),
+        builder: (_) => Dialog(
+          key: const ValueKey('tag-backup-dialog'),
+          insetPadding: const EdgeInsets.all(24),
+          backgroundColor: context.scheme.surfaceContainerLow,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(18),
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 540, maxHeight: 620),
+            child: const _BackupSheet(desktop: true),
+          ),
+        ),
+      )
+    : _sheet(context, const _BackupSheet());
 
 class _BackupSheet extends ConsumerStatefulWidget {
-  const _BackupSheet();
+  const _BackupSheet({this.desktop = false});
+  final bool desktop;
 
   @override
   ConsumerState<_BackupSheet> createState() => _BackupSheetState();
@@ -483,6 +542,7 @@ class _BackupSheetState extends ConsumerState<_BackupSheet> {
 
   /// 打开即拉一次云端状态,好让本地/云端并排对照(对齐 web loadStats)。
   Future<void> _loadCloud() async {
+    if (!mounted) return;
     final session = ref.read(botSessionProvider).value;
     if (session == null) {
       if (mounted) setState(() => _loading = false);
@@ -538,7 +598,7 @@ class _BackupSheetState extends ConsumerState<_BackupSheet> {
           : '本地 $n 个条目将上传为云端备份(本机预览图不随备份上传)。',
       confirmLabel: '上传',
     );
-    if (!ok) return;
+    if (!ok || !mounted) return;
     final client = ref.read(backendClientProvider);
     await client.uploadTagBackup(sessionId: sid, categories: categories);
     final detail = _detailLine({
@@ -583,7 +643,7 @@ class _BackupSheetState extends ConsumerState<_BackupSheet> {
           '(按 id 合并,本地独有的条目保留)。',
       confirmLabel: '继续恢复',
     );
-    if (!ok) return;
+    if (!ok || !mounted) return;
     final stat = await lib.mergeBackup(r.categories);
     final detail = _detailLine({
       for (final e in stat.entries)
@@ -647,6 +707,7 @@ class _BackupSheetState extends ConsumerState<_BackupSheet> {
     setState(() => _busy = 'file');
     try {
       final j = await readPickedJson(file);
+      if (!mounted) return;
       if (j is! Map<String, dynamic>) {
         throw const FormatException('不是有效的 JSON 备份文件');
       }
@@ -773,6 +834,12 @@ class _BackupSheetState extends ConsumerState<_BackupSheet> {
                     width: 18,
                     height: 18,
                     child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                if (widget.desktop)
+                  IconButton(
+                    tooltip: '关闭',
+                    icon: const Icon(Icons.close, size: 18),
+                    onPressed: () => Navigator.pop(context),
                   ),
               ],
             ),

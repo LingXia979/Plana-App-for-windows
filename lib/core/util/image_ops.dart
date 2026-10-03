@@ -12,6 +12,7 @@ Future<(int, int)> decodeImageSize(Uint8List bytes) async {
   final img = frame.image;
   final size = (img.width, img.height);
   img.dispose();
+  codec.dispose();
   return size;
 }
 

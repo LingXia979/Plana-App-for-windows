@@ -2,16 +2,11 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
-import 'package:flutter/gestures.dart' show DragStartBehavior, HitTestResult;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart'
-    show
-        RenderMetaData,
-        SliverConstraints,
-        SliverGridGeometry,
-        SliverGridLayout;
-import 'package:flutter/scheduler.dart' show Ticker;
-import 'package:flutter/services.dart' show PlatformException;
+    show SliverConstraints, SliverGridGeometry, SliverGridLayout;
+import 'package:flutter/services.dart'
+    show KeyDownEvent, KeyEvent, LogicalKeyboardKey, PlatformException;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gal/gal.dart';
 import 'package:share_plus/share_plus.dart';
@@ -23,12 +18,18 @@ import '../../../core/util/document_save.dart';
 import '../../generate/widgets/common.dart'
     show ExpandBody, hintSnack, sharedAxisRoute;
 import '../../import/import_panel.dart';
-import '../gallery_dates.dart';
+import '../../generate/generation_controller.dart';
+import '../../desktop/desktop_library_state.dart';
 import '../gallery_date_filter.dart';
 import '../albums/album_state.dart';
 import '../albums/album_ui.dart';
 import '../albums/album_organize_sheet.dart';
+import '../albums/gallery_transfer_dialog.dart';
 import 'gallery_date_sheet.dart';
+import 'gallery_output_folder_button.dart';
+import 'gallery_export_dialog.dart';
+import 'gallery_drag_selection.dart';
+import 'gallery_image_tile.dart';
 import '../gallery_groups.dart';
 import '../gallery_search.dart';
 import '../gallery_state.dart';
@@ -38,28 +39,92 @@ import '../save_pipeline.dart';
 import '../save_settings.dart';
 import '../share_pipeline.dart';
 import 'album_name_sheet.dart';
-import 'result_badge_chip.dart';
 import 'result_thumb.dart';
 import 'zip_pack_sheet.dart';
 import '../../../core/util/haptics.dart';
+
+typedef GalleryLibraryChooser =
+    void Function(BuildContext context, WidgetRef ref);
 
 /// 「›」展开:全部作品网格弹层。默认按时间分段;可切成**按角色 / 按画风堆叠**
 /// —— 一个角色(或一个画风)收成一张封面卡,点开才展开该堆的网格
 /// (归属见 gallery_groups,全程离线)。
 /// 可按模型/时间筛选、按提示词标签搜索(数据源 gallery_search 检索索引,
 /// 筛选条件全 AND 组合)。
-/// 点选一张即回填画布并关闭;长按弹出该张的导入 / 保存 / 删除菜单。
-/// 多选只从右上角「多选」进,段头可整段全选,底部批量保存相册 / 分享 /
-/// 打包 ZIP / 批量删除 —— 批量操作只作用于当前可见集合。
-Future<void> showGalleryGrid(BuildContext context) =>
-    showModalBottomSheet<void>(
+/// 点选一张即回填画布并关闭;手机长按弹出该张的导入 / 保存 / 删除菜单。
+/// 桌面快速浏览与图库详情支持鼠标按下后小位移进入多选，触摸仍长按 200ms;
+/// 进入多选后可继续拖动勾选，右键打开图片菜单;
+/// 段头可整段全选,底部批量保存相册 / 分享 /
+/// 打包 ZIP / 批量删除。导出所选后，可按确认的选项清理整个当前图库。
+Future<void> showGalleryGrid(
+  BuildContext context, {
+  bool desktop = false,
+  GalleryLibraryChooser? onChooseAlbum,
+}) {
+  if (desktop) {
+    final contentKey = GlobalKey<GalleryGridContentState>();
+    return showDialog<void>(
       context: context,
-      isScrollControlled: true,
-      builder: (_) => const _GalleryGridSheet(),
+      builder: (dialogContext) => Focus(
+        // The close button is outside the grid's own focus subtree. Keep the
+        // same Escape behavior when keyboard navigation lands on that button.
+        onKeyEvent: (node, event) =>
+            contentKey.currentState?._onDesktopKey(node, event) ??
+            KeyEventResult.ignored,
+        child: Dialog(
+          insetPadding: const EdgeInsets.all(32),
+          child: SizedBox(
+            key: const ValueKey('desktop-quick-gallery'),
+            width: 1160,
+            height: 820,
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 10, 10, 4),
+                  child: Row(
+                    children: [
+                      const Expanded(
+                        child: Text(
+                          '快速浏览与批量导出',
+                          style: TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: '关闭快速浏览',
+                        onPressed: () => Navigator.pop(dialogContext),
+                        icon: const Icon(Icons.close),
+                      ),
+                    ],
+                  ),
+                ),
+                const Divider(height: 1),
+                Expanded(
+                  child: GalleryGridContent(
+                    key: contentKey,
+                    desktop: true,
+                    embedded: true,
+                    onChooseAlbum: onChooseAlbum,
+                    onClose: () => Navigator.pop(dialogContext),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
+  }
+  return showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    builder: (_) => const GalleryGridContent(),
+  );
+}
 
-/// 「全部图库」首次打开时提一次长按 —— 网格里点一下是选中回填画布,
-/// 长按才是放大预览 + 导入/保存/删除那套,不说没人会去按。
+/// 首次打开快速浏览时说明当前平台的长按与右键操作。
 const _kGridHintKey = 'hint_grid_longpress';
 
 /// 弹层的会话内记忆:关掉再打开,回到上次停的地方 —— 还在那一堆里、还是那个
@@ -93,22 +158,66 @@ class _GridMemory {
 
 final _gridMemories = <String, _GridMemory>{};
 
-class _GalleryGridSheet extends ConsumerStatefulWidget {
-  const _GalleryGridSheet();
+/// The full library page uses the same filters and batch operations as quick
+/// browse, while keeping its own library scope and opening image details.
+class GalleryGridBrowser {
+  const GalleryGridBrowser({
+    required this.albumId,
+    required this.title,
+    required this.onBack,
+    required this.onOpenImage,
+  });
 
-  @override
-  ConsumerState<_GalleryGridSheet> createState() => _GalleryGridSheetState();
+  final String? albumId;
+  final String title;
+  final VoidCallback onBack;
+  final void Function(List<ResultImage> images, int index) onOpenImage;
 }
 
-class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
+class GalleryGridContent extends ConsumerStatefulWidget {
+  const GalleryGridContent({
+    super.key,
+    this.embedded = false,
+    this.desktop = false,
+    this.onClose,
+    this.onChooseAlbum,
+    this.libraryLabel,
+    this.browser,
+  });
+
+  final bool embedded;
+  final bool desktop;
+  final VoidCallback? onClose;
+  final GalleryLibraryChooser? onChooseAlbum;
+  final String? libraryLabel;
+  final GalleryGridBrowser? browser;
+
+  @override
+  ConsumerState<GalleryGridContent> createState() => GalleryGridContentState();
+}
+
+class GalleryGridContentState extends ConsumerState<GalleryGridContent>
     with TickerProviderStateMixin, WidgetsBindingObserver {
+  void _close() {
+    if (widget.embedded) {
+      widget.onClose?.call();
+    } else {
+      Navigator.of(context).pop();
+    }
+  }
+
   bool _selecting = false;
   final Set<String> _picked = {};
   bool _saving = false;
   bool _sharing = false;
   bool _zipping = false;
   bool _organizing = false;
-  late String _scopeKey = ref.read(galleryBrowseAlbumProvider) ?? '';
+  String? get _scope => widget.browser != null
+      ? widget.browser!.albumId
+      : ref.read(galleryBrowseAlbumProvider);
+  late String _scopeKey = _scope ?? '';
+  String get _memoryKey =>
+      '${widget.browser == null ? 'quick' : 'page'}:$_scopeKey';
   // 保存 / 分享 / 打包共用这对计数(三件事不会同时跑,canAct 互斥)
   int _saveDone = 0;
   int _saveTotal = 0;
@@ -118,12 +227,19 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
   // 焦点显式管理:搜索框在 ExpandBody 里是**常驻构建**的(只是高度收成 0),
   // 用 autofocus 会在弹层一打开就抢焦点弹键盘 —— 用户还没想搜。
   final _searchFocus = FocusNode();
+  final _keyboardFocus = FocusNode(debugLabel: 'Gallery selection');
+  final _groupAnchor = GlobalKey();
+  final _modelAnchor = GlobalKey();
+  final _dateAnchor = GlobalKey();
   Timer? _searchDebounce;
   bool _searchOpen = false;
   String _query = '';
   String? _modelFilter; // null=全部;''=未知(无参数快照的老图)
+  bool _favoritesOnly = false;
   // 保存日历日期；相对日期跨日与恢复前台时重新计算。
-  late GalleryDateFilter _dateFilter = ref.read(uiPrefsProvider).dateFilter;
+  late GalleryDateFilter _dateFilter = widget.browser == null
+      ? ref.read(uiPrefsProvider).dateFilter
+      : const GalleryDateFilter.all();
   late final Timer _dateTick;
 
   // 分组维度,同样记住上次的。存的是枚举名,不是下标 —— 将来插一档不会把
@@ -237,26 +353,46 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
   Widget _batchActions(bool canAct) => LayoutBuilder(
     builder: (context, size) {
       final scale = MediaQuery.textScalerOf(context).scale(14) / 14;
-      final columns = size.maxWidth < 340 || scale > 1.2 ? 2 : 3;
+      final columns = widget.desktop && size.maxWidth >= 700 && scale <= 1.2
+          ? 5
+          : size.maxWidth < 340 || scale > 1.2
+          ? 2
+          : 3;
       final width = (size.maxWidth - _actGap * (columns - 1)) / columns;
       final primary = FilledButton.styleFrom(
         padding: const EdgeInsets.symmetric(horizontal: 8),
       );
       final buttons = <Widget>[
         FilledButton.tonalIcon(
+          key: const ValueKey('gallery-batch-export'),
           style: primary,
           onPressed: canAct ? _downloadPicked : null,
           icon: const Icon(Icons.download, size: 19),
           label: _fitLabel(
-            _saving ? '保存中 $_saveDone/$_saveTotal' : '保存 (${_picked.length})',
+            _saving
+                ? '保存中 $_saveDone/$_saveTotal'
+                : '${widget.desktop ? '导出图片' : '保存'} (${_picked.length})',
           ),
         ),
         FilledButton.tonalIcon(
+          key: const ValueKey('gallery-batch-move'),
           style: primary,
-          onPressed: canAct ? _organizePicked : null,
+          onPressed: canAct
+              ? widget.desktop
+                    ? () => _transferPicked(copy: false)
+                    : _organizePicked
+              : null,
           icon: const Icon(Icons.drive_file_move_outline, size: 18),
           label: _fitLabel('移动 (${_picked.length})'),
         ),
+        if (widget.desktop)
+          FilledButton.tonalIcon(
+            key: const ValueKey('gallery-batch-copy'),
+            style: primary,
+            onPressed: canAct ? () => _transferPicked(copy: true) : null,
+            icon: const Icon(Icons.copy_outlined, size: 18),
+            label: _fitLabel('复制 (${_picked.length})'),
+          ),
         FilledButton.icon(
           style: FilledButton.styleFrom(
             padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -267,24 +403,26 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
           icon: const Icon(Icons.delete_outline, size: 19),
           label: _fitLabel('删除 (${_picked.length})'),
         ),
-        OutlinedButton.icon(
-          style: _subActBtn,
-          onPressed: canAct ? _sharePicked : null,
-          icon: _sharing
-              ? const SizedBox(
-                  width: 15,
-                  height: 15,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : const Icon(Icons.ios_share, size: 17),
-          label: _fitLabel(_sharing ? '准备 $_saveDone/$_saveTotal' : '分享'),
-        ),
-        OutlinedButton.icon(
-          style: _subActBtn,
-          onPressed: canAct ? _downloadToAlbum : null,
-          icon: const Icon(Icons.photo_album_outlined, size: 17),
-          label: _fitLabel('手机相册'),
-        ),
+        if (!widget.desktop)
+          OutlinedButton.icon(
+            style: _subActBtn,
+            onPressed: canAct ? _sharePicked : null,
+            icon: _sharing
+                ? const SizedBox(
+                    width: 15,
+                    height: 15,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.ios_share, size: 17),
+            label: _fitLabel(_sharing ? '准备 $_saveDone/$_saveTotal' : '分享'),
+          ),
+        if (!widget.embedded && !widget.desktop)
+          OutlinedButton.icon(
+            style: _subActBtn,
+            onPressed: canAct ? _downloadToAlbum : null,
+            icon: const Icon(Icons.photo_album_outlined, size: 17),
+            label: _fitLabel('手机相册'),
+          ),
         OutlinedButton.icon(
           style: _subActBtn,
           onPressed: canAct ? _zipPicked : null,
@@ -306,7 +444,7 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
             SizedBox(
               width: width,
               height: math.max(
-                columns == 2 || i < 3 ? _actH : _actSubH,
+                widget.desktop || columns == 2 || i < 3 ? _actH : _actSubH,
                 20 * scale + 20,
               ),
               child: buttons[i],
@@ -335,12 +473,13 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
     _open.addListener(_onOpenTick);
     _ctrl.addListener(_remember);
     // 换过分组维度的记忆不认:那一堆、那个位置在这个维度下都不存在
-    final memory = _gridMemories[_scopeKey];
+    final memory = _gridMemories[_memoryKey];
     if (memory != null && memory.groupBy == _groupBy) {
       _openKey = memory.openKey;
       _wallOffset = memory.wallOffset;
       WidgetsBinding.instance.addPostFrameCallback((_) => _restore(memory));
     }
+    if (widget.browser != null) return;
     final prefs = ref.read(prefsStoreProvider);
     if (prefs.get(_kGridHintKey) != null) return;
     prefs.write(key: _kGridHintKey, value: '1');
@@ -349,8 +488,12 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
       if (mounted) {
         hintSnack(
           context,
-          '长按一张图可放大预览,并导入 / 保存 / 删除',
-          icon: Icons.touch_app_outlined,
+          widget.desktop
+              ? '长按 0.2 秒进入多选；右键图片可预览、复用参数、保存或删除'
+              : '长按一张图可放大预览,并导入 / 保存 / 删除',
+          icon: widget.embedded
+              ? Icons.mouse_outlined
+              : Icons.touch_app_outlined,
         );
       }
     });
@@ -428,7 +571,7 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
     final p = _ctrl.position;
     if (!p.hasContentDimensions) return;
     // 认 build 里真在显示的,不认 _openKey:那一堆被筛没了时键还留着,画面却是墙
-    _gridMemories[_scopeKey] = _GridMemory(
+    _gridMemories[_memoryKey] = _GridMemory(
       groupBy: _groupBy,
       openKey: _inStack ? _openKey : null,
       offset: p.pixels,
@@ -516,13 +659,13 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _dateTick.cancel();
-    _edgeTicker?.dispose();
     _morph.dispose();
     _open.dispose();
     _ctrl.dispose();
     _searchDebounce?.cancel();
     _searchCtrl.dispose();
     _searchFocus.dispose();
+    _keyboardFocus.dispose();
     super.dispose();
   }
 
@@ -560,6 +703,14 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
   ) {
     if (terms.isEmpty) return true;
     final meta = byId[r.id];
+    if (widget.desktop || widget.browser != null) {
+      return searchMatch(
+        normalizeSearchText(
+          '${r.id} ${r.seed} ${meta?.text ?? r.input?.prompt ?? ''}',
+        ),
+        terms,
+      );
+    }
     return meta != null && searchMatch(meta.text, terms);
   }
 
@@ -570,16 +721,38 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
     required List<(String, T, int?)> options,
     required T current,
     required ValueChanged<T> onPick,
+    required GlobalKey anchor,
   }) async {
     final scheme = context.scheme;
     // 弹层关闭后焦点会回落到搜索框(它一直在树里),不先收就会顺带弹出键盘
     _searchFocus.unfocus();
-    final picked = await showModalBottomSheet<(T,)>(
-      context: context,
-      isScrollControlled: true,
-      constraints: BoxConstraints(
-        maxHeight: MediaQuery.sizeOf(context).height * .85,
-      ),
+    if (widget.desktop) {
+      final picked = await showMenu<(T,)>(
+        context: context,
+        position: _filterPosition(anchor),
+        semanticLabel: title,
+        constraints: const BoxConstraints(minWidth: 200, maxWidth: 320),
+        items: [
+          for (final (label, value, count) in options)
+            PopupMenuItem(
+              value: (value,),
+              child: Row(
+                children: [
+                  Expanded(child: Text(label)),
+                  const SizedBox(width: 12),
+                  if (value == current)
+                    Icon(Icons.check, size: 18, color: scheme.primary)
+                  else if (count != null)
+                    Text('$count', style: context.texts.bodySmall),
+                ],
+              ),
+            ),
+        ],
+      );
+      if (picked != null && mounted) onPick(picked.$1);
+      return;
+    }
+    final picked = await _showFilter<(T,)>(
       builder: (ctx) => SafeArea(
         child: SingleChildScrollView(
           child: Column(
@@ -622,7 +795,35 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
         ),
       ),
     );
-    if (picked != null) onPick(picked.$1);
+    if (picked != null && mounted) onPick(picked.$1);
+  }
+
+  RelativeRect _filterPosition(GlobalKey anchor) {
+    final overlay =
+        Navigator.of(context).overlay!.context.findRenderObject() as RenderBox;
+    final button = anchor.currentContext!.findRenderObject() as RenderBox;
+    final origin = button.localToGlobal(Offset.zero, ancestor: overlay);
+    return RelativeRect.fromRect(
+      Rect.fromLTWH(
+        origin.dx,
+        origin.dy + button.size.height + 4,
+        button.size.width,
+        0,
+      ),
+      Offset.zero & overlay.size,
+    );
+  }
+
+  Future<T?> _showFilter<T>({required WidgetBuilder builder}) {
+    final constraints = BoxConstraints(
+      maxHeight: MediaQuery.sizeOf(context).height * .85,
+    );
+    return showModalBottomSheet<T>(
+      context: context,
+      isScrollControlled: true,
+      constraints: constraints,
+      builder: builder,
+    );
   }
 
   void _pickModelFilter(
@@ -640,6 +841,7 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
     ]..sort((a, b) => counts[b]!.compareTo(counts[a]!));
     _pickFilter<String?>(
       title: '按模型筛选',
+      anchor: _modelAnchor,
       current: _modelFilter,
       options: [
         ('全部', null, null),
@@ -652,7 +854,12 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
 
   Future<void> _pickTimeFilter() async {
     _searchFocus.unfocus();
-    final filter = await showGalleryDateFilter(context, _dateFilter);
+    final filter = await showGalleryDateFilter(
+      context,
+      _dateFilter,
+      desktop: widget.desktop,
+      menuPosition: widget.desktop ? _filterPosition(_dateAnchor) : null,
+    );
     if (filter == null || !mounted) return;
     ref
         .read(uiPrefsProvider.notifier)
@@ -681,6 +888,7 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
     setState(() {
       _query = '';
       _modelFilter = null;
+      _favoritesOnly = false;
       _dateFilter = const GalleryDateFilter.all();
     });
   }
@@ -693,7 +901,7 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
       final change = await showAlbumOrganize(
         context,
         Set.of(_picked),
-        sourceAlbum: ref.read(galleryBrowseAlbumProvider),
+        sourceAlbum: _scope,
       );
       if (change == null || !mounted) return;
       _picked.clear();
@@ -719,11 +927,28 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
     }
   }
 
+  Future<void> _transferPicked({required bool copy, Set<String>? only}) async {
+    if (_organizing) return;
+    setState(() => _organizing = true);
+    try {
+      final change = await showGalleryTransfer(
+        context,
+        Set.of(only ?? _picked),
+        copy: copy,
+        sourceAlbum: _scope,
+      );
+      if (change != null && mounted && only == null) _picked.clear();
+    } finally {
+      if (mounted) setState(() => _organizing = false);
+    }
+  }
+
   void _pickGroupBy() {
     // 不带计数:算另外两个维度的归属要把它们的 provider 都拉起来,而用户只是
     // 想换个分组。归不了的有多少,封面墙上那堆「未归类」自己会说。
     _pickFilter<GalleryGroupBy>(
       title: '分组方式',
+      anchor: _groupAnchor,
       current: _groupBy,
       options: [
         ('不分组', GalleryGroupBy.day, null),
@@ -744,12 +969,14 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
 
   Widget _chip(
     ColorScheme scheme, {
+    Key? key,
     required String label,
     required bool active,
     required VoidCallback onTap,
   }) {
     final fg = active ? scheme.onSecondaryContainer : scheme.onSurfaceVariant;
     return Material(
+      key: key,
       color: active ? scheme.secondaryContainer : scheme.surfaceContainerHigh,
       borderRadius: BorderRadius.circular(16),
       clipBehavior: Clip.antiAlias,
@@ -776,49 +1003,208 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
     );
   }
 
+  Widget _desktopFilters(
+    List<ResultImage> results,
+    GallerySearchState search,
+    DateTime now,
+  ) => Padding(
+    padding: const EdgeInsets.fromLTRB(16, 6, 16, 14),
+    child: LayoutBuilder(
+      builder: (context, constraints) => Wrap(
+        spacing: 12,
+        runSpacing: 10,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          SizedBox(
+            width: math.min(440, constraints.maxWidth),
+            child: TextField(
+              key: ValueKey(
+                widget.browser == null
+                    ? 'quick-gallery-search'
+                    : 'desktop-gallery-search',
+              ),
+              controller: _searchCtrl,
+              focusNode: _searchFocus,
+              onChanged: _onSearchChanged,
+              decoration: InputDecoration(
+                isDense: true,
+                prefixIcon: const Icon(Icons.search, size: 20),
+                hintText: '搜索提示词、种子或图片编号…',
+                suffixIcon: _searchCtrl.text.isEmpty
+                    ? null
+                    : IconButton(
+                        tooltip: '清除搜索',
+                        onPressed: () {
+                          _searchCtrl.clear();
+                          _onSearchChanged('');
+                        },
+                        icon: const Icon(Icons.close, size: 18),
+                      ),
+              ),
+            ),
+          ),
+          Wrap(
+            spacing: 12,
+            runSpacing: 10,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              SizedBox(
+                key: _dateAnchor,
+                child: OutlinedButton.icon(
+                  key: const ValueKey('desktop-gallery-date'),
+                  onPressed: _pickTimeFilter,
+                  icon: const Icon(Icons.calendar_month_outlined, size: 18),
+                  label: Text(
+                    _dateFilter.active ? _dateFilter.label(now) : '全部时间',
+                  ),
+                ),
+              ),
+              const GalleryOutputFolderButton(),
+            ],
+          ),
+          if (widget.browser == null)
+            _chip(
+              context.scheme,
+              key: const ValueKey('quick-gallery-library'),
+              label: '切换图库',
+              active: _scope != null,
+              onTap: _chooseAlbum,
+            ),
+          _chip(
+            context.scheme,
+            key: _groupAnchor,
+            label: _groupBy.stacked ? _groupBy.label : '分组',
+            active: _groupBy.stacked,
+            onTap: _pickGroupBy,
+          ),
+          _chip(
+            context.scheme,
+            key: _modelAnchor,
+            label: _modelFilter == null
+                ? '模型'
+                : (_modelFilter!.isEmpty ? '未知' : _modelFilter!),
+            active: _modelFilter != null,
+            onTap: () => _pickModelFilter(results, search.byId),
+          ),
+          FilterChip(
+            key: const ValueKey('gallery-favorites-filter'),
+            avatar: Icon(
+              _favoritesOnly ? Icons.star : Icons.star_border,
+              size: 18,
+              color: _favoritesOnly ? Colors.amber.shade800 : null,
+            ),
+            label: const Text('收藏'),
+            selected: _favoritesOnly,
+            showCheckmark: false,
+            onSelected: (value) {
+              _dragSelectionKey.currentState?.cancel();
+              setState(() => _favoritesOnly = value);
+            },
+          ),
+          if (search.building)
+            Text(
+              '索引 ${search.done}/${search.total}',
+              style: context.texts.bodySmall,
+            ),
+        ],
+      ),
+    ),
+  );
+
+  void _chooseAlbum() {
+    final choose = widget.onChooseAlbum;
+    if (choose != null) {
+      choose(context, ref);
+    } else {
+      showAlbumLibrary(context);
+    }
+  }
+
   /// 一段图的网格 sliver。分段列表与点开的单堆共用 —— 两边的交互(点选回填、
   /// 长按菜单、拖选的 MetaData 反查)必须逐条一致,写两遍迟早走岔。
   ///
   /// 缩略图本体还各带 5(描边 2.5 + 让位 2.5)的内缩,所以图与图之间实际留白 =
   /// 这里的 spacing + 10。收到 6 之后是 16,省下的宽度全给图。
-  Widget _gridSliver(List<ResultImage> items, String? selectedId) =>
-      SliverPadding(
-        padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
-        sliver: SliverGrid(
-          gridDelegate: _zoomDelegate(
-            (cols) => SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: cols,
-              mainAxisSpacing: 6,
-              crossAxisSpacing: 6,
-            ),
+  Widget _gridSliver(
+    List<ResultImage> items,
+    String? selectedId,
+    List<ResultImage> viewing,
+  ) => SliverPadding(
+    padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+    sliver: SliverLayoutBuilder(
+      builder: (_, constraints) => SliverGrid(
+        gridDelegate: _zoomDelegate(
+          (cols) => SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: cols,
+            mainAxisSpacing: 6,
+            crossAxisSpacing: 6,
           ),
-          delegate: SliverChildBuilderDelegate((_, i) {
-            final r = items[i];
-            // 拖选靠命中路径反查这个 id,见 _idAt
-            return MetaData(
-              metaData: r.id,
-              child: _GridThumb(
-                result: r,
-                selected: !_selecting && r.id == selectedId,
-                picked: _selecting && _picked.contains(r.id),
-                selecting: _selecting,
-                onTap: () {
-                  if (_selecting) {
-                    _toggle(r.id);
-                  } else {
-                    ref.read(galleryProvider.notifier).select(r.id);
-                    Navigator.of(context).pop();
-                  }
-                },
-                // 捏合期间也关:两指按住不动够 500ms 就会在其中一张上弹菜单
-                onLongPress: _selecting || _pinching
-                    ? null
-                    : (from) => _thumbMenu(r.id, from),
-              ),
-            );
-          }, childCount: items.length),
+          width: constraints.crossAxisExtent,
         ),
-      );
+        delegate: SliverChildBuilderDelegate((_, i) {
+          final r = items[i];
+          // Shared range selection resolves each tile through this ID.
+          return MetaData(
+            metaData: r.id,
+            child: GalleryImageTile(
+              key: ValueKey(
+                '${widget.browser == null ? 'quick-gallery-image' : 'desktop-image'}-${r.id}',
+              ),
+              fit: widget.desktop ? BoxFit.contain : BoxFit.cover,
+              result: r,
+              selected: !_selecting && r.id == selectedId,
+              picked: _selecting && _picked.contains(r.id),
+              selecting: _selecting,
+              mouseDragSelect: widget.desktop || widget.browser != null,
+              onFavorite: widget.desktop
+                  ? () =>
+                        ref.read(galleryProvider.notifier).toggleFavorite(r.id)
+                  : null,
+              onTap: () {
+                if (_selecting) {
+                  _toggle(r.id);
+                } else if (widget.browser != null) {
+                  widget.browser!.onOpenImage(
+                    viewing,
+                    viewing.indexWhere((image) => image.id == r.id),
+                  );
+                } else {
+                  if (widget.desktop) {
+                    ref.read(generationProvider.notifier).select(null);
+                    ref.read(galleryResultPreviewProvider.notifier).clear();
+                  }
+                  ref.read(galleryProvider.notifier).select(r.id);
+                  _close();
+                }
+              },
+              longPressDuration: widget.desktop || widget.browser != null
+                  ? gallerySelectionHold
+                  : const Duration(milliseconds: 500),
+              onLongPress: _pinching
+                  ? null
+                  : widget.desktop || widget.browser != null
+                  ? (_) {
+                      if (_pinching) return;
+                      setState(() => _selecting = true);
+                      if (!(_dragSelectionKey.currentState?.beginHold(r.id) ??
+                          false)) {
+                        _enterSelect(r.id);
+                      }
+                    }
+                  : _selecting
+                  ? null
+                  : (from) => _thumbMenu(r.id, from),
+              // Right click keeps the existing per-image menu and never
+              // enters selection. Touch holds and primary mouse drags select.
+              onSecondaryTap: _selecting || _pinching
+                  ? null
+                  : (from) => _thumbMenu(r.id, from),
+            ),
+          );
+        }, childCount: items.length),
+      ),
+    ),
+  );
 
   /// 堆的封面墙:一堆一张卡。点一下进那一堆;多选态下点一下整堆全勾/全取消
   /// —— 封面墙这一层的「一个单位」就是一整堆,按单张勾在这里没有落点。
@@ -844,12 +1230,13 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
               crossAxisSpacing: gap,
               mainAxisExtent: cellW + textH,
             );
-          }),
+          }, width: cons.crossAxisExtent - pad),
           delegate: SliverChildBuilderDelegate((_, i) {
             final g = groups[i];
             final ids = [for (final r in g.items) r.id];
             final allOn = ids.every(_picked.contains);
             return _GroupCard(
+              key: ValueKey('group-card-${g.key}'),
               group: g,
               selecting: _selecting,
               picked: _selecting && allOn,
@@ -860,6 +1247,12 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
                   _setOpen(g.key);
                 }
               }),
+              onLongPress: widget.desktop && !_pinching
+                  ? () => setState(() {
+                      _selecting = true;
+                      _picked.addAll(ids);
+                    })
+                  : null,
             );
           }, childCount: groups.length),
         ),
@@ -931,210 +1324,39 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
   }
 
   void _exitSelect() {
-    _dragSelectEnd();
+    _dragSelectionKey.currentState?.cancel();
     setState(() {
       _selecting = false;
       _picked.clear();
     });
   }
 
+  KeyEventResult _onDesktopKey(FocusNode node, KeyEvent event) {
+    if (!widget.desktop ||
+        event.logicalKey != LogicalKeyboardKey.escape ||
+        ModalRoute.of(context)?.isCurrent == false) {
+      return KeyEventResult.ignored;
+    }
+    if (event is KeyDownEvent) {
+      if (_selecting) {
+        _exitSelect();
+      } else {
+        _dragSelectionKey.currentState?.cancel();
+      }
+    }
+    // Escape exits selection only. Ordinary browsing keeps its page/dialog,
+    // while dialogs above this route retain their own Escape handling.
+    return KeyEventResult.handled;
+  }
+
   void _toggle(String id) {
     setState(() => _picked.contains(id) ? _picked.remove(id) : _picked.add(id));
   }
 
-  // ---- 滑动选择 ----
-  //
-  // 只认**横向**起手。竖向留给滚动 —— 多选态下照样要能翻到别的日期去,
-  // 抢了竖向就等于把列表钉死。横向一旦被判定为拖选,后续 update 无论往哪个
-  // 方向走都还归这个手势。
-  //
-  // 选的是**区间**(对齐系统相册):起手那张到手指下面那张之间、按列表顺序的每一张,
-  // 跨日期段也连着;往回拖区间缩小,退出区间的回到起手前的样子。早先是「划过哪张
-  // 选哪张」,可拖到列表边上要自动往下滚时,手指停着不动、图从底下滚过去,那样就
-  // 只有手指所在的那一列被选上。
-  //
-  // 加/减看**起手那一格**的当前状态取反:从没选中的格子起手是整片选上,
-  // 从已选中的起手是整片取消。
-  bool? _dragAdding;
-  String? _dragAnchor, _dragCurrent;
+  final _dragSelectionKey = GlobalKey<GalleryDragSelectionState>();
 
-  /// 起手前的勾选集。区间每变一次都从它重算,缩回去的格子才回得去。
-  Set<String> _dragBase = const {};
-
-  /// 起手那一刻的排列顺序与下标。拖的途中来了新图也不换 —— 下标一挪区间就乱了。
-  List<String> _dragOrder = const [];
-  Map<String, int> _dragIndex = const {};
-
-  /// 眼下这一屏的排列顺序:分段列表各段首尾相接 / 点开的那一堆;封面墙上没有
-  /// (墙上一格是一整堆,不走拖选)。build 里刷新。
+  /// Visible image order across date sections or within the opened group.
   List<String> _order = const [];
-
-  // 贴边自动滚动:拖选时手指进了列表上下沿的感应带,就按贴得多近往那边滚,
-  // 边滚边按手指下面那张续上区间。
-  Offset? _dragPos; // 手指最近的屏幕坐标
-  double _dragStartY = 0; // 起手时的屏幕纵坐标
-  Ticker? _edgeTicker;
-  Duration _edgeLast = Duration.zero;
-
-  /// 感应带高度;列表太矮时按高度的四分之一收。
-  static const _kEdgeBand = 56.0;
-
-  /// 刚进感应带与贴到(越过)边缘时,每秒滚多少像素。
-  static const _kEdgeMinSpeed = 120.0;
-  static const _kEdgeMaxSpeed = 1500.0;
-
-  /// 屏幕坐标 → 该点下面那张缩略图的 id。靠命中路径里的 [MetaData]
-  /// (见网格 itemBuilder)反查,不自己按几何算 —— 网格是按日期分成多个
-  /// sliver 的,中间还夹着日期头,几何换算既绕又容易在改版式后悄悄失准。
-  String? _idAt(Offset globalPos) {
-    final hit = HitTestResult();
-    WidgetsBinding.instance.hitTestInView(
-      hit,
-      globalPos,
-      View.of(context).viewId,
-    );
-    for (final e in hit.path) {
-      final t = e.target;
-      if (t is RenderMetaData) {
-        final m = t.metaData;
-        if (m is String) return m;
-      }
-    }
-    return null;
-  }
-
-  void _dragSelectStart(DragStartDetails d) {
-    // 起手坐标是按下的那一点(见 _dragSelectLayer 的 dragStartBehavior),
-    // 不是越过横滑门槛之后的 —— 区间的起点得是手指落下的那张
-    final id = _idAt(d.globalPosition);
-    if (id == null) return;
-    final index = <String, int>{
-      for (var i = 0; i < _order.length; i++) _order[i]: i,
-    };
-    if (!index.containsKey(id)) return;
-    _dragOrder = _order;
-    _dragIndex = index;
-    _dragAnchor = _dragCurrent = id;
-    _dragAdding = !_picked.contains(id);
-    _dragBase = Set.of(_picked);
-    _dragPos = d.globalPosition;
-    _dragStartY = d.globalPosition.dy;
-    _applyDragRange();
-  }
-
-  void _dragSelectUpdate(DragUpdateDetails d) {
-    if (_dragAdding == null) return;
-    _dragPos = d.globalPosition;
-    _trackDrag();
-    final pull = _edgePull();
-    if (pull == 0) {
-      _edgeTicker?.stop();
-    } else if (!(_edgeTicker?.isActive ?? false)) {
-      _edgeLast = Duration.zero;
-      (_edgeTicker ??= createTicker(_edgeTick)).start();
-    }
-  }
-
-  void _dragSelectEnd() {
-    _edgeTicker?.stop();
-    _dragAdding = null;
-    _dragAnchor = _dragCurrent = null;
-    _dragBase = const {};
-    _dragOrder = const [];
-    _dragIndex = const {};
-    _dragPos = null;
-  }
-
-  /// 手指下面换了一张就把区间终点挪过去。手指落在段头、缝里时沿用上一张。
-  ///
-  /// 探测点夹进网格视口:贴边滚动时手指常常已经拖出列表上下沿(压在筛选行或
-  /// 底部操作栏上),照样认视口边上那一行。
-  void _trackDrag() {
-    final pos = _dragPos;
-    final box = _bodyKey.currentContext?.findRenderObject() as RenderBox?;
-    if (pos == null || box == null || !box.hasSize) return;
-    final local = box.globalToLocal(pos);
-    final id = _idAt(
-      box.localToGlobal(
-        Offset(
-          local.dx.clamp(1.0, math.max(1.0, box.size.width - 1)),
-          local.dy.clamp(1.0, math.max(1.0, box.size.height - 1)),
-        ),
-      ),
-    );
-    if (id == null || id == _dragCurrent || !_dragIndex.containsKey(id)) {
-      return;
-    }
-    _dragCurrent = id;
-    _applyDragRange();
-  }
-
-  void _applyDragRange() {
-    final a = _dragIndex[_dragAnchor], c = _dragIndex[_dragCurrent];
-    final adding = _dragAdding;
-    if (a == null || c == null || adding == null) return;
-    setState(() {
-      _picked
-        ..clear()
-        ..addAll(_dragBase);
-      for (var i = math.min(a, c); i <= math.max(a, c); i++) {
-        adding ? _picked.add(_dragOrder[i]) : _picked.remove(_dragOrder[i]);
-      }
-    });
-  }
-
-  /// 往哪边滚、有多急:-1..1,0 = 不滚。越贴近列表上 / 下沿越接近 ±1,
-  /// 拖出边缘就是满格。
-  ///
-  /// 起手就在感应带里的(比如从最后一行开始横扫),得先朝那条边再挪一截才算数 ——
-  /// 不然刚按下去横着扫一行,列表就自己跑了。
-  double _edgePull() {
-    final pos = _dragPos;
-    final box = _bodyKey.currentContext?.findRenderObject() as RenderBox?;
-    if (pos == null || box == null || !box.hasSize) return 0;
-    final h = box.size.height;
-    final band = math.min(_kEdgeBand, h / 4);
-    final y = box.globalToLocal(pos).dy;
-    final startY = box.globalToLocal(Offset(pos.dx, _dragStartY)).dy;
-    const arm = 16.0;
-    if (y > h - band && (startY <= h - band || y - startY > arm)) {
-      return ((y - (h - band)) / band).clamp(0.0, 1.0);
-    }
-    if (y < band && (startY >= band || startY - y > arm)) {
-      return -((band - y) / band).clamp(0.0, 1.0);
-    }
-    return 0;
-  }
-
-  void _edgeTick(Duration elapsed) {
-    final dt = (elapsed - _edgeLast).inMicroseconds / 1e6;
-    _edgeLast = elapsed;
-    final pull = _edgePull();
-    if (pull == 0 ||
-        _dragAdding == null ||
-        !_selecting ||
-        !_ctrl.hasClients ||
-        _ctrl.positions.length != 1) {
-      _edgeTicker?.stop();
-      return;
-    }
-    // 先按这一帧的画面认手指下面那张,再滚 —— 滚过去的新布局要下一帧才有
-    _trackDrag();
-    final p = _ctrl.position;
-    final t = pull.abs();
-    // 二次方起步:刚碰到感应带时慢慢挪,越往边上压越快
-    final speed = _kEdgeMinSpeed + (_kEdgeMaxSpeed - _kEdgeMinSpeed) * t * t;
-    final to = (p.pixels + pull.sign * speed * dt).clamp(
-      p.minScrollExtent,
-      p.maxScrollExtent,
-    );
-    if (to == p.pixels) {
-      // 已经滚到头:停下,手指再动时 _dragSelectUpdate 会重新判断
-      if (dt > 0) _edgeTicker?.stop();
-      return;
-    }
-    _ctrl.jumpTo(to);
-  }
 
   double get _span {
     final p = _pointers.values.toList();
@@ -1221,7 +1443,7 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
     _pointers[e.pointer] = e.position;
     if (_pointers.length != 2) return;
     _span0 = _span;
-    _dragSelectEnd(); // 拖选可能已经起手了,清掉半截状态
+    _dragSelectionKey.currentState?.cancel(); // 拖选可能已经起手了,清掉半截状态
     setState(() {}); // 进入捏合:冻结滚动、停拖选与长按
   }
 
@@ -1280,8 +1502,24 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
   }
 
   /// 网格几何的插值代理:没在两级之间就用当前列数的普通代理,不绕路。
-  SliverGridDelegate _zoomDelegate(SliverGridDelegate Function(int cols) of) {
+  SliverGridDelegate _zoomDelegate(
+    SliverGridDelegate Function(int cols) of, {
+    double? width,
+  }) {
     final to = _toCols;
+    if (widget.desktop) {
+      return of(
+        ((width ?? math.min(1160, MediaQuery.sizeOf(context).width - 64) - 24) /
+                190)
+            .floor()
+            .clamp(2, widget.browser == null ? 8 : 12),
+      );
+    }
+    if (widget.embedded) {
+      return of(
+        ((MediaQuery.sizeOf(context).width - 24) / 210).floor().clamp(3, 12),
+      );
+    }
     if (to == null || _t <= 0) return of(_cols);
     return _ZoomGridDelegate(of, _cols, to, _t);
   }
@@ -1302,14 +1540,18 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
   /// 捏合期间同样传 null:Listener 不进竞技场,双指横向张开在多选态下会被
   /// 拖选当成一次划选,一捏就勾中一排。
   Widget _dragSelectLayer({required Widget child}) {
-    final on = _selecting && !_pinching;
-    return GestureDetector(
-      behavior: HitTestBehavior.translucent,
-      dragStartBehavior: DragStartBehavior.down,
-      onHorizontalDragStart: on ? _dragSelectStart : null,
-      onHorizontalDragUpdate: on ? _dragSelectUpdate : null,
-      onHorizontalDragEnd: on ? (_) => _dragSelectEnd() : null,
-      onHorizontalDragCancel: on ? _dragSelectEnd : null,
+    return GalleryDragSelection(
+      key: _dragSelectionKey,
+      enabled: _selecting && !_pinching,
+      handleEscape: !widget.desktop,
+      scrollController: _ctrl,
+      order: _order,
+      selected: _picked,
+      onChanged: (selected) => setState(() {
+        _picked
+          ..clear()
+          ..addAll(selected);
+      }),
       child: child,
     );
   }
@@ -1338,6 +1580,10 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
         if (want.contains(r.id)) r,
     ]);
     if (items.isEmpty) return;
+    if (widget.desktop) {
+      await _exportDesktop(items);
+      return;
+    }
     // 写自建相册**以外**的相册要额外权限位,按目标申请
     final toAlbum = album != null;
     final ok =
@@ -1394,6 +1640,37 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
     );
   }
 
+  Future<void> _exportDesktop(List<ResultImage> items) async {
+    if (_saving) return;
+    final albumId = _scope;
+    final albums = ref.read(albumsProvider);
+    final albumName =
+        albums.album(albumId)?.name ??
+        (isDailyAlbum(albumId) ? albumId!.substring(4) : albums.name(albumId));
+    setState(() {
+      _saving = true;
+      _saveDone = 0;
+      _saveTotal = items.length;
+    });
+    try {
+      final report = await showGalleryExportDialog(
+        context,
+        selected: items,
+        albumId: albumId,
+        albumName: albumName,
+      );
+      if (mounted &&
+          report != null &&
+          !ref.read(albumsProvider).exists(albumId)) {
+        widget.browser?.onBack();
+      }
+    } catch (error) {
+      if (mounted) hintSnack(context, '导出失败：$error', icon: Icons.error_outline);
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
   /// 保存到自定义相册:先问名字,再走同一条保存管线。
   Future<void> _downloadToAlbum() async {
     final settings = await ref.read(saveSettingsProvider.future);
@@ -1426,6 +1703,7 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
     try {
       final packed = await showZipPackSheet(
         context,
+        desktop: widget.desktop,
         items: items,
         store: ref.read(appStoresProvider).gallery,
         settings: settings,
@@ -1500,7 +1778,7 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
     final box = nav.overlay?.context.findRenderObject() as RenderBox?;
     final at = box == null ? from : box.globalToLocal(from.topLeft) & from.size;
     final picked = await nav.push(
-      _ThumbMenuRoute(from: at, result: r, warm: warm),
+      _ThumbMenuRoute(from: at, result: r, warm: warm, desktop: widget.desktop),
     );
     if (picked == null || !mounted) return;
     switch (picked) {
@@ -1510,8 +1788,12 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
         await _downloadPicked(only: {id});
       case 'share':
         await _sharePicked(only: {id});
+      case 'move':
+        await _transferPicked(copy: false, only: {id});
+      case 'copy':
+        await _transferPicked(copy: true, only: {id});
       case 'delete':
-        _deleteOne(id);
+        await _deleteOne(id);
     }
   }
 
@@ -1553,7 +1835,7 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
       return;
     }
     final nav = Navigator.of(context);
-    nav.pop();
+    _close();
     unawaited(
       nav.push(
         sharedAxisRoute(
@@ -1610,13 +1892,20 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
   /// 单张删除(长按菜单里那项)。**不再二次确认** —— 长按抬起、看清是哪张、
   /// 再点删除,本身已是三步;弹窗只是给这条路再加一次点击。
   /// 批量删除那条仍然确认:一次十几张,误触代价不在一个量级。
-  void _deleteOne(String id) {
-    ref.read(galleryProvider.notifier).deleteResults([id]);
-    if (ref.read(galleryProvider).results.isEmpty) {
-      Navigator.of(context).pop(); // 删空了,弹层没得看
+  Future<void> _deleteOne(String id) async {
+    final deleted = await ref.read(galleryProvider.notifier).deleteResults([
+      id,
+    ]);
+    if (!mounted) return;
+    if (!widget.embedded && ref.read(galleryProvider).results.isEmpty) {
+      _close(); // 删空了,弹层没得看
       return;
     }
-    hintSnack(context, '已删除', icon: Icons.delete_outline);
+    hintSnack(
+      context,
+      deleted.contains(id) ? '已删除' : '未能删除，请稍后重试',
+      icon: Icons.delete_outline,
+    );
   }
 
   Future<void> _deletePicked() async {
@@ -1644,18 +1933,28 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
       ),
     );
     if (yes != true || !mounted) return;
-    ref.read(galleryProvider.notifier).deleteResults(ids);
+    final deleted = await ref.read(galleryProvider.notifier).deleteResults(ids);
+    if (!mounted) return;
     _exitSelect();
-    if (ref.read(galleryProvider).results.isEmpty) {
-      Navigator.of(context).pop(); // 删空了,弹层没得看
+    if (!widget.embedded && ref.read(galleryProvider).results.isEmpty) {
+      _close(); // 删空了,弹层没得看
     }
-    hintSnack(context, '已删除 ${ids.length} 张', icon: Icons.delete_outline);
+    hintSnack(
+      context,
+      '已删除 ${deleted.length} 张${deleted.length < ids.length ? '，其余图片已保留' : ''}',
+      icon: Icons.delete_outline,
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final state = ref.watch(galleryViewProvider);
-    final scope = ref.watch(galleryBrowseAlbumProvider);
+    final browser = widget.browser;
+    final state = browser == null
+        ? ref.watch(galleryViewProvider)
+        : ref.watch(galleryProvider);
+    final scope = browser != null
+        ? browser.albumId
+        : ref.watch(galleryBrowseAlbumProvider);
     final albums = ref.watch(albumsProvider);
     final now = DateTime.now();
     if (_scopeKey != (scope ?? '')) {
@@ -1672,27 +1971,26 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
         if (mounted && _ctrl.hasClients) _ctrl.jumpTo(0);
       });
     }
-    final results = state.results;
+    final results = browser == null || scope == null
+        ? state.results
+        : state.results.where((r) => albums.contains(scope, r.id)).toList();
     final search = ref.watch(gallerySearchProvider);
 
     // 筛选管线(先廉价的时间,再查表)
     final terms = searchTerms(_query);
     final filtered = <ResultImage>[
       for (final r in results)
-        if (_dateFilter.matches(r.createdAt, now) &&
+        if ((!_favoritesOnly || r.favorite) &&
+            _dateFilter.matches(r.createdAt, now) &&
             _passModel(r, search.byId) &&
             _passQuery(r, search.byId, terms))
           r,
     ];
     final filtering =
-        _query.isNotEmpty || _modelFilter != null || _dateFilter.active;
-
-    // 弹层开着期间条目可能被裁剪/删除/筛掉,勾选集随之收敛 ——
-    // 批量操作永远只作用于当前可见集合,不留筛选外的"隐形勾选"。
-    // 查表而不是逐个在列表里找:拖选贴边滚动时每帧都在重建,几百张已选 × 几千张
-    // 作品逐个比就是每帧上百万次比较。
-    final visible = {for (final r in filtered) r.id};
-    _picked.removeWhere((id) => !visible.contains(id));
+        _query.isNotEmpty ||
+        _modelFilter != null ||
+        _dateFilter.active ||
+        _favoritesOnly;
 
     // 归属表只拉当前这个维度的 —— 另一个维度的 provider 不 watch 就不开算。
     // 还在算(冷启第一次点开)时先当空表:全落「未归类」,算完自然刷成正确的堆,
@@ -1715,6 +2013,12 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
     final open = _openKey == null
         ? null
         : groups.where((g) => g.key == _openKey).firstOrNull;
+    // Selection follows both the active filters and the opened group. The
+    // Select all action must not include images hidden in other groups.
+    final selectable = open?.items ?? filtered;
+    final visible = {for (final r in selectable) r.id};
+    _picked.removeWhere((id) => !visible.contains(id));
+    final viewing = open?.items ?? [for (final group in groups) ...group.items];
     _inStack = open != null;
     _order = [
       if (open != null)
@@ -1733,7 +2037,7 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
         !_zipping &&
         !_organizing;
 
-    return PopScope(
+    final content = PopScope(
       // 多选态下系统返回/侧滑先退多选,不关弹层 —— 勾了十几张再手滑退出,
       // 重新勾一遍的代价比多按一次返回大得多。点开了某一堆时同理,返回先收回
       // 封面墙。两者都没有才照常放行,好让预测式返回该怎么演就怎么演。
@@ -1747,7 +2051,7 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
         }
       },
       child: SizedBox(
-        height: h,
+        height: widget.embedded ? null : h,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -1770,10 +2074,10 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
                             style: _headerBtn,
                             onPressed: _saving || _zipping
                                 ? null
-                                : () => _toggleAll(filtered),
+                                : () => _toggleAll(selectable),
                             child: Text(
-                              _picked.length == filtered.length &&
-                                      filtered.isNotEmpty
+                              _picked.length == selectable.length &&
+                                      selectable.isNotEmpty
                                   ? '全不选'
                                   : '全选',
                             ),
@@ -1787,20 +2091,26 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
                       )
                     : Row(
                         children: [
-                          if (open != null)
+                          if (open != null || browser != null)
                             IconButton(
+                              key: browser == null
+                                  ? null
+                                  : const ValueKey('desktop-gallery-up'),
                               // 与系统返回同一条路:过场 + 还原封面墙的位置
-                              onPressed: () => _setOpen(null),
+                              onPressed: open == null
+                                  ? browser!.onBack
+                                  : () => _setOpen(null),
                               visualDensity: VisualDensity.compact,
                               padding: EdgeInsets.zero,
                               constraints: const BoxConstraints(
                                 minWidth: 32,
                                 minHeight: 32,
                               ),
-                              tooltip: '回到全部',
+                              tooltip: open == null ? '返回图库列表' : '回到全部',
                               icon: const Icon(Icons.arrow_back, size: 21),
                             ),
-                          if (open != null) const SizedBox(width: 4),
+                          if (open != null || browser != null)
+                            const SizedBox(width: 8),
                           // 标题 + 张数打包进 Expanded 一起吃掉全部余量。
                           //
                           // 不能写成「Flexible(标题) … Spacer()」:两者都是 flex:1,
@@ -1813,11 +2123,22 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
                               children: [
                                 Flexible(
                                   child: Text(
-                                    open?.label ?? albums.name(scope),
+                                    open?.label ??
+                                        browser?.title ??
+                                        widget.libraryLabel ??
+                                        (widget.desktop
+                                            ? desktopLibraryLabel(
+                                                ref.watch(
+                                                  desktopLibraryProvider,
+                                                ),
+                                                albums,
+                                              )
+                                            : albums.name(scope)),
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
                                     style: context.texts.titleMedium!.copyWith(
                                       fontWeight: FontWeight.w700,
+                                      fontSize: browser == null ? null : 22,
                                     ),
                                   ),
                                 ),
@@ -1838,118 +2159,127 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
                             ),
                           ),
                           _topButton(scheme, hasList: filtered.isNotEmpty),
-                          IconButton(
-                            onPressed: _toggleSearch,
-                            visualDensity: VisualDensity.compact,
-                            tooltip: '搜索提示词标签',
-                            icon: Icon(
-                              Icons.search,
-                              size: 21,
-                              color: _searchOpen
-                                  ? scheme.primary
-                                  : scheme.onSurfaceVariant,
+                          if (browser == null && !widget.desktop)
+                            IconButton(
+                              onPressed: _toggleSearch,
+                              visualDensity: VisualDensity.compact,
+                              tooltip: '搜索提示词标签',
+                              icon: Icon(
+                                Icons.search,
+                                size: 21,
+                                color: _searchOpen
+                                    ? scheme.primary
+                                    : scheme.onSurfaceVariant,
+                              ),
                             ),
-                          ),
-                          TextButton(
-                            style: _headerBtn,
-                            onPressed: () => _enterSelect(),
-                            child: const Text('多选'),
-                          ),
+                          if (browser == null && !widget.desktop)
+                            TextButton(
+                              style: _headerBtn,
+                              onPressed: () => _enterSelect(),
+                              child: const Text('多选'),
+                            ),
                         ],
                       ),
               ),
             ),
             // 搜索框(点放大镜展开;关闭即清词)
-            ExpandBody(
-              expanded: _searchOpen,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                child: TextField(
-                  controller: _searchCtrl,
-                  focusNode: _searchFocus,
-                  onChanged: _onSearchChanged,
-                  textInputAction: TextInputAction.search,
-                  style: context.texts.bodyMedium,
-                  decoration: InputDecoration(
-                    isDense: true,
-                    hintText: '搜索提示词标签…',
-                    prefixIcon: const Icon(Icons.search, size: 19),
-                    suffixIcon: _searchCtrl.text.isEmpty
-                        ? null
-                        : IconButton(
-                            icon: const Icon(Icons.close, size: 17),
-                            onPressed: () {
-                              _searchCtrl.clear();
-                              _onSearchChanged('');
-                            },
-                          ),
-                    filled: true,
-                    fillColor: scheme.surfaceContainerHigh,
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                      borderSide: BorderSide.none,
+            if (browser == null && !widget.desktop)
+              ExpandBody(
+                expanded: _searchOpen,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                  child: TextField(
+                    controller: _searchCtrl,
+                    focusNode: _searchFocus,
+                    onChanged: _onSearchChanged,
+                    textInputAction: TextInputAction.search,
+                    style: context.texts.bodyMedium,
+                    decoration: InputDecoration(
+                      isDense: true,
+                      hintText: '搜索提示词标签…',
+                      prefixIcon: const Icon(Icons.search, size: 19),
+                      suffixIcon: _searchCtrl.text.isEmpty
+                          ? null
+                          : IconButton(
+                              icon: const Icon(Icons.close, size: 17),
+                              onPressed: () {
+                                _searchCtrl.clear();
+                                _onSearchChanged('');
+                              },
+                            ),
+                      filled: true,
+                      fillColor: scheme.surfaceContainerHigh,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide.none,
+                      ),
                     ),
                   ),
                 ),
               ),
-            ),
             // 分组 + 筛选 chips + 检索索引回填进度
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Row(
-                  children: [
-                    _chip(
-                      scheme,
-                      label: '图库',
-                      active: scope != null,
-                      onTap: () => showAlbumLibrary(context),
-                    ),
-                    const SizedBox(width: 8),
-                    _chip(
-                      scheme,
-                      label: _groupBy.stacked ? _groupBy.label : '分组',
-                      active: _groupBy != GalleryGroupBy.day,
-                      onTap: _pickGroupBy,
-                    ),
-                    const SizedBox(width: 8),
-                    _chip(
-                      scheme,
-                      label: _modelFilter == null
-                          ? '模型'
-                          : (_modelFilter!.isEmpty ? '未知' : _modelFilter!),
-                      active: _modelFilter != null,
-                      onTap: () => _pickModelFilter(results, search.byId),
-                    ),
-                    const SizedBox(width: 8),
-                    _chip(
-                      scheme,
-                      label: _dateFilter.label(now),
-                      active: _dateFilter.active,
-                      onTap: _pickTimeFilter,
-                    ),
-                    if (search.building || grouping) ...[
-                      const SizedBox(width: 12),
-                      const SizedBox(
-                        width: 12,
-                        height: 12,
-                        child: CircularProgressIndicator(strokeWidth: 1.8),
+            if (widget.desktop || browser != null)
+              _desktopFilters(results, search, now)
+            else
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: [
+                      _chip(
+                        scheme,
+                        label: widget.embedded ? '切换图库' : '图库',
+                        active: scope != null,
+                        onTap: _chooseAlbum,
                       ),
-                      const SizedBox(width: 6),
-                      Text(
-                        search.building
-                            ? '索引 ${search.done}/${search.total}'
-                            : '分组中',
-                        style: context.texts.bodySmall!.copyWith(
-                          color: scheme.outline,
+                      const SizedBox(width: 8),
+                      _chip(
+                        scheme,
+                        key: _groupAnchor,
+                        label: _groupBy.stacked ? _groupBy.label : '分组',
+                        active: _groupBy != GalleryGroupBy.day,
+                        onTap: _pickGroupBy,
+                      ),
+                      const SizedBox(width: 8),
+                      _chip(
+                        scheme,
+                        key: _modelAnchor,
+                        label: _modelFilter == null
+                            ? '模型'
+                            : (_modelFilter!.isEmpty ? '未知' : _modelFilter!),
+                        active: _modelFilter != null,
+                        onTap: () => _pickModelFilter(results, search.byId),
+                      ),
+                      const SizedBox(width: 8),
+                      _chip(
+                        scheme,
+                        key: _dateAnchor,
+                        label: _dateFilter.label(now),
+                        active: _dateFilter.active,
+                        onTap: _pickTimeFilter,
+                      ),
+                      if (search.building || grouping) ...[
+                        const SizedBox(width: 12),
+                        const SizedBox(
+                          width: 12,
+                          height: 12,
+                          child: CircularProgressIndicator(strokeWidth: 1.8),
                         ),
-                      ),
+                        const SizedBox(width: 6),
+                        Text(
+                          search.building
+                              ? '索引 ${search.done}/${search.total}'
+                              : '分组中',
+                          style: context.texts.bodySmall!.copyWith(
+                            color: scheme.outline,
+                          ),
+                        ),
+                      ],
                     ],
-                  ],
+                  ),
                 ),
               ),
-            ),
             Expanded(
               child: _pinchLayer(
                 child: _dragSelectLayer(
@@ -1991,7 +2321,11 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
                             slivers: [
                               // 三种身姿:点开的单堆 / 堆的封面墙 / 分段列表
                               if (open != null)
-                                _gridSliver(open.items, state.selectedId)
+                                _gridSliver(
+                                  open.items,
+                                  state.selectedId,
+                                  viewing,
+                                )
                               else if (_groupBy.stacked)
                                 _stackSliver(scheme, groups)
                               else
@@ -1999,7 +2333,11 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
                                   SliverToBoxAdapter(
                                     child: _groupHeader(scheme, g),
                                   ),
-                                  _gridSliver(g.items, state.selectedId),
+                                  _gridSliver(
+                                    g.items,
+                                    state.selectedId,
+                                    viewing,
+                                  ),
                                 ],
                               const SliverToBoxAdapter(
                                 child: SizedBox(height: 10),
@@ -2033,6 +2371,22 @@ class _GalleryGridSheetState extends ConsumerState<_GalleryGridSheet>
             ),
           ],
         ),
+      ),
+    );
+    if (!widget.desktop) return content;
+    return Focus(
+      focusNode: _keyboardFocus,
+      autofocus: true,
+      skipTraversal: true,
+      onKeyEvent: _onDesktopKey,
+      child: Listener(
+        onPointerDown: (_) {
+          if (!_keyboardFocus.hasFocus &&
+              ModalRoute.of(context)?.isCurrent != false) {
+            _keyboardFocus.requestFocus();
+          }
+        },
+        child: content,
       ),
     );
   }
@@ -2148,10 +2502,12 @@ class _FrozenScrollPhysics extends ScrollPhysics {
 /// 几何随张数变会使卡片大小参差不齐,那个更难看。
 class _GroupCard extends StatelessWidget {
   const _GroupCard({
+    super.key,
     required this.group,
     required this.selecting,
     required this.picked,
     required this.onTap,
+    this.onLongPress,
   });
 
   final GalleryGroup group;
@@ -2160,6 +2516,7 @@ class _GroupCard extends StatelessWidget {
   /// 多选态:这一堆是否**整堆**都已勾选。
   final bool picked;
   final VoidCallback onTap;
+  final VoidCallback? onLongPress;
 
   /// 每片叠影露出多少。两片,所以封面比整格窄 2 倍这个数。
   /// 6 是「看得出是张照片」和「别把封面挤小」之间的折中。
@@ -2173,9 +2530,12 @@ class _GroupCard extends StatelessWidget {
     final scheme = context.scheme;
     final cover = group.items.first;
     final piled = group.items.length > 1;
-    return GestureDetector(
+    final content = GalleryTileGestures(
       onTap: onTap,
-      behavior: HitTestBehavior.opaque,
+      onLongPress: onLongPress,
+      onMouseDragStart: onLongPress,
+      onSecondaryTap: null,
+      duration: gallerySelectionHold,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -2270,6 +2630,14 @@ class _GroupCard extends StatelessWidget {
         ],
       ),
     );
+    return Semantics(
+      button: true,
+      selected: selecting && picked,
+      checked: selecting ? picked : null,
+      onTap: onTap,
+      onLongPress: onLongPress,
+      child: content,
+    );
   }
 
   /// 一片叠影。[inset] 是相对封面左上角的偏移,越靠后越淡。
@@ -2311,133 +2679,6 @@ class _GroupCard extends StatelessWidget {
   );
 }
 
-class _GridThumb extends StatelessWidget {
-  const _GridThumb({
-    required this.result,
-    required this.selected,
-    required this.picked,
-    required this.selecting,
-    required this.onTap,
-    this.onLongPress,
-  });
-
-  final ResultImage result;
-
-  /// 普通模式:是否为画布当前选中项(主题色描边)。
-  final bool selected;
-
-  /// 多选模式:是否已勾选(主题色描边 + 勾选圆标)。
-  final bool picked;
-  final bool selecting;
-  final VoidCallback onTap;
-
-  /// 长按:带上**这张图当前占的屏幕矩形**(不是手指坐标)——
-  /// 抬起动画要从这块地方长出来,菜单才看得出是属于哪一张的。
-  final void Function(Rect from)? onLongPress;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = context.scheme;
-    final ring = selecting ? picked : selected;
-    return GestureDetector(
-      onTap: onTap,
-      onLongPress: onLongPress == null
-          ? null
-          : () {
-              final box = context.findRenderObject() as RenderBox?;
-              if (box == null || !box.hasSize) return;
-              // 减掉描边 + 让位的那 5,让抬起从图的边缘起算,不是从格子边缘
-              onLongPress!(
-                (box.localToGlobal(Offset.zero) & box.size).deflate(5),
-              );
-            },
-      child: AnimatedContainer(
-        duration: Motion.fast,
-        curve: Motion.standard,
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(
-            color: ring ? scheme.primary : Colors.transparent,
-            width: 2.5,
-          ),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.all(2.5),
-          child: LayoutBuilder(
-            builder: (_, c) => Stack(
-              children: [
-                ResultThumb(
-                  result: result,
-                  width: c.maxWidth,
-                  height: c.maxWidth,
-                  radius: 10,
-                ),
-                // 多选模式左上角换勾选圆标(角标让位)
-                if (selecting)
-                  Positioned(
-                    left: 5,
-                    top: 5,
-                    child: AnimatedContainer(
-                      duration: Motion.fast,
-                      width: 22,
-                      height: 22,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: picked
-                            ? scheme.primary
-                            : Colors.black.withValues(alpha: .35),
-                        border: picked
-                            ? null
-                            : Border.all(
-                                color: Colors.white.withValues(alpha: .85),
-                                width: 1.5,
-                              ),
-                      ),
-                      child: picked
-                          ? Icon(Icons.check, size: 15, color: scheme.onPrimary)
-                          : null,
-                    ),
-                  )
-                else if (result.badge != ResultBadge.none)
-                  Positioned(
-                    left: 5,
-                    top: 5,
-                    child: ResultBadgeChip(badge: result.badge),
-                  ),
-                // 右下角生成时刻(日期由段头承担,段内标时刻才是增量信息)
-                if (galleryTimeBadge(result.createdAt) case final String t
-                    when t.isNotEmpty)
-                  Positioned(
-                    right: 5,
-                    bottom: 5,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 5,
-                        vertical: 2,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.black.withValues(alpha: .45),
-                        borderRadius: BorderRadius.circular(7),
-                      ),
-                      child: Text(
-                        t,
-                        style: mono(context, size: 9, weight: FontWeight.w600)
-                            .copyWith(
-                              color: Colors.white.withValues(alpha: .92),
-                              height: 1,
-                            ),
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 // ---- 长按:按住抬起 + 贴着图的菜单 ----
 
 /// 缩略图长按后的「抬起」层。
@@ -2449,12 +2690,14 @@ class _ThumbMenuRoute extends PopupRoute<String> {
     required this.from,
     required this.result,
     required this.warm,
+    required this.desktop,
   });
 
   /// 缩略图在 overlay 坐标系里的原始矩形 —— 放大从这里长出来,
   /// 「浮起的是这一张」全指望它。
   final Rect from;
   final ResultImage result;
+  final bool desktop;
 
   /// 开层前已读好并解码过的原图;null = 没赶上(读得慢/读失败),
   /// 层里自己去 watch,补上之前先用缩略图垫着。
@@ -2480,7 +2723,13 @@ class _ThumbMenuRoute extends PopupRoute<String> {
     BuildContext context,
     Animation<double> anim,
     Animation<double> _,
-  ) => _LiftedThumb(from: from, result: result, warm: warm, anim: anim);
+  ) => _LiftedThumb(
+    from: from,
+    result: result,
+    warm: warm,
+    anim: anim,
+    desktop: desktop,
+  );
 }
 
 class _LiftedThumb extends ConsumerWidget {
@@ -2489,19 +2738,21 @@ class _LiftedThumb extends ConsumerWidget {
     required this.result,
     required this.warm,
     required this.anim,
+    required this.desktop,
   });
 
   final Rect from;
   final ResultImage result;
   final Uint8List? warm;
   final Animation<double> anim;
+  final bool desktop;
 
   static const _margin = 16.0;
   static const _gap = 12.0;
   static const _menuW = 200.0;
   static const _itemH = 46.0;
   static const _dividerH = 9.0;
-  static const _menuH = _itemH * 4 + _dividerH + 16;
+  double get _menuH => _itemH * (desktop ? 5 : 4) + _dividerH + 16;
 
   /// 抬起的图占「可用框」(去掉边距与菜单之后那块)的面积比例。
   static const _fill = .42;
@@ -2643,7 +2894,11 @@ class _LiftedThumb extends ConsumerWidget {
           const SizedBox(height: 8),
           _item(context, Icons.input, '导入', 'import'),
           _item(context, Icons.download, '保存', 'save'),
-          _item(context, Icons.ios_share, '分享', 'share'),
+          if (desktop) ...[
+            _item(context, Icons.drive_file_move_outline, '移动', 'move'),
+            _item(context, Icons.copy_outlined, '复制', 'copy'),
+          ] else
+            _item(context, Icons.ios_share, '分享', 'share'),
           // 删除排最后并单独隔一条线:菜单就在手指底下,不可撤销的那项
           // 排第一位等于放到最容易误落的地方
           Divider(

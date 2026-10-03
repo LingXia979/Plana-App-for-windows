@@ -7,14 +7,19 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/app_theme.dart';
+import '../../../core/platform/desktop.dart';
+import '../../../core/ui/image_drop.dart';
 import '../../../core/util/image_pick.dart';
 import '../../vibe_library/vibe_import.dart' show ingestVibeFiles;
 import '../../vibe_library/vibe_library.dart';
 import '../../vibe_library/vibe_library_page.dart';
 import '../generate_state.dart';
+import '../nai_request.dart' show naiModelId;
+import '../../vibe_library/naiv4vibe_codec.dart' show kModelToEncodingKey;
 import '../models.dart';
 import 'common.dart';
 import 'section_card.dart';
+import 'reference_strip.dart';
 
 /// 顶层函数:在后台 isolate 算图片内容哈希(sha256 hex),避免大图卡主线程。
 String _sha256Hex(Uint8List bytes) => sha256.convert(bytes).toString();
@@ -85,7 +90,14 @@ class _VibeCardState extends ConsumerState<VibeCard> {
     var failed = got.failed;
     String? lastId;
     for (final e in got.entries) {
-      final data = await lib.loadForGenerate(e);
+      final data = await lib.loadForGenerate(
+        e,
+        modelKey:
+            kModelToEncodingKey[naiModelId(
+              ref.read(generateProvider).params.model,
+            )] ??
+            '',
+      );
       if (!mounted) return;
       if (data == null) {
         failed++; // 落库了但当前拿不出可生成内容(如无任何编码的纯编码条目)
@@ -162,7 +174,7 @@ class _VibeCardState extends ConsumerState<VibeCard> {
     }
     selected ??= vibes.isNotEmpty ? vibes.first : null;
 
-    return SectionCard(
+    final card = SectionCard(
       icon: Icons.palette_outlined,
       title: 'Vibe Transfer',
       reorderIndex: widget.reorderIndex,
@@ -189,30 +201,15 @@ class _VibeCardState extends ConsumerState<VibeCard> {
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          SizedBox(
-            height: 72,
-            // 长按缩略图拖动排序(参考顺序即下发顺序)
-            child: ReorderableListView(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(vertical: 2),
-              proxyDecorator: dragProxy,
-              onReorderStart: dragStartHaptic,
-              onReorderEnd: dragEndHaptic,
-              onReorderItem: notifier.reorderVibes,
-              children: [
-                for (final v in vibes)
-                  Padding(
-                    key: ValueKey(v.id),
-                    padding: const EdgeInsets.only(right: 10),
-                    child: RefThumb(
-                      selected: v.id == selected?.id,
-                      enabled: v.enabled,
-                      image: v.image,
-                      onTap: () => setState(() => _selectedId = v.id),
-                    ),
-                  ),
-              ],
-            ),
+          ReferenceStrip(
+            previewTitle: 'Vibe 参考图',
+            items: [
+              for (final v in vibes)
+                (id: v.id, image: v.image, enabled: v.enabled),
+            ],
+            selectedId: selected?.id,
+            onSelect: (id) => setState(() => _selectedId = id),
+            onReorder: notifier.reorderVibes,
           ),
           // 只有多张同时启用才谈得上「均衡」,单张时这行没有意义(与 web 同)
           if (state.enabledVibes > 1) ...[
@@ -249,6 +246,14 @@ class _VibeCardState extends ConsumerState<VibeCard> {
         ],
       ),
     );
+    return ref.watch(desktopModeProvider)
+        ? ImageDropRegion(
+            label: '加入 Vibe 参考',
+            multiple: true,
+            onDrop: (images, _) => _addImages(images),
+            child: card,
+          )
+        : card;
   }
 }
 

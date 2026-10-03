@@ -1,15 +1,16 @@
-import 'dart:typed_data';
-
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gal/gal.dart';
 
+import '../../core/platform/desktop.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/util/image_pick.dart';
 import '../../core/util/png_meta.dart';
 import '../generate/widgets/common.dart' show hintSnack, sharedAxisRoute;
 import '../import/image_metadata.dart';
 import '../import/metadata_detail_page.dart';
+import 'desktop_metadata_processor.dart';
 
 class _Item {
   _Item({required this.name, required this.bytes, this.meta});
@@ -40,6 +41,7 @@ class _MetadataToolViewState extends ConsumerState<MetadataToolView> {
   bool _loading = false;
   bool _processing = false;
   (int, int)? _progress; // (当前, 总数)
+  bool get _busy => _loading || _processing;
 
   @override
   void dispose() {
@@ -48,63 +50,73 @@ class _MetadataToolViewState extends ConsumerState<MetadataToolView> {
   }
 
   Future<void> _pick() async {
-    final files = await pickImageFiles(context);
-    if (files.isEmpty || !mounted) return;
-    setState(() {
-      _loading = true;
-      _progress = (0, files.length);
-    });
-    for (var i = 0; i < files.length; i++) {
-      try {
-        final bytes = files[i].bytes;
-        final meta = await extractImageMetadata(bytes);
-        _items.add(_Item(name: files[i].name, bytes: bytes, meta: meta));
-      } catch (_) {}
-      if (!mounted) return;
-      setState(() => _progress = (i + 1, files.length));
+    if (_busy) return;
+    setState(() => _loading = true);
+    try {
+      final files = await pickImageFiles(context);
+      if (!mounted || files.isEmpty) return;
+      setState(() => _progress = (0, files.length));
+      var failed = 0;
+      for (var i = 0; i < files.length; i++) {
+        try {
+          final bytes = files[i].bytes;
+          final meta = await extractImageMetadata(bytes);
+          if (!mounted) return;
+          _items.add(_Item(name: files[i].name, bytes: bytes, meta: meta));
+        } catch (_) {
+          failed++;
+        }
+        if (!mounted) return;
+        setState(() => _progress = (i + 1, files.length));
+      }
+      if (failed > 0 && mounted) hintSnack(context, '$failed 张图片读取失败');
+    } catch (e) {
+      if (mounted) hintSnack(context, '无法读取图片：$e', icon: Icons.error_outline);
+    } finally {
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _progress = null;
+        });
+      }
     }
-    if (!mounted) return;
-    setState(() {
-      _loading = false;
-      _progress = null;
-    });
   }
 
   int get _selectedCount => _items.where((f) => f.selected).length;
 
   Future<void> _saveSelected() async {
-    final sel = _items.where((f) => f.selected).toList();
-    if (sel.isEmpty || _processing) return;
-    if (_mode == _BatchMode.custom && _customPrompt.text.trim().isEmpty) {
+    final selected = _items.where((f) => f.selected).toList();
+    if (selected.isEmpty || _busy) return;
+    final mode = _mode;
+    final prompt = _customPrompt.text.trim();
+    if (mode == _BatchMode.custom && prompt.isEmpty) {
       hintSnack(context, '先填要覆写的提示词', icon: Icons.edit_outlined);
       return;
     }
     final ok = await Gal.hasAccess() || await Gal.requestAccess();
+    if (!mounted) return;
     if (!ok) {
-      if (mounted) hintSnack(context, '未获相册权限', icon: Icons.error_outline);
+      hintSnack(context, '未获相册权限', icon: Icons.error_outline);
       return;
     }
     setState(() {
       _processing = true;
-      _progress = (0, sel.length);
+      _progress = (0, selected.length);
     });
     var saved = 0, failed = 0;
-    for (var i = 0; i < sel.length; i++) {
+    for (var i = 0; i < selected.length; i++) {
       try {
-        final out = _mode == _BatchMode.clean
-            ? await cleanImagePng(sel[i].bytes)
-            : await writeCustomMetadataPng(
-                sel[i].bytes,
-                _customPrompt.text.trim(),
-              );
-        final suffix = _mode == _BatchMode.clean ? '_clean' : '_custom';
-        await Gal.putImageBytes(out, name: '${sel[i].baseName}$suffix');
+        final out = mode == _BatchMode.clean
+            ? await cleanImagePng(selected[i].bytes)
+            : await writeCustomMetadataPng(selected[i].bytes, prompt);
+        final suffix = mode == _BatchMode.clean ? '_clean' : '_custom';
+        await Gal.putImageBytes(out, name: '${selected[i].baseName}$suffix');
         saved++;
       } catch (_) {
         failed++;
       }
       if (!mounted) return;
-      setState(() => _progress = (i + 1, sel.length));
+      setState(() => _progress = (i + 1, selected.length));
     }
     if (!mounted) return;
     setState(() {
@@ -120,6 +132,7 @@ class _MetadataToolViewState extends ConsumerState<MetadataToolView> {
 
   @override
   Widget build(BuildContext context) {
+    if (ref.watch(desktopModeProvider)) return const DesktopMetadataProcessor();
     final scheme = context.scheme;
     final hasFiles = _items.isNotEmpty;
     final allSelected = hasFiles && _items.every((f) => f.selected);

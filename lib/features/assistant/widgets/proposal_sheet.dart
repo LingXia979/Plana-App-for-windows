@@ -1,8 +1,7 @@
 /// 提议详情弹层。结果条上放不下的都在这儿:差异明细(带译文)+ 完整提示词。
 ///
-/// **为什么是弹层,不是就地展开**:气泡底下还挂着出图和按钮,一展开就被顶出屏幕。
-/// 搬进弹层之后阅读版式不受高度约束 —— tag 直接用全 app 的标准芯片([PromptChips],
-/// 英文译文双行、带权重深浅)。
+/// 桌面主会话在消息内展开 [ProposalDetails],移动端继续使用详情弹层。
+/// 两种展示共用差异明细和完整提示词,标签沿用 [PromptChips] 的权重与译文。
 ///
 /// **句子不画成芯片**,当文字排,改过的句子只标出改掉的那几个词(见 `prompt_diff.dart`)。
 ///
@@ -86,7 +85,6 @@ class _ProposalSheet extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
-    final added = diff.added, removed = diff.removed;
     return SafeArea(
       child: ConstrainedBox(
         // 高度给到 85%:行版一屏放十来条,再高就贴着状态栏了。
@@ -103,53 +101,13 @@ class _ProposalSheet extends StatelessWidget {
               child: ListView(
                 padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
                 children: [
-                  if (added.isEmpty && removed.isEmpty)
-                    Text(
-                      emptyNote,
-                      style: context.texts.bodyMedium!.copyWith(
-                        color: scheme.onSurfaceVariant,
-                      ),
-                    ),
-                  if (added.isNotEmpty)
-                    ..._diffGroup(
-                      context,
-                      '新增',
-                      added,
-                      words.added,
-                      diffAddColor,
-                    ),
-                  if (added.isNotEmpty && removed.isNotEmpty)
-                    const SizedBox(height: 18),
-                  if (removed.isNotEmpty)
-                    ..._diffGroup(
-                      context,
-                      '移除',
-                      removed,
-                      words.removed,
-                      diffDelColor,
-                    ),
-                  const SizedBox(height: 22),
-                  _label(context, scheme, '完整提示词'),
-                  const SizedBox(height: 8),
-                  _fullPrompt(context, scheme),
-                  for (final c in characters) ...[
-                    const SizedBox(height: 18),
-                    _label(
-                      context,
-                      scheme,
-                      c.position == null
-                          ? c.name
-                          : '${c.name} · ${positionChipLabel(c.position)}',
-                    ),
-                    const SizedBox(height: 8),
-                    SelectableText(
-                      c.positive.trim().isEmpty ? '(空)' : c.positive,
-                      style: context.texts.bodyMedium!.copyWith(
-                        color: scheme.onSurfaceVariant,
-                        height: 1.7,
-                      ),
-                    ),
-                  ],
+                  ProposalDetails(
+                    diff: diff,
+                    words: words,
+                    positive: positive,
+                    characters: characters,
+                    emptyNote: emptyNote,
+                  ),
                 ],
               ),
             ),
@@ -198,6 +156,69 @@ class _ProposalSheet extends StatelessWidget {
       ],
     ),
   );
+}
+
+/// Read-only proposal content shared by an inline message and the mobile sheet.
+class ProposalDetails extends StatelessWidget {
+  const ProposalDetails({
+    super.key,
+    required this.diff,
+    required this.words,
+    required this.positive,
+    required this.characters,
+    required this.emptyNote,
+  });
+  final PromptDiff diff;
+  final ChangedWords words;
+  final String positive;
+  final List<ProposalChar> characters;
+  final String emptyNote;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    final added = diff.added, removed = diff.removed;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (added.isEmpty && removed.isEmpty)
+          Text(
+            emptyNote,
+            style: context.texts.bodyMedium!.copyWith(
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+        if (added.isNotEmpty)
+          ..._diffGroup(context, '新增', added, words.added, diffAddColor),
+        if (added.isNotEmpty && removed.isNotEmpty) const SizedBox(height: 18),
+        if (removed.isNotEmpty)
+          ..._diffGroup(context, '移除', removed, words.removed, diffDelColor),
+        const SizedBox(height: 22),
+        _label(context, scheme, '完整提示词'),
+        const SizedBox(height: 8),
+        _fullPrompt(context, scheme),
+        for (final c in characters) ...[
+          const SizedBox(height: 18),
+          _label(
+            context,
+            scheme,
+            c.position == null
+                ? c.name
+                : '${c.name} · ${positionChipLabel(c.position)}',
+          ),
+          const SizedBox(height: 8),
+          SelectableText(
+            c.positive.trim().isEmpty ? '(空)' : c.positive,
+            style: context.texts.bodyMedium!.copyWith(
+              color: scheme.onSurfaceVariant,
+              height: 1.7,
+            ),
+          ),
+        ],
+      ],
+    );
+  }
 
   /// 一组差异:带色的组标题,tag 排成全 app 标准芯片,句子一句一段排在芯片下面。
   ///

@@ -5,7 +5,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/theme/app_theme.dart';
+import '../../core/platform/desktop.dart';
+import '../../core/util/preview_cache.dart';
+import '../desktop/library_samples.dart';
 import '../../core/ui/selection_bar.dart';
+import '../../core/ui/image_drop.dart';
 import '../../core/util/image_pick.dart';
 import '../generate/generate_state.dart';
 import '../generate/models.dart';
@@ -28,6 +32,7 @@ class _CharLibraryPageState extends ConsumerState<CharLibraryPage> {
   late final List<CharRefItem> _snapshot;
   // 加入角色参考会因互斥停用 Vibe,快照一并保存,「取消」时连同还原。
   late final List<VibeItem> _vibesSnapshot;
+  bool _showSamples = false;
   String _search = '';
   bool _busy = false;
 
@@ -170,11 +175,18 @@ class _CharLibraryPageState extends ConsumerState<CharLibraryPage> {
   Future<void> _importImages() async {
     final files = await pickImageFiles(context);
     if (files.isEmpty || !mounted) return;
+    await _importPickedImages(files);
+  }
+
+  Future<void> _importPickedImages(List<PickedImage> files) async {
+    if (_busy || !mounted || files.isEmpty) return;
     setState(() => _busy = true);
     var n = 0;
+    final library = _lib;
     for (final f in files) {
+      if (!mounted) break;
       try {
-        await _lib.importImageBytes(f.bytes, f.baseName);
+        await library.importImageBytes(f.bytes, f.baseName);
         n++;
       } catch (_) {}
     }
@@ -222,6 +234,19 @@ class _CharLibraryPageState extends ConsumerState<CharLibraryPage> {
     List<CharRefItem> refs,
     List<CharRefEntry> checked,
   ) {
+    if (ref.watch(desktopModeProvider)) {
+      return ImageDropRegion(
+        key: const ValueKey('char-library-image-drop'),
+        label: '导入角色参考图库',
+        enabled: !_busy,
+        multiple: true,
+        onDrop: (images, _) async {
+          await _importPickedImages(images);
+          if (mounted) setState(() => _showSamples = false);
+        },
+        child: _desktopScaffold(scheme, all, refs, checked),
+      );
+    }
     return Scaffold(
       appBar: AppBar(
         title: const Text('角色参考图库'),
@@ -311,19 +336,28 @@ class _CharLibraryPageState extends ConsumerState<CharLibraryPage> {
     }
     return GridView.builder(
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 2,
-        mainAxisSpacing: 10,
-        crossAxisSpacing: 10,
-        childAspectRatio: 0.82,
-      ),
+      gridDelegate: ref.watch(desktopModeProvider)
+          ? const SliverGridDelegateWithMaxCrossAxisExtent(
+              maxCrossAxisExtent: 220,
+              mainAxisExtent: 246,
+              mainAxisSpacing: 14,
+              crossAxisSpacing: 14,
+            )
+          : const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 2,
+              mainAxisSpacing: 10,
+              crossAxisSpacing: 10,
+              childAspectRatio: 0.82,
+            ),
       itemCount: list.length,
       itemBuilder: (context, i) {
         final e = list[i];
         return _CharCard(
           entry: e,
           checked: _activeItemId(e) != null,
-          thumb: _lib.thumbOf(e),
+          thumb: ref.watch(desktopModeProvider)
+              ? _lib.fileOf(e)
+              : _lib.thumbOf(e),
           onTap: () => _toggle(e),
           onRename: () => _rename(e),
           onDelete: () => _deleteOne(e),
@@ -331,6 +365,89 @@ class _CharLibraryPageState extends ConsumerState<CharLibraryPage> {
       },
     );
   }
+
+  Widget _desktopScaffold(
+    ColorScheme scheme,
+    List<CharRefEntry>? all,
+    List<CharRefItem> refs,
+    List<CharRefEntry> checked,
+  ) => Scaffold(
+    appBar: AppBar(
+      toolbarHeight: 56,
+      title: const Text(
+        '角色参考图库',
+        style: TextStyle(fontSize: 19, fontWeight: FontWeight.w700),
+      ),
+      actions: [
+        TextButton.icon(
+          onPressed: () => setState(() => _showSamples = !_showSamples),
+          icon: const Icon(Icons.auto_awesome_mosaic_outlined, size: 18),
+          label: Text(_showSamples ? '我的素材' : '示例预览'),
+        ),
+        const SizedBox(width: 10),
+        FilledButton.icon(
+          onPressed: _busy ? null : _importImages,
+          icon: const Icon(Icons.add_photo_alternate_outlined, size: 18),
+          label: const Text('导入图片'),
+        ),
+        const SizedBox(width: 20),
+      ],
+    ),
+    body: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 12, 14, 8),
+            child: Row(
+              children: [
+                Text(
+                  '我的素材 · ${all?.length ?? 0}',
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Text('点选图片加入角色参考', style: context.texts.bodySmall),
+                ),
+                SizedBox(
+                  width: 280,
+                  child: TextField(
+                    onChanged: (v) => setState(() => _search = v),
+                    style: const TextStyle(fontSize: 12),
+                    decoration: InputDecoration(
+                      hintText: '搜索名称…',
+                      prefixIcon: const Icon(Icons.search, size: 18),
+                      isDense: true,
+                      filled: true,
+                      fillColor: scheme.surface,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: BorderSide.none,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (_busy) const LinearProgressIndicator(minHeight: 2),
+          Expanded(
+            child: _showSamples || all != null && all.isEmpty && _search.isEmpty
+                ? const LibrarySamples()
+                : all == null
+                ? const Center(child: CircularProgressIndicator())
+                : _grid(_visible(all)),
+          ),
+        ],
+      ),
+    ),
+    bottomNavigationBar: _showSamples
+        ? null
+        : _bottomBar(scheme, checked, refs),
+  );
 
   Widget _bottomBar(
     ColorScheme scheme,
@@ -371,7 +488,7 @@ class _CharLibraryPageState extends ConsumerState<CharLibraryPage> {
 }
 
 /// 本地卡片:点卡 = 加入/移出生成;右上菜单 = 重命名 / 删除。外观对齐 Vibe 卡。
-class _CharCard extends StatelessWidget {
+class _CharCard extends ConsumerWidget {
   const _CharCard({
     required this.entry,
     required this.checked,
@@ -389,7 +506,7 @@ class _CharCard extends StatelessWidget {
   final VoidCallback onDelete;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final scheme = context.scheme;
     return Container(
       decoration: BoxDecoration(
@@ -419,18 +536,21 @@ class _CharCard extends StatelessWidget {
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  Image.file(
-                    thumb,
-                    fit: BoxFit.cover,
-                    gaplessPlayback: true,
-                    errorBuilder: (_, _, _) => ColoredBox(
-                      color: scheme.surfaceContainerHigh,
-                      child: Icon(
-                        Icons.broken_image_outlined,
-                        color: scheme.outline,
+                  if (ref.watch(desktopModeProvider))
+                    FittedFilePreview(thumb)
+                  else
+                    Image.file(
+                      thumb,
+                      fit: BoxFit.cover,
+                      gaplessPlayback: true,
+                      errorBuilder: (_, _, _) => ColoredBox(
+                        color: scheme.surfaceContainerHigh,
+                        child: Icon(
+                          Icons.broken_image_outlined,
+                          color: scheme.outline,
+                        ),
                       ),
                     ),
-                  ),
                   if (checked)
                     Container(color: scheme.primary.withValues(alpha: .18)),
                   Positioned(top: 8, left: 8, child: _checkbox(scheme)),

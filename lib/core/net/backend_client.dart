@@ -1,3 +1,4 @@
+import '../util/canonical_number.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -1549,7 +1550,7 @@ class BackendClient {
   }) async {
     final j = await _postJson('/vibe/encode', {
       'image': imageBase64,
-      'information_extracted': informationExtracted,
+      'information_extracted': canonicalNumber(informationExtracted),
       'model': model,
     }, sessionId);
     final enc = j['encoding'] as String?;

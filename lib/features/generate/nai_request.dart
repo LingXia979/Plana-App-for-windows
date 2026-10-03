@@ -1,3 +1,4 @@
+import '../../core/util/canonical_number.dart';
 import 'dart:convert';
 import 'dart:math';
 
@@ -303,7 +304,7 @@ Map<String, double> _center(String? pos) {
     params['reference_image_multiple'] = [for (final v in vibes) v.encoded];
     params['reference_strength_multiple'] = normalizeVibeStrengths([
       for (final v in vibes) v.strength,
-    ], on: p.normalizeVibe);
+    ], on: p.normalizeVibe).map(canonicalNumber).toList();
   }
 
   // 角色参考(Director/Precise Reference):仅 4.5 模型下发,其余静默不发。

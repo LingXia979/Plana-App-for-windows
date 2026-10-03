@@ -1,3 +1,4 @@
+import '../../core/ui/settings_scaffold.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -5,11 +6,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/net/remote_image.dart';
 import '../../core/store/app_stores.dart';
 import '../../core/store/cache_sweep.dart';
+import '../../core/store/inpaint_history_cleanup.dart';
 import '../../core/store/storage_settings.dart';
 import '../../core/store/storage_stats.dart';
 import '../../core/theme/app_theme.dart';
 import '../char_library/char_library.dart';
 import '../gallery/gallery_state.dart';
+import '../generate/generation_controller.dart' show generationProvider;
 import '../generate/vibe_cache.dart';
 import '../generate/widgets/common.dart' show confirmDialog, hintSnack;
 import '../inspiration/codex/codex_providers.dart';
@@ -49,6 +52,7 @@ const _kCacheKeys = ['temp', 'imgCache', 'codexCache', 'blobs'];
 ///   不能为了少几行把它们捆成一键。
 const _cleanable = <_CatSpec>[
   _CatSpec(_kCacheKeys, Icons.cached, '缓存文件', '清理'),
+  _CatSpec(['inpaintHistory'], Icons.layers_clear_outlined, '历史重绘原图与蒙版', '清理'),
   _CatSpec(['vibeEnc'], Icons.bolt_outlined, 'Vibe 编码缓存', '清空'),
   _CatSpec(['models'], Icons.hd_outlined, '超分模型(遗留)', '删除'),
   _CatSpec(['tagPrev'], Icons.lightbulb_outline, '灵感预览图', '清空'),
@@ -61,6 +65,8 @@ class _StoragePageState extends ConsumerState<StoragePage> {
   StorageReport? _report;
   String? _busy; // 正在清理的分类 key
   bool _scanning = false;
+  InpaintHistoryUsage? _inpaintHistory;
+  String? _inpaintScanError;
 
   @override
   void initState() {
@@ -71,6 +77,7 @@ class _StoragePageState extends ConsumerState<StoragePage> {
   Future<void> _refresh() async {
     setState(() => _scanning = true);
     final rep = await scanStorage();
+    await _scanInpaintHistory();
     if (!mounted) return;
     setState(() {
       _report = rep;
@@ -78,11 +85,25 @@ class _StoragePageState extends ConsumerState<StoragePage> {
     });
   }
 
+  Future<void> _scanInpaintHistory() async {
+    try {
+      _inpaintHistory = await InpaintHistoryCleanup.forStores(
+        ref.read(appStoresProvider),
+      ).scan();
+      _inpaintScanError = null;
+    } catch (_) {
+      _inpaintHistory = null;
+      _inpaintScanError = '无法确认数据引用，请稍后重新扫描';
+    }
+  }
+
   /// 各分类占用之和(合并行按它取数)。
   int _bytesOf(StorageReport? rep, List<String> keys) {
     var sum = 0;
     for (final k in keys) {
-      sum += rep?[k]?.bytes ?? 0;
+      sum += k == 'inpaintHistory'
+          ? _inpaintHistory?.releasableBytes ?? 0
+          : rep?[k]?.bytes ?? 0;
     }
     return sum;
   }
@@ -98,6 +119,7 @@ class _StoragePageState extends ConsumerState<StoragePage> {
       await ref.read(appStoresProvider).gallery.idle;
       await Future<void>.delayed(const Duration(milliseconds: 300));
       final rep = await scanStorage();
+      await _scanInpaintHistory();
       if (!mounted) return;
       final freed = before - _bytesOf(rep, keys);
       setState(() {
@@ -121,7 +143,7 @@ class _StoragePageState extends ConsumerState<StoragePage> {
     StorageSettings Function(StorageSettings) change,
   ) async {
     await ref.read(storageSettingsProvider.notifier).patch(change);
-    ref.read(galleryProvider.notifier).enforceCap();
+    await ref.read(galleryProvider.notifier).enforceCap();
     await ref.read(vibeLibraryProvider.notifier).enforceCap();
     await ref.read(charLibraryProvider.notifier).enforceCap();
     await ref.read(appStoresProvider).gallery.idle;
@@ -133,10 +155,15 @@ class _StoragePageState extends ConsumerState<StoragePage> {
   Future<void> _gcBlobs() async {
     final stores = ref.read(appStoresProvider);
     stores.flushNow();
-    await stores.gallery.idle;
+    await Future.wait([
+      stores.gallery.idle,
+      stores.workspace.idle,
+      stores.assistant.idle,
+    ]);
     final live = <String>{
       ...await stores.workspace.liveRefs(),
       ...await stores.gallery.liveRefs(),
+      ...await stores.assistant.liveRefs(),
     };
     await stores.blobs.gc(live, minAge: const Duration(minutes: 5));
   }
@@ -144,6 +171,8 @@ class _StoragePageState extends ConsumerState<StoragePage> {
   Future<void> _onAction(String key) async {
     final stores = ref.read(appStoresProvider);
     switch (key) {
+      case 'inpaintHistory':
+        await _clearInpaintHistory();
       // 合并行「缓存文件」:四样一起清。全是免费重建的,不必确认。
       case 'temp':
         await _run(_kCacheKeys, () async {
@@ -240,10 +269,55 @@ class _StoragePageState extends ConsumerState<StoragePage> {
     }
   }
 
+  Future<void> _clearInpaintHistory() async {
+    if (_busy != null || ref.read(generationProvider).busy) return;
+    final ok = await confirmDialog(
+      context,
+      title: '清理历史重绘原图与蒙版',
+      message:
+          '清理后，历史作品将不能查看“旧的”对比，也不能恢复当时的蒙版继续编辑。'
+          '生成成品、提示词和普通生成设置会保留。\n\n'
+          '当前工作台仍在使用，以及其他图片参数或 AI 助手共用的数据会保留。'
+          '此操作不可恢复。',
+      confirmLabel: '清理',
+    );
+    if (!ok || !mounted) return;
+    setState(() => _busy = 'inpaintHistory');
+    try {
+      final result = await ref
+          .read(galleryProvider.notifier)
+          .clearInpaintHistory();
+      final rep = await scanStorage();
+      await _scanInpaintHistory();
+      if (!mounted) return;
+      setState(() {
+        _report = rep;
+        _busy = null;
+      });
+      final extra = result.failedIds.isNotEmpty
+          ? '；部分数据未清理，请重试'
+          : result.reclamationDeferred
+          ? '；正在使用的数据已保留'
+          : '';
+      hintSnack(
+        context,
+        '已清理 ${result.clearedIds.length} 条重绘历史，释放 ${fmtBytes(result.releasedBytes)}$extra',
+        icon: Icons.check_circle_outline,
+      );
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _busy = null);
+      hintSnack(context, '清理失败：$error', icon: Icons.error_outline);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final rep = _report;
-    return Scaffold(
+    final generating = ref.watch(
+      generationProvider.select((pool) => pool.busy),
+    );
+    return SettingsScaffold(
       appBar: AppBar(
         title: const Text('存储管理'),
         actions: [
@@ -262,6 +336,7 @@ class _StoragePageState extends ConsumerState<StoragePage> {
                 physics: const AlwaysScrollableScrollPhysics(),
                 padding: const EdgeInsets.fromLTRB(14, 8, 14, 24),
                 children: [
+                  const SettingsPageHeader(),
                   _TotalCard(report: rep, scanning: _scanning),
                   const SizedBox(height: 16),
                   const SettingsLabel('自动清理上限'),
@@ -275,7 +350,19 @@ class _StoragePageState extends ConsumerState<StoragePage> {
                           spec: spec,
                           bytes: _bytesOf(rep, spec.keys),
                           busy: _busy == spec.id,
-                          enabled: _busy == null,
+                          enabled:
+                              _busy == null &&
+                              (spec.id != 'inpaintHistory' ||
+                                  (!generating && _inpaintHistory != null)),
+                          hasContent: spec.id == 'inpaintHistory'
+                              ? (_inpaintHistory?.count ?? 0) > 0
+                              : null,
+                          description: spec.id == 'inpaintHistory'
+                              ? _inpaintScanError ??
+                                    (generating
+                                        ? '生成或保存完成后可清理'
+                                        : '${_inpaintHistory?.count ?? 0} 条历史 · 仅显示可释放空间\n工作台及其他地方共用的数据会保留')
+                              : null,
                           onAction: () => _onAction(spec.id),
                         ),
                     ],
@@ -307,7 +394,7 @@ class _TotalCard extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      '总占用',
+                      '应用数据占用',
                       style: context.texts.bodySmall!.copyWith(
                         color: scheme.onSurfaceVariant,
                       ),
@@ -319,12 +406,32 @@ class _TotalCard extends StatelessWidget {
                         fontWeight: FontWeight.w700,
                       ),
                     ),
-                    const SizedBox(height: 2),
+                    const SizedBox(height: 4),
                     Text(
-                      '其他 ${fmtBytes(report.otherBytes)}',
-                      style: context.texts.labelSmall!.copyWith(
-                        color: scheme.outline,
+                      '仅统计 Plana 数据、缓存与自动保存作品，不含程序本体',
+                      style: context.texts.bodySmall!.copyWith(
+                        color: scheme.onSurfaceVariant,
                       ),
+                    ),
+                    const SizedBox(height: 4),
+                    Wrap(
+                      spacing: 14,
+                      runSpacing: 4,
+                      children: [
+                        if (report['outputs'] case final outputs?)
+                          Text(
+                            '自动保存作品 ${fmtBytes(outputs.bytes)}',
+                            style: context.texts.labelSmall!.copyWith(
+                              color: scheme.outline,
+                            ),
+                          ),
+                        Text(
+                          '其他 ${fmtBytes(report.otherBytes)}',
+                          style: context.texts.labelSmall!.copyWith(
+                            color: scheme.outline,
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 ),
@@ -468,6 +575,8 @@ class _CleanRow extends StatelessWidget {
     required this.busy,
     required this.enabled,
     required this.onAction,
+    this.description,
+    this.hasContent,
   });
 
   final _CatSpec spec;
@@ -475,11 +584,13 @@ class _CleanRow extends StatelessWidget {
   final bool busy;
   final bool enabled;
   final VoidCallback onAction;
+  final String? description;
+  final bool? hasContent;
 
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
-    final canAct = enabled && bytes > 0;
+    final canAct = enabled && (hasContent ?? bytes > 0);
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 6, 12, 6),
       child: Row(
@@ -487,11 +598,25 @@ class _CleanRow extends StatelessWidget {
           Icon(spec.icon, size: 20, color: scheme.onSurfaceVariant),
           const SizedBox(width: 12),
           Expanded(
-            child: Text(
-              spec.label,
-              style: context.texts.bodyMedium!.copyWith(
-                fontWeight: FontWeight.w600,
-              ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  spec.label,
+                  style: context.texts.bodyMedium!.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                if (description != null) ...[
+                  const SizedBox(height: 3),
+                  Text(
+                    description!,
+                    style: context.texts.bodySmall!.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ],
             ),
           ),
           Text(

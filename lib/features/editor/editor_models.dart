@@ -12,6 +12,113 @@ import 'dart:math' as math;
 import '../../core/util/prompt_convert.dart' show naiNumWeight;
 import 'data/suggestions.dart';
 
+/// Explicit provenance for the two folds created by one inspiration import.
+/// Names are anchors, not evidence of a relationship: only a persisted record
+/// with both unique, unchanged bodies authorizes deleting its counterpart.
+class PromptFoldLink {
+  const PromptFoldLink({
+    required this.id,
+    required this.positiveName,
+    required this.positiveBody,
+    required this.negativeName,
+    required this.negativeBody,
+  });
+
+  final String id;
+  final String positiveName, positiveBody, negativeName, negativeBody;
+
+  PromptFoldLink renamed(String positive, String negative) => PromptFoldLink(
+    id: id,
+    positiveName: positive,
+    positiveBody: positiveBody,
+    negativeName: negative,
+    negativeBody: negativeBody,
+  );
+
+  Map<String, String> toJson() => {
+    'id': id,
+    'positiveName': positiveName,
+    'positiveBody': positiveBody,
+    'negativeName': negativeName,
+    'negativeBody': negativeBody,
+  };
+
+  static List<PromptFoldLink> decode(Object? json) => [
+    if (json is List)
+      for (final item in json)
+        if (item is Map &&
+            [
+              'id',
+              'positiveName',
+              'positiveBody',
+              'negativeName',
+              'negativeBody',
+            ].every(
+              (key) =>
+                  item[key] is String &&
+                  (item[key] as String).trim().isNotEmpty,
+            ))
+          PromptFoldLink(
+            id: item['id'] as String,
+            positiveName: item['positiveName'] as String,
+            positiveBody: item['positiveBody'] as String,
+            negativeName: item['negativeName'] as String,
+            negativeBody: item['negativeBody'] as String,
+          ),
+  ];
+
+  @override
+  bool operator ==(Object other) =>
+      other is PromptFoldLink &&
+      id == other.id &&
+      positiveName == other.positiveName &&
+      positiveBody == other.positiveBody &&
+      negativeName == other.negativeName &&
+      negativeBody == other.negativeBody;
+
+  @override
+  int get hashCode =>
+      Object.hash(id, positiveName, positiveBody, negativeName, negativeBody);
+}
+
+/// Ambiguous, edited or unwrapped anchors lose their link conservatively. Old
+/// drafts without this sidecar are never inferred to contain paired folds.
+List<PromptFoldLink> validPromptFoldLinks(
+  String positive,
+  String negative,
+  Iterable<PromptFoldLink> links,
+) {
+  if (links.isEmpty) return const [];
+  final pos = parseFolds(positive), neg = parseFolds(negative);
+  bool matches(String text, List<FoldSpan> folds, String name, String body) {
+    final named = folds.where((fold) => fold.name == name).toList();
+    return named.length == 1 &&
+        text.substring(named.single.bodyStart, named.single.bodyEnd).trim() ==
+            body;
+  }
+
+  final candidates = links
+      .where(
+        (link) =>
+            matches(positive, pos, link.positiveName, link.positiveBody) &&
+            matches(negative, neg, link.negativeName, link.negativeBody),
+      )
+      .toList();
+  return [
+    for (final link in candidates)
+      if (candidates.where((other) => other.id == link.id).length == 1 &&
+          candidates
+                  .where((other) => other.positiveName == link.positiveName)
+                  .length ==
+              1 &&
+          candidates
+                  .where((other) => other.negativeName == link.negativeName)
+                  .length ==
+              1)
+        link,
+  ];
+}
+
 bool _isSpace(String c) => c == ' ' || c == '\t' || c == '\n' || c == '\r';
 
 /// [a, e) 里没收口的 `{` / `[` 层数与 `~` 个数。替前文的组收口的 `}` / `]`
@@ -1682,6 +1789,7 @@ List<FoldRef> parseFoldRefs(String text, Map<String, String> bodies) => [
 (String, Map<String, String>) collapseFolds(
   String draft, {
   Map<String, String> seed = const {},
+  void Function(FoldSpan fold, String name)? onCollapsed,
 }) {
   final folds = parseFolds(draft);
   if (folds.isEmpty) return (draft, const {});
@@ -1698,6 +1806,7 @@ List<FoldRef> parseFoldRefs(String text, Map<String, String> bodies) => [
       name = '${f.name} ${n++}';
     }
     bodies[name] = body;
+    onCollapsed?.call(f, name);
     out = out.replaceRange(f.start, f.end, foldRefLiteral(name));
   }
   return (out, bodies);
@@ -2098,8 +2207,31 @@ String setUnitsDisabled(
 }
 
 /// 解散折叠(一次性):占位符原地替换为内容,标题消失、成员平铺。
-String unfoldRef(String text, FoldRef r, Map<String, String> bodies) =>
-    text.replaceRange(r.start, r.end, bodies[r.name] ?? '');
+String unfoldRef(String text, FoldRef r, Map<String, String> bodies) {
+  final body = bodies[r.name] ?? '';
+  var start = r.start, end = r.end;
+  bool separator(String c) => c == ',' || c == '，' || c == '\n';
+  while (start > 0 && !separator(text[start - 1])) {
+    start--;
+  }
+  while (end < text.length && !separator(text[end])) {
+    end++;
+  }
+  // Match expandFolds: disabling a whole reference must disable every member
+  // when it is unfolded. A single ~a, b~ wrapper would only disable a.
+  if (text.substring(start, end).trim() == '~${foldRefLiteral(r.name)}~') {
+    final tokens = parseToks(body);
+    final disabled = tokens.isEmpty
+        ? ''
+        : batchSetDisabled(body, 0, tokens.length - 1, true);
+    return text.replaceRange(
+      text.indexOf('~', start),
+      text.indexOf('~', r.end) + 1,
+      disabled,
+    );
+  }
+  return text.replaceRange(r.start, r.end, body);
+}
 
 /// 输出串:**原样保留**(换行/间距/权重语法都不动),剔除禁用项
 /// (连同邻近逗号,同 deleteTok)并剥掉折叠记号。回写生成页 + 计 token。

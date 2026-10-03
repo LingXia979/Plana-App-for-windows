@@ -336,7 +336,7 @@ void main() {
         gal.addResult(bytes: _png, width: 8, height: 8, seed: i).id,
     ];
     // 当前选中最新一张 ids[3];删掉它 + 最旧的 ids[0]
-    gal.deleteResults([ids[3], ids[0]]);
+    await gal.deleteResults([ids[3], ids[0]]);
     final s = c.read(galleryProvider);
     expect([for (final r in s.results) r.id], [ids[2], ids[1]]);
     expect(s.selectedId, ids[2]); // 选中第一张被删 → 下一张
@@ -351,13 +351,13 @@ void main() {
     );
 
     // 删未选中的,选中不动;删不存在的 id 为空操作
-    gal.deleteResults([ids[1]]);
+    await gal.deleteResults([ids[1]]);
     expect(c.read(galleryProvider).selectedId, ids[2]);
-    gal.deleteResults(['gen999']);
+    await gal.deleteResults(['gen999']);
     expect(c.read(galleryProvider).results, hasLength(1));
 
     // 全删光:选中归 null,重载为空
-    gal.deleteResults([ids[2]]);
+    await gal.deleteResults([ids[2]]);
     expect(c.read(galleryProvider).results, isEmpty);
     expect(c.read(galleryProvider).selectedId, isNull);
     stores.flushNow();
@@ -395,6 +395,7 @@ void main() {
       for (var i = 0; i < 5; i++)
         gal.addResult(bytes: _png, width: 8, height: 8, seed: i).id,
     ];
+    await gal.enforceCap();
     expect(c.read(galleryProvider).results, hasLength(3));
     expect(
       [for (final r in c.read(galleryProvider).results) r.id],

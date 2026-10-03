@@ -1,5 +1,7 @@
 import '../../core/util/log.dart';
 import 'dart:async';
+import '../../core/platform/desktop.dart';
+import '../desktop/desktop_library_state.dart';
 import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
@@ -222,6 +224,9 @@ class _JobRun {
   /// 直连:那把 Key 打哪台机器(空 = 官方)。跟令牌一起由闸门定下 ——
   /// 这里自己再查一次会在中途增删 Key 时错位,把请求发到别人那台上。
   String base = '';
+
+  Uint8List? focusedPreviewPending;
+  bool focusedPreviewBusy = false;
 }
 
 class GenerationNotifier extends Notifier<GenPool> {
@@ -259,6 +264,47 @@ class GenerationNotifier extends Notifier<GenPool> {
     final next = [...state.jobs];
     next[i] = f(next[i]);
     state = state.copyWith(jobs: next);
+  }
+
+  /// Focused request frames have a different resolution from their original
+  /// canvas. Compose off the UI isolate and retain only the latest queued frame.
+  void _queueFocusedPreview(
+    String id,
+    _JobRun run,
+    InpaintJob job,
+    Uint8List bytes,
+  ) {
+    run.focusedPreviewPending = bytes;
+    if (run.focusedPreviewBusy) return;
+    run.focusedPreviewBusy = true;
+    unawaited(() async {
+      try {
+        while (run.focusedPreviewPending != null &&
+            ref.mounted &&
+            !run.abort.aborted) {
+          final current = _job(id);
+          if (current == null || current.stage == GenJobStage.saving) break;
+          final patch = run.focusedPreviewPending!;
+          run.focusedPreviewPending = null;
+          try {
+            final composed = await pasteFocusedInpaint(
+              job: job,
+              patch: patch,
+              preview: true,
+            );
+            if (!ref.mounted || run.abort.aborted) break;
+            if (_job(id)?.stage == GenJobStage.running) {
+              _patch(id, (j) => j.copyWith(preview: composed));
+            }
+          } catch (e) {
+            logd('[gen] focused preview failed: $e');
+          }
+        }
+      } finally {
+        run.focusedPreviewPending = null;
+        run.focusedPreviewBusy = false;
+      }
+    }());
   }
 
   /// 摘掉一条任务。它正被画布跟随时把跟随一并解除 —— 由调用方决定接下来
@@ -453,20 +499,29 @@ class GenerationNotifier extends Notifier<GenPool> {
     final firstOfBatch = state.jobs.isEmpty;
 
     // 挂占位卡:等位/拼载荷都可能要几秒,这段时间也得让用户看见任务已受理。
+    final focusedPaste = s.inpaint?.paste?.focus != null
+        ? s.inpaint?.paste
+        : null;
     final job = GenJob(
-      galleryTarget: galleryTarget ?? ref.read(gallerySaveTargetProvider),
+      galleryTarget:
+          galleryTarget ??
+          (ref.read(desktopModeProvider) &&
+                  ref.read(desktopLibraryProvider).automatic
+              ? ref.read(desktopLibraryProvider).capture(DateTime.now())
+              : ref.read(gallerySaveTargetProvider)),
       id: 'job${_seq++}',
       kind: s.inpaint != null ? GenJobKind.inpaint : GenJobKind.normal,
       stage: GenJobStage.waiting,
-      width: s.params.width,
-      height: s.params.height,
+      width: focusedPaste?.outW ?? s.params.width,
+      height: focusedPaste?.outH ?? s.params.height,
+      preview: focusedPaste?.original,
       seq: _seq,
       total: s.params.activeSteps,
       // 已经有别的在跑 → 这条多半要等位,先说清楚是在等而不是在准备
       note: state.jobs.isEmpty ? null : '等待中',
       // 局部重绘:流帧只是那块裁切区,画布要拿整张原图垫底才看得出在改哪儿。
-      pasteUnder: s.inpaint?.paste?.original,
-      pasteAt: switch (s.inpaint?.paste) {
+      pasteUnder: focusedPaste == null ? s.inpaint?.paste?.original : null,
+      pasteAt: switch (focusedPaste == null ? s.inpaint?.paste : null) {
         final p? => (x: p.sendX, y: p.sendY, w: p.tightW, h: p.tightH),
         _ => null,
       },
@@ -489,7 +544,9 @@ class GenerationNotifier extends Notifier<GenPool> {
     // [stay] 是调用方说「这一单我自己显示,别切页」—— AI 助手开了「图片显示在
     // 对话里」就走这条:图照常入库,只是不把人从对话里拽走。
     if (firstOfBatch && !_inFlow && !stay) {
-      ref.read(shellIndexProvider.notifier).select(kTabGallery);
+      ref
+          .read(shellIndexProvider.notifier)
+          .select(ref.read(desktopModeProvider) ? kTabCreate : kTabGallery);
     }
 
     try {
@@ -626,7 +683,7 @@ class GenerationNotifier extends Notifier<GenPool> {
         // 4. 拼载荷 + 流式生成
         final preset = await _applyPreset(s);
         built = buildNaiPayload(
-          preset.state,
+          focusedRequestState(preset.state),
           presetId: preset.presetId,
           qualityToggle: preset.qualityToggle,
           straightAlpha: _straightAlpha,
@@ -647,16 +704,18 @@ class GenerationNotifier extends Notifier<GenPool> {
           )) {
             last = f.bytes;
             final step = f.isFinal ? total : (f.step ?? 0);
+            final focused = s.inpaint?.paste?.focus != null;
             _patch(
               jobId,
               (j) => j.copyWith(
                 stage: GenJobStage.running,
                 step: step,
                 total: total,
-                preview: f.bytes,
+                preview: focused ? null : f.bytes,
                 clearNote: true,
               ),
             );
+            if (focused) _queueFocusedPreview(jobId, run, s.inpaint!, f.bytes);
             _pushProgress();
             if (f.isFinal) break;
           }
@@ -981,7 +1040,7 @@ class GenerationNotifier extends Notifier<GenPool> {
         final styleRefs = await _processKreaStyleRefs(s);
         final preset = await _applyPreset(s);
         final params = buildBotParams(
-          preset.state,
+          focusedRequestState(preset.state),
           seed: seed,
           presetId: preset.presetId,
           qualityToggle: preset.qualityToggle,
@@ -1035,6 +1094,7 @@ class GenerationNotifier extends Notifier<GenPool> {
           taskId: sub.taskId!,
           client: client,
           onProgress: (step, tot, preview, text) {
+            final focused = s.inpaint?.paste?.focus != null;
             // 采样前那段服务端报 total=0,照抄的话会把建任务时按档位算好的
             // 总步数抹成 0,进度条分母就没了
             final t = tot > 0 ? tot : total;
@@ -1051,9 +1111,12 @@ class GenerationNotifier extends Notifier<GenPool> {
                 note: text.isEmpty ? null : text,
                 clearNote: text.isEmpty,
                 prepPct: -1, // 有读数了,准备阶段那根条的百分比作废
-                preview: preview,
+                preview: focused ? null : preview,
               ),
             );
+            if (focused && preview != null) {
+              _queueFocusedPreview(jobId, run, s.inpaint!, preview);
+            }
             _pushProgress();
           },
           onQueue: (pos) {
@@ -1235,13 +1298,16 @@ class GenerationNotifier extends Notifier<GenPool> {
     final focusRevision = _focusRevision;
     final galleryTarget =
         _job(jobId)?.galleryTarget ?? const GallerySaveTarget.all();
+    final firstFocused = s.inpaint?.paste?.focus != null
+        ? await pasteFocusedInpaint(job: s.inpaint!, patch: batch.first)
+        : null;
     // 保存/缩略图/图库归属都有异步间隙。此时撤任务会让画布短暂露出旧图，
     // 必须保留终图，等主图选中（或建立跨图库临时预览）后再交给历史。
     _patch(
       jobId,
       (j) => j.copyWith(
         stage: GenJobStage.saving,
-        preview: batch.first,
+        preview: firstFocused ?? batch.first,
         step: j.total > 0 ? j.total : 1,
         total: j.total > 0 ? j.total : 1,
         prepPct: -1,
@@ -1257,6 +1323,7 @@ class GenerationNotifier extends Notifier<GenPool> {
         select: followed && i == 0,
         galleryTarget: galleryTarget,
         canSelect: () => _focusRevision == focusRevision,
+        focusedOutput: i == 0 ? firstFocused : null,
       );
     }
     _remove(jobId);
@@ -1289,13 +1356,20 @@ class GenerationNotifier extends Notifier<GenPool> {
     required bool select,
     required GallerySaveTarget galleryTarget,
     required bool Function() canSelect,
+    Uint8List? focusedOutput,
   }) async {
     final job = s.inpaint;
     var out = bytes;
     var w = s.params.width;
     var h = s.params.height;
     final paste = job?.paste;
-    if (paste != null) {
+    if (paste?.focus != null) {
+      // Failed validation must not silently publish a request-sized crop as a
+      // completed focused edit. Keep the source safe and surface the error.
+      out = focusedOutput ?? await pasteFocusedInpaint(job: job!, patch: bytes);
+      w = paste!.outW;
+      h = paste.outH;
+    } else if (paste != null) {
       try {
         out = await pasteBack(
           original: paste.original,

@@ -111,6 +111,7 @@ class HiresCard extends ConsumerWidget {
           const SizedBox(height: 6),
           LiveParamSlider(
             label: '二段步数 Hires Steps',
+            snapInputToDivisions: true,
             help: Help.hiresSteps,
             value: h.steps.toDouble(),
             max: kHiresStepsMax.toDouble(),

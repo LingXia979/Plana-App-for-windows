@@ -3,6 +3,9 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/platform/desktop.dart';
+import '../../../core/ui/desktop_popover.dart';
+
 import '../../../core/auth/auth_mode.dart';
 import '../../../core/net/anlas_provider.dart';
 import '../../../core/net/backend_client.dart' show NaiQuota;
@@ -235,15 +238,29 @@ class _Bar extends StatelessWidget {
 
 /// 点数与额度弹层。顶栏那枚胶囊点的就是它 —— 订阅档位、Anlas 余额、
 /// NAI 5 额度电池与回充节奏都在这一处,不在两个地方各摆一半。
-Future<void> showAnlasSheet(BuildContext context) => showModalBottomSheet<void>(
-  context: context,
-  useSafeArea: true,
-  isScrollControlled: true,
-  builder: (ctx) => const _AnlasSheet(),
-);
+Future<void> showAnlasSheet(BuildContext context) {
+  if (ProviderScope.containerOf(
+    context,
+    listen: false,
+  ).read(desktopModeProvider)) {
+    return showDesktopPopover(
+      context,
+      width: 370,
+      maxHeight: 460,
+      builder: (_) => const _AnlasSheet(desktop: true),
+    );
+  }
+  return showModalBottomSheet<void>(
+    context: context,
+    useSafeArea: true,
+    isScrollControlled: true,
+    builder: (ctx) => const _AnlasSheet(),
+  );
+}
 
 class _AnlasSheet extends ConsumerStatefulWidget {
-  const _AnlasSheet();
+  const _AnlasSheet({this.desktop = false});
+  final bool desktop;
 
   @override
   ConsumerState<_AnlasSheet> createState() => _AnlasSheetState();
@@ -262,7 +279,7 @@ class _AnlasSheetState extends ConsumerState<_AnlasSheet> {
   }
 
   Future<void> _refresh() async {
-    if (_busy) return;
+    if (!mounted || _busy) return;
     setState(() {
       _busy = true;
       _turns += 1;
@@ -285,7 +302,7 @@ class _AnlasSheetState extends ConsumerState<_AnlasSheet> {
 
     return SafeArea(
       child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        padding: EdgeInsets.fromLTRB(16, widget.desktop ? 10 : 0, 16, 16),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -319,6 +336,13 @@ class _AnlasSheetState extends ConsumerState<_AnlasSheet> {
                       ),
                     ),
                   ),
+                  if (widget.desktop)
+                    IconButton(
+                      tooltip: '关闭',
+                      visualDensity: VisualDensity.compact,
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.close, size: 18),
+                    ),
                 ],
               ),
             ),

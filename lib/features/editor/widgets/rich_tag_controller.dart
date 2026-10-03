@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 
 import '../../../core/theme/app_theme.dart';
-import '../../../core/theme/editor_theme.dart';
 import '../editor_models.dart';
 
 /// 富文本域基准样式。行高留高(2.0)给下方翻译预留空间。
@@ -27,10 +26,10 @@ const TextStyle kEditorBaseStyle = TextStyle(
 /// 注音字号(与 _FuriganaPainter 的 _transSize 一致,宽度测量用)。
 const TextStyle kTransMeasureStyle = TextStyle(fontSize: 9.5, height: 1);
 
-final _widthCache = <String, double>{};
+final _widthCache = <(String, TextStyle, TextScaler), double>{};
 
 double _textWidth(String s, TextStyle style, TextScaler scaler) {
-  final key = '${style.fontSize}|${scaler.scale(100)}|$s';
+  final key = (s, style, scaler);
   final hit = _widthCache[key];
   if (hit != null) return hit;
   final tp = TextPainter(
@@ -118,7 +117,6 @@ class RichTagController extends TextEditingController {
   }) {
     final base = style ?? kEditorBaseStyle;
     final scheme = context.scheme;
-    final pal = context.editor;
     final t = text;
     final spans = <WeightSpan>[];
     final toks = parseToks(t, weightSpans: spans);
@@ -127,30 +125,30 @@ class RichTagController extends TextEditingController {
         ? tagExtraSpacing(t, MediaQuery.textScalerOf(context), base: base)
         : const <int, double>{};
 
-    // 组权重记号(词条之外的 `1.2::`/`::`/`{`/`}`):按组方向着色,
-    // 不再混同于逗号的灰。取覆盖该字符的最内层权重区间定方向。
+    bool isMarker(String ch) =>
+        ch == ':' ||
+        ch == '{' ||
+        ch == '}' ||
+        ch == '[' ||
+        ch == ']' ||
+        ch == '~';
+
+    // 跨词条的组记号落在 token 之外,但前景色应和单词条一致:
+    // 数字用正文色,语法记号淡显。倍率方向和强度只由权重底色表达。
     Color? groupMarkColor(int k) {
       final ch = t[k];
-      final isMark =
-          ch == '{' ||
-          ch == '}' ||
-          ch == '[' ||
-          ch == ']' ||
-          ch == ':' ||
+      final marker = isMarker(ch);
+      final isSyntax =
+          marker ||
           ch == '-' ||
           ch == '.' ||
           (ch.codeUnitAt(0) >= 0x30 && ch.codeUnitAt(0) <= 0x39);
-      if (!isMark) return null;
-      WeightSpan? best;
-      for (final s in spans) {
-        if (k >= s.start && k < s.end) {
-          if (best == null || s.end - s.start < best.end - best.start) {
-            best = s;
-          }
-        }
+      if (!isSyntax || !spans.any((s) => k >= s.start && k < s.end)) {
+        return null;
       }
-      if (best == null || (best.mult - 1).abs() < 0.0001) return null;
-      return best.mult > 1 ? pal.weightUp : pal.weightDown;
+      return marker
+          ? scheme.onSurface.withValues(alpha: .45)
+          : scheme.onSurface;
     }
 
     // 折叠占位符 `<#名字>`:`#名字` 全彩 primary 当标题读,两侧尖括号淡一档。
@@ -200,18 +198,12 @@ class RichTagController extends TextEditingController {
       if (fc != null) {
         c = fc;
       } else if (!inTok) {
-        // 逗号/空隙灰;组权重记号按组方向着色
+        // 逗号/空隙灰;组权重记号沿用词条内的中性前景色
         c = groupMarkColor(k) ?? scheme.outline;
       } else {
         final tok = toks[ti];
         final ch = t[k];
-        final marker =
-            ch == ':' ||
-            ch == '{' ||
-            ch == '}' ||
-            ch == '[' ||
-            ch == ']' ||
-            ch == '~';
+        final marker = isMarker(ch);
         // 禁用要**一眼看得出来**。原先只降到 onSurfaceVariant,那个色和正常
         // 正文差得太少,加一道细划线基本看不出区别(实测反馈)。改成 outline
         // (最暗的那档前景色),配合加粗的划线和底下那层灰色带,三样一起说。

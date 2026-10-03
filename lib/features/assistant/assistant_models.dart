@@ -420,7 +420,8 @@ class AssistantMsg {
     required this.role,
     required this.text,
     required this.at,
-    this.imageHash,
+    String? imageHash,
+    List<String> imageHashes = const [],
     this.withCanvas = false,
     this.mode = AssistantMode.normal,
     this.noDraw = false,
@@ -430,7 +431,10 @@ class AssistantMsg {
     this.draw,
     this.change,
     this.errorKind,
-  });
+  }) : _legacyImageHash = imageHash,
+       // Keep the public constructor argument while the getter adds legacy data.
+       // ignore: prefer_initializing_formals
+       _imageHashes = imageHashes;
 
   final String id;
   final MsgRole role;
@@ -441,8 +445,18 @@ class AssistantMsg {
   /// UNIX 毫秒。
   final int at;
 
-  /// 用户这条带的图(blob 键)。仅 [MsgRole.user]。
-  final String? imageHash;
+  final String? _legacyImageHash;
+  final List<String> _imageHashes;
+
+  /// 用户这条带的全部原图(blob 键)，顺序与发送时一致。兼容旧单图存档。
+  List<String> get imageHashes => List.unmodifiable(
+    _imageHashes.isNotEmpty
+        ? _imageHashes
+        : [if (_legacyImageHash?.isNotEmpty == true) _legacyImageHash!],
+  );
+
+  /// 旧单图调用方仍可读取首图；多图调用方使用 [imageHashes]。
+  String? get imageHash => imageHashes.firstOrNull;
 
   /// 从这一轮的提议出过的图(图库条目 id,新的在后)。仅 [MsgRole.ai]。
   ///
@@ -511,7 +525,7 @@ class AssistantMsg {
     role: role,
     text: text ?? this.text,
     at: at,
-    imageHash: imageHash,
+    imageHashes: imageHashes,
     withCanvas: withCanvas,
     mode: mode,
     noDraw: noDraw,
@@ -529,6 +543,7 @@ class AssistantMsg {
     'text': text,
     'at': at,
     if (imageHash != null) 'imageHash': imageHash,
+    if (imageHashes.isNotEmpty) 'imageHashes': imageHashes,
     if (withCanvas) 'withCanvas': true,
     if (mode != AssistantMode.normal) 'mode': mode.name,
     if (noDraw) 'noDraw': true,
@@ -545,7 +560,12 @@ class AssistantMsg {
     role: MsgRole.values.asNameMap()[j['role']] ?? MsgRole.ai,
     text: j['text']?.toString() ?? '',
     at: (j['at'] as num?)?.toInt() ?? 0,
-    imageHash: j['imageHash'] as String?,
+    imageHash: j['imageHash'] is String ? j['imageHash'] as String : null,
+    imageHashes: [
+      if (j['imageHashes'] is List)
+        for (final hash in j['imageHashes'] as List)
+          if (hash is String && hash.isNotEmpty) hash,
+    ],
     withCanvas: j['withCanvas'] == true,
     mode: AssistantMode.values.asNameMap()[j['mode']] ?? AssistantMode.normal,
     // 「纯文本格式」早先是模式之一,那时存下的消息写的是 mode: noDraw

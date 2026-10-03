@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../../core/platform/desktop.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../../../core/ui/param_help.dart';
@@ -36,7 +38,7 @@ void dragStartHaptic(int _) => Haptics.medium();
 void dragEndHaptic(int _) => Haptics.selection();
 
 /// 圆形图标按钮(卡片头部的 + / 管理器等)
-class RoundIconBtn extends StatelessWidget {
+class RoundIconBtn extends ConsumerWidget {
   const RoundIconBtn(
     this.icon, {
     super.key,
@@ -55,7 +57,8 @@ class RoundIconBtn extends StatelessWidget {
   final String? tooltip;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final compact = ref.watch(desktopModeProvider);
     final btn = Material(
       color: context.scheme.surfaceContainerHigh,
       shape: const CircleBorder(),
@@ -63,8 +66,8 @@ class RoundIconBtn extends StatelessWidget {
       child: InkWell(
         onTap: onTap,
         child: SizedBox(
-          width: size,
-          height: size,
+          width: compact ? size.clamp(0, 30) : size,
+          height: compact ? size.clamp(0, 30) : size,
           child: Icon(
             icon,
             size: iconSize,
@@ -116,7 +119,7 @@ class CountBadge extends StatelessWidget {
 /// [divisions] 只定步长,**绝不下传给底层 Slider**:离散 Slider 每次都用 75ms
 /// easeInOut 把滑块「吸」到刻度上,手指已经走了滑块还在追,就是那股阻尼感。
 /// 这里改为拖动连续、就地量化——滑块永远贴着手指,数值照样落在步长上。
-class ParamSlider extends StatelessWidget {
+class ParamSlider extends ConsumerWidget {
   const ParamSlider({
     super.key,
     required this.label,
@@ -127,6 +130,8 @@ class ParamSlider extends StatelessWidget {
     this.max = 1,
     this.divisions,
     this.inputDivisions,
+    this.snapInputToDivisions = false,
+    this.onInputCommit,
     this.valueText,
     this.caption,
     this.trailing,
@@ -144,9 +149,11 @@ class ParamSlider extends StatelessWidget {
   final double max;
   final int? divisions;
 
-  /// 手输弹窗的步长,默认跟 [divisions] 走。
-  /// [LiveParamSlider] 拖动要连续所以不下传 divisions,但手输仍该落在刻度上。
+  /// 手输的显示位数与加减步长,默认跟 [divisions] 走。
+  /// 小数手输保留原精度;仅整数参数开启 [snapInputToDivisions]。
   final int? inputDivisions;
+  final bool snapInputToDivisions;
+  final ValueChanged<double>? onInputCommit;
   final String? valueText;
   final String? caption;
   final Widget? trailing;
@@ -169,14 +176,23 @@ class ParamSlider extends StatelessWidget {
       min: min,
       max: max,
       divisions: inputDivisions ?? divisions,
+      snapToDivisions: snapInputToDivisions,
     );
     if (v == null) return;
+    _commitInput(v);
+  }
+
+  void _commitInput(double v) {
+    if (onInputCommit != null) {
+      onInputCommit!(v);
+      return;
+    }
     onChanged?.call(v);
     onChangeEnd?.call(v);
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final labelStyle = dense
         ? context.texts.labelSmall!.copyWith(
             color: context.scheme.onSurfaceVariant,
@@ -194,11 +210,24 @@ class ParamSlider extends StatelessWidget {
                   : HelpLabel(text: label, help: help!, style: labelStyle),
             ),
             if (trailing != null) ...[trailing!, const SizedBox(width: 8)],
-            ParamValueBox(
-              text: valueText ?? value.toStringAsFixed(2),
-              dense: dense,
-              onTap: onChanged == null ? null : () => _input(context),
-            ),
+            if (ref.watch(desktopModeProvider))
+              InlineParamInput(
+                label: label,
+                value: value,
+                min: min,
+                max: max,
+                divisions: inputDivisions ?? divisions,
+                snapToDivisions: snapInputToDivisions,
+                text: valueText,
+                dense: dense,
+                onCommit: onChanged == null ? null : _commitInput,
+              )
+            else
+              ParamValueBox(
+                text: valueText ?? value.toStringAsFixed(2),
+                dense: dense,
+                onTap: onChanged == null ? null : () => _input(context),
+              ),
           ],
         ),
         SizedBox(
@@ -244,6 +273,7 @@ class LiveParamSlider extends StatefulWidget {
     this.min = 0,
     this.max = 1,
     this.divisions,
+    this.snapInputToDivisions = false,
     this.caption,
     this.dense = false,
     this.help,
@@ -257,6 +287,7 @@ class LiveParamSlider extends StatefulWidget {
   final double min;
   final double max;
   final int? divisions;
+  final bool snapInputToDivisions;
   final String? caption;
   final bool dense;
   final ParamHelp? help;
@@ -286,8 +317,13 @@ class _LiveParamSliderState extends State<LiveParamSlider> {
       max: widget.max,
       valueText: widget.valueTextOf?.call(live),
       // 拖动时连读数都不量化(本地值,不外发);松手才按步长落位。
-      // 手输走弹窗、没有「拖」的过程,步长照给。
+      // 手输单独提交,不经过拖动结束时的量化。
       inputDivisions: widget.divisions,
+      snapInputToDivisions: widget.snapInputToDivisions,
+      onInputCommit: (v) {
+        widget.onCommit(v);
+        setState(() => _drag = null);
+      },
       caption: widget.caption,
       dense: widget.dense,
       help: widget.help,
@@ -495,6 +531,8 @@ class RefThumb extends StatelessWidget {
     super.key,
     required this.selected,
     required this.onTap,
+    this.onTapUp,
+    this.onTapCancel,
     this.enabled = true,
     this.width = 60,
     this.height = 60,
@@ -503,6 +541,11 @@ class RefThumb extends StatelessWidget {
 
   final bool selected;
   final VoidCallback onTap;
+
+  /// Optional completed-tap handler for immediate selection plus a later
+  /// double-click preview. Replaces onTap without delaying the first click.
+  final GestureTapUpCallback? onTapUp;
+  final GestureTapCancelCallback? onTapCancel;
   final bool enabled;
   final double width;
   final double height;
@@ -511,8 +554,11 @@ class RefThumb extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
-    return GestureDetector(
-      onTap: onTap,
+    final thumb = GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTapUp == null ? onTap : null,
+      onTapUp: onTapUp,
+      onTapCancel: onTapCancel,
       child: AnimatedContainer(
         duration: Motion.fast,
         curve: Motion.standard,
@@ -552,6 +598,12 @@ class RefThumb extends StatelessWidget {
         ),
       ),
     );
+    return onTapUp == null
+        ? thumb
+        : Tooltip(
+            message: '双击放大查看',
+            child: MouseRegion(cursor: SystemMouseCursors.zoomIn, child: thumb),
+          );
   }
 }
 
@@ -645,7 +697,7 @@ class AddTile extends StatelessWidget {
 }
 
 /// 参考图详情头:「参考图 N」+ 文件名 + 移除药丸 —— Vibe / 角色参考 共用
-class RefDetailHeader extends StatelessWidget {
+class RefDetailHeader extends ConsumerWidget {
   const RefDetailHeader({
     super.key,
     required this.index,
@@ -666,8 +718,47 @@ class RefDetailHeader extends StatelessWidget {
   final Widget? leadingAction;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final scheme = context.scheme;
+    if (ref.watch(desktopModeProvider)) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              if (enableToggle != null) ...[
+                enableToggle!,
+                const SizedBox(width: 5),
+              ],
+              Expanded(
+                child: Text(
+                  '参考图 $index · $name',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              IconButton(
+                tooltip: '移除参考图',
+                onPressed: onRemove,
+                icon: Icon(Icons.delete_outline, size: 19, color: scheme.error),
+              ),
+            ],
+          ),
+          if (leadingAction != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: leadingAction,
+              ),
+            ),
+        ],
+      );
+    }
     return Row(
       children: [
         if (enableToggle != null) ...[enableToggle!, const SizedBox(width: 4)],

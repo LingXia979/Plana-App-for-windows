@@ -8,7 +8,8 @@ import '../editor_settings.dart';
 /// 编辑器设置弹层:行为开关 + 档位选择 + 加减调节,改动即时生效并持久化。
 /// 按模块分组;子项跟随所属功能开关置灰(补全关了实体/逗号无意义)。
 class EditorSettingsSheet extends ConsumerWidget {
-  const EditorSettingsSheet({super.key});
+  const EditorSettingsSheet({super.key, this.desktop = false});
+  final bool desktop;
 
   /// 正文之上那一坨固定高度:顶栏 72(返回行 54 + token 进度条 18)
   /// + 正文区自己的上内边距 8。
@@ -43,7 +44,9 @@ class EditorSettingsSheet extends ConsumerWidget {
 
     return Material(
       color: scheme.surfaceContainer,
-      borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+      borderRadius: desktop
+          ? BorderRadius.circular(16)
+          : const BorderRadius.vertical(top: Radius.circular(16)),
       child: ConstrainedBox(
         constraints: BoxConstraints(maxHeight: _maxHeight(context)),
         child: Column(
@@ -53,19 +56,20 @@ class EditorSettingsSheet extends ConsumerWidget {
             // 抓手与标题栏留在滚动区**外面**:整片都塞进 SingleChildScrollView
             // 的话,下拉手势全被滚动条吃掉,弹层自带的下拉关闭永远轮不到
             // (真机反馈:拉不动也没地方点关)。右侧再给一个 ✕ 兜底。
-            Padding(
-              padding: const EdgeInsets.only(top: 10),
-              child: Center(
-                child: Container(
-                  width: 36,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: scheme.outline.withValues(alpha: .5),
-                    borderRadius: BorderRadius.circular(2),
+            if (!desktop)
+              Padding(
+                padding: const EdgeInsets.only(top: 10),
+                child: Center(
+                  child: Container(
+                    width: 36,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: scheme.outline.withValues(alpha: .5),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
                   ),
                 ),
               ),
-            ),
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 8, 8, 0),
               child: Row(

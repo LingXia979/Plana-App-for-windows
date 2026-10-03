@@ -1,3 +1,4 @@
+import '../../core/ui/settings_scaffold.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/store/ui_prefs.dart';
@@ -62,7 +63,7 @@ class _StatsPageState extends ConsumerState<StatsPage> {
     final session = ref.watch(botSessionProvider).value;
     final ledger = ref.watch(appStoresProvider).ledger;
 
-    return Scaffold(
+    return SettingsScaffold(
       appBar: AppBar(
         title: const Text('统计'),
         actions: [
@@ -80,6 +81,7 @@ class _StatsPageState extends ConsumerState<StatsPage> {
         listenable: ledger.rev,
         builder: (context, _) {
           final children = <Widget>[
+            const SettingsPageHeader(),
             RangeChips(range: _range, onChanged: _setRange),
             const SizedBox(height: 14),
           ];

@@ -4,9 +4,13 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/store/app_stores.dart';
+import '../../core/store/inpaint_history_cleanup.dart';
+import '../../core/platform/desktop.dart';
+import '../../core/store/date_album.dart';
 import '../../core/store/storage_settings.dart';
 import '../generate/models.dart' show GenerateState;
-import '../generate/generation_controller.dart' show genNoticeProvider;
+import '../generate/generation_controller.dart'
+    show genNoticeProvider, generationProvider;
 import 'albums/album_models.dart';
 import 'albums/album_state.dart';
 import 'gallery_search.dart';
@@ -21,6 +25,12 @@ final galleryProvider = NotifierProvider<GalleryNotifier, GalleryState>(
 final galleryImageProvider = FutureProvider.autoDispose
     .family<Uint8List?, String>(
       (ref, id) => ref.watch(appStoresProvider).gallery.readImage(id),
+    );
+
+/// Saved generation parameters, loaded alongside the full image in the viewer.
+final galleryInputProvider = FutureProvider.autoDispose
+    .family<GenerateState?, String>(
+      (ref, id) => ref.watch(appStoresProvider).gallery.readInput(id),
     );
 
 /// 结果缩略图懒读(胶片条/网格用,缺缩略图时店内退回原图)。
@@ -100,6 +110,7 @@ class GalleryState {
 class GalleryNotifier extends Notifier<GalleryState> {
   int _seq = 0;
   int _selectionRevision = 0;
+  int _clearRevision = 0;
   int get selectionRevision => _selectionRevision;
   final _writes = <String, Future<void>>{};
 
@@ -114,7 +125,7 @@ class GalleryNotifier extends Notifier<GalleryState> {
     _seq = store.seq;
     // 上限设置就绪/变更时裁剪(冷启动水合的超长历史也在这里收口)
     ref.listen(storageSettingsProvider, (_, next) {
-      if (next.hasValue) enforceCap();
+      if (next.hasValue) unawaited(enforceCap());
     });
     return GalleryState(
       results: store.initialResults,
@@ -123,21 +134,11 @@ class GalleryNotifier extends Notifier<GalleryState> {
   }
 
   /// 图库上限裁剪:超出上限删最旧(列表尾部),文件一并删。
-  void enforceCap() {
+  Future<void> enforceCap() async {
     final cap = ref.read(storageSettingsProvider).value?.galleryCap ?? 0;
     if (cap <= 0 || state.results.length <= cap) return;
-    final keep = state.results.sublist(0, cap);
     final drop = state.results.sublist(cap);
-    // 选中项被裁掉时回退到最新一张
-    final sel = keep.any((r) => r.id == state.selectedId)
-        ? state.selectedId
-        : (keep.isEmpty ? null : keep.first.id);
-    state = GalleryState(results: keep, selectedId: sel);
-    final dropIds = [for (final r in drop) r.id];
-    ref.read(appStoresProvider).gallery.deleteResultFiles(dropIds);
-    ref.read(gallerySearchProvider.notifier).removeAll(dropIds);
-    _removeMemberships(dropIds);
-    _persistIndex();
+    await deleteResults([for (final r in drop) r.id]);
   }
 
   void _persistIndex() {
@@ -156,6 +157,17 @@ class GalleryNotifier extends Notifier<GalleryState> {
     ref.read(galleryResultPreviewProvider.notifier).clear();
     if (id == state.selectedId) return;
     state = state.copyWith(selectedId: id, clearSelection: id == null);
+    _persistIndex();
+  }
+
+  void toggleFavorite(String id) {
+    if (!state.results.any((r) => r.id == id)) return;
+    state = state.copyWith(
+      results: [
+        for (final r in state.results)
+          r.id == id ? r.withFavorite(!r.favorite) : r,
+      ],
+    );
     _persistIndex();
   }
 
@@ -219,7 +231,7 @@ class GalleryNotifier extends Notifier<GalleryState> {
       ),
     );
     _persistIndex();
-    enforceCap();
+    unawaited(enforceCap());
     return r;
   }
 
@@ -262,6 +274,11 @@ class GalleryNotifier extends Notifier<GalleryState> {
     var actual = target;
     if (target.albumId != null) {
       try {
+        if (ref.read(desktopModeProvider) && isDailyAlbum(target.albumId)) {
+          await ref
+              .read(albumsProvider.notifier)
+              .ensureDailyAlbum(target.albumId!);
+        }
         await ref
             .read(albumsProvider.notifier)
             .organize({r.id}, {target.albumId!});
@@ -285,7 +302,126 @@ class GalleryNotifier extends Notifier<GalleryState> {
     } else if (notify && !inScope) {
       ref.read(gallerySavedNoticeProvider.notifier).show(r.id, actual);
     }
+    if (ref.read(desktopModeProvider)) {
+      try {
+        await ref
+            .read(appStoresProvider)
+            .desktopOutput
+            .save(r, albumId: actual.albumId);
+      } catch (_) {
+        if (ref.mounted && state.results.any((e) => e.id == r.id)) {
+          ref
+              .read(genNoticeProvider.notifier)
+              .show('图片已保存在应用内，但导出到作品文件夹失败；可从图库重新导出。');
+        }
+      }
+    }
     return r;
+  }
+
+  /// Physical copies have their own ID, original PNG, thumbnail and parameter
+  /// snapshot. Each destination gets one, without changing the canvas selection.
+  Future<Set<String>> copyResults(
+    Set<String> ids,
+    Set<String> targets, {
+    String? sourceAlbum,
+  }) async {
+    final stores = ref.read(appStoresProvider);
+    final albums = ref.read(albumsProvider.notifier);
+    final data = ref.read(albumsProvider);
+    if (targets.isEmpty ||
+        targets.contains(sourceAlbum) ||
+        !targets.every(data.exists) ||
+        !data.exists(sourceAlbum)) {
+      throw StateError('请选择有效的其他图库');
+    }
+    final sources = state.results
+        .where((r) => ids.contains(r.id) && data.contains(sourceAlbum, r.id))
+        .toList();
+    if (sources.isEmpty) throw StateError('所选图片已不存在，请重新选择');
+    final revision = _clearRevision;
+    final copies = <ResultImage>[];
+    final destinations = <String, String>{};
+    bool stillValid() =>
+        ref.mounted &&
+        revision == _clearRevision &&
+        sources.every((r) => state.results.any((live) => live.id == r.id));
+    try {
+      await stores.gallery.idle;
+      for (final source in sources) {
+        if (!stillValid()) throw StateError('来源图片已变化，请重新复制');
+        final bytes = source.bytes ?? await stores.gallery.readImage(source.id);
+        final input = source.input ?? await stores.gallery.readInput(source.id);
+        if (bytes == null || (source.hasInput && input == null)) {
+          throw StateError('无法读取图片或生成参数，已停止复制');
+        }
+        for (final target in targets) {
+          final copy = ResultImage(
+            id: 'gen${_seq++}',
+            width: source.width,
+            height: source.height,
+            seed: source.seed,
+            badge: source.badge,
+            createdAt: source.createdAt,
+            batchIndex: source.batchIndex,
+            bytes: bytes,
+            input: input,
+            inpaintFrom: source.inpaintFrom,
+            inpaintHistoryCleared: source.inpaintHistoryCleared,
+            favorite: source.favorite,
+            hasInput: source.hasInput,
+          );
+          copies.add(copy);
+          destinations[copy.id] = target;
+          _persistIndex(); // Reserve IDs even if saving fails or is interrupted.
+          await stores.gallery.persistResult(copy);
+          if (ref.read(desktopModeProvider)) {
+            await stores.desktopOutput.save(copy, albumId: target);
+          }
+        }
+      }
+      if (!stillValid()) throw StateError('来源图片已变化，请重新复制');
+      state = state.copyWith(results: [...copies.reversed, ...state.results]);
+      _persistIndex();
+      await stores.gallery.flushIndex();
+      await albums.placeCopies(
+        destinations,
+        sources: sources.map((r) => r.id).toSet(),
+        sourceAlbum: sourceAlbum,
+      );
+    } catch (error) {
+      // Roll back only the fresh IDs. Originals and other albums are untouched.
+      final removable = await stores.desktopOutput.deleteResults(copies);
+      final removed = await stores.gallery.deleteResultFilesVerified(
+        removable.toList(),
+      );
+      if (ref.mounted) {
+        _removeResults(removed.toList());
+        final known = state.results.map((r) => r.id).toSet();
+        final remaining = copies.where(
+          (r) => !removed.contains(r.id) && !known.contains(r.id),
+        );
+        state = state.copyWith(results: [...remaining, ...state.results]);
+        _persistIndex();
+        await stores.gallery.flushIndex();
+      }
+      rethrow;
+    }
+    for (final copy in copies) {
+      if (copy.input != null) {
+        ref.read(gallerySearchProvider.notifier).put(copy.id, copy.input!);
+      }
+    }
+    // Release large cached inputs after durable writes, as for generated images.
+    state = state.copyWith(
+      results: [
+        for (var i = 0; i < state.results.length; i++)
+          i < _keepBytesFor ? state.results[i] : state.results[i].stripped(),
+      ],
+    );
+    _persistIndex();
+    await enforceCap();
+    return copies.map((r) => r.id).toSet();
   }
 
   void _removeMemberships(List<String> ids) {
@@ -306,7 +442,50 @@ class GalleryNotifier extends Notifier<GalleryState> {
 
   /// 删除单张或多张图片:状态移除 + 盘上文件一并删。
   /// 删除当前图片时，沿当前图库顺序选下一张；没有下一张则选上一张。
-  void deleteResults(List<String> ids) {
+  Future<Set<String>> deleteResults(List<String> ids) async {
+    try {
+      final deleted = await deleteResultsVerified(ids);
+      if (ref.mounted &&
+          ids
+              .toSet()
+              .difference(deleted)
+              .any((id) => state.results.any((r) => r.id == id))) {
+        ref.read(genNoticeProvider.notifier).show('部分图片或作品文件未能删除，已保留记录，请稍后重试');
+      }
+      return deleted;
+    } catch (_) {
+      if (ref.mounted) {
+        ref.read(genNoticeProvider.notifier).show('删除失败，已保留图片，请稍后重试');
+      }
+      return {};
+    }
+  }
+
+  /// Export cleanup removes membership/index entries only after the original
+  /// file is gone. A locked file remains in its original library for retry.
+  Future<Set<String>> deleteResultsVerified(
+    List<String> ids, {
+    bool Function(String id)? canDelete,
+  }) async {
+    final drop = ids.toSet();
+    final images = state.results.where((r) => drop.contains(r.id)).toList();
+    if (images.isEmpty) return {};
+    if (drop.contains(state.selectedId)) _selectionRevision++;
+    final stores = ref.read(appStoresProvider);
+    await stores.gallery.idle;
+    final managedDeleted = await stores.desktopOutput.deleteResults(
+      images,
+      canDelete: canDelete,
+    );
+    final deleted = await stores.gallery.deleteResultFilesVerified(
+      managedDeleted.toList(),
+      canDelete: canDelete,
+    );
+    if (ref.mounted) _removeResults(deleted.toList());
+    return deleted;
+  }
+
+  void _removeResults(List<String> ids) {
     if (ids.isEmpty) return;
     final drop = ids.toSet();
     final keep = [
@@ -346,21 +525,45 @@ class GalleryNotifier extends Notifier<GalleryState> {
       _selectionRevision++;
     }
     state = GalleryState(results: keep, selectedId: sel);
-    ref.read(appStoresProvider).gallery.deleteResultFiles(ids);
     ref.read(gallerySearchProvider.notifier).removeAll(ids);
     _removeMemberships(ids);
     _persistIndex();
   }
 
+  /// 清理历史重绘输入，保留成品并使已打开的参数面板立即重新读取。
+  Future<InpaintHistoryCleanupResult> clearInpaintHistory() async {
+    bool canClear() => ref.mounted && !ref.read(generationProvider).busy;
+    if (!canClear()) throw StateError('正在生成或保存图片，请完成后再清理');
+    final result = await InpaintHistoryCleanup.forStores(
+      ref.read(appStoresProvider),
+    ).clear(canClear: canClear);
+    if (!ref.mounted) return result;
+    state = state.copyWith(
+      results: [
+        for (final image in state.results)
+          result.clearedIds.contains(image.id)
+              ? image.withoutInpaintHistory()
+              : image,
+      ],
+    );
+    for (final id in result.clearedIds) {
+      ref.invalidate(galleryInputProvider(id));
+    }
+    return result;
+  }
+
   /// 清空图库(存储管理):内存态与盘上文件一并清,发号器保留不复用。
   Future<void> clearAll() async {
+    _clearRevision++;
     final store = ref.read(appStoresProvider).gallery;
     final albums = ref.read(albumsProvider.notifier);
     _selectionRevision++;
-    state = const GalleryState(results: [], selectedId: null);
-    final clearFiles = store.clearAllFiles(seq: _seq);
+    await deleteResultsVerified(state.results.map((r) => r.id).toList());
+    if (!ref.mounted || state.results.isNotEmpty) {
+      throw StateError('部分图片或作品文件未能删除，请稍后重试');
+    }
     ref.read(gallerySearchProvider.notifier).clear();
     await albums.clearAll();
-    await clearFiles;
+    await store.flushIndex();
   }
 }

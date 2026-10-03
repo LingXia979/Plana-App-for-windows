@@ -1,3 +1,4 @@
+import '../../core/ui/settings_scaffold.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -18,11 +19,12 @@ class GenSettingsPage extends ConsumerWidget {
     void patch(GenSettings Function(GenSettings) change) =>
         ref.read(genSettingsProvider.notifier).patch(change);
 
-    return Scaffold(
+    return SettingsScaffold(
       appBar: AppBar(title: const Text('生成设置')),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(14, 8, 14, 24),
         children: [
+          const SettingsPageHeader(),
           SettingsCard(
             children: [
               SwitchListTile(

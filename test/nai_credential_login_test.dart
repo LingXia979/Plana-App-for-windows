@@ -67,7 +67,7 @@ void main() {
     });
 
     test('pst 令牌与坏输入返回 null', () {
-      expect(naiJwtExpiry('pst-abcdefghijklmnopqrstuvwxyz012345'), isNull);
+      expect(naiJwtExpiry('pst-test-token'), isNull);
       expect(naiJwtExpiry('not a jwt'), isNull);
       expect(naiJwtExpiry('a.%%%.c'), isNull);
       expect(naiJwtExpiry(''), isNull);

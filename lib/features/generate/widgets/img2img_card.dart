@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/app_theme.dart';
+import '../../../core/platform/desktop.dart';
+import '../../../core/ui/image_drop.dart';
 import '../../../core/util/image_ops.dart';
 import '../../../core/util/image_pick.dart';
 import '../../inpaint/inpaint_overlay.dart';
@@ -19,7 +21,14 @@ import 'section_card.dart';
 Future<void> pickImg2ImgImage(BuildContext context, WidgetRef ref) async {
   final file = await pickImageFile(context);
   if (file == null || !context.mounted) return;
-  final bytes = file.bytes;
+  await setImg2ImgFromImage(context, ref, file.bytes);
+}
+
+Future<void> setImg2ImgFromImage(
+  BuildContext context,
+  WidgetRef ref,
+  Uint8List bytes,
+) async {
   final (rw, rh) = await decodeImageSize(bytes); // 解码原始尺寸
   if (!context.mounted) return;
   final res = img2imgResolution(rw, rh); // 64 对齐 / 像素封顶
@@ -60,7 +69,9 @@ class _Img2ImgCardState extends ConsumerState<Img2ImgCard> {
   /// 为 null)—— 所以它的产物没有「按住对比」可看,那要有源图在库里才谈得上。
   void _inpaintExternal(Uint8List bytes) {
     ref.read(inpaintSessionProvider.notifier).open(imageBytes: bytes);
-    ref.read(shellIndexProvider.notifier).select(kTabGallery);
+    ref
+        .read(shellIndexProvider.notifier)
+        .select(ref.read(desktopModeProvider) ? kTabCreate : kTabGallery);
   }
 
   /// 回编辑器接着涂。编辑器嵌在图库页里,所以要先切过去。
@@ -75,7 +86,9 @@ class _Img2ImgCardState extends ConsumerState<Img2ImgCard> {
           imageBytes: job.paste?.original ?? job.image,
           sourceId: job.sourceId,
         );
-    ref.read(shellIndexProvider.notifier).select(kTabGallery);
+    ref
+        .read(shellIndexProvider.notifier)
+        .select(ref.read(desktopModeProvider) ? kTabCreate : kTabGallery);
   }
 
   @override
@@ -90,7 +103,7 @@ class _Img2ImgCardState extends ConsumerState<Img2ImgCard> {
 
     if (hasMask) return _maskBody(state, notifier, job, expanded);
 
-    return SectionCard(
+    final card = SectionCard(
       icon: Icons.image_outlined,
       title: '图生图',
       reorderIndex: widget.reorderIndex,
@@ -200,6 +213,14 @@ class _Img2ImgCardState extends ConsumerState<Img2ImgCard> {
               ],
             ),
     );
+    return ref.watch(desktopModeProvider)
+        ? ImageDropRegion(
+            label: '用作图生图底图',
+            onDrop: (images, _) =>
+                setImg2ImgFromImage(context, ref, images.single.bytes),
+            child: card,
+          )
+        : card;
   }
 
   /// 带遮罩的形态:缩略图上叠一层遮罩、一条强度滑杆、一颗移除。

@@ -15,8 +15,7 @@
 /// 第一份提议没有上一轮,基线是空的,读数就是「它写了多少」。增删怎么算见
 /// `prompt_diff.dart`。
 ///
-/// 条上**不列明细**:两三个 tag 名字凑不成完整认知,读数已经把「改了多少」说全了。
-/// 明细走弹层,入口是右边那颗「展开」。
+/// 桌面主会话点击「展开」直接显示明细;移动端与创作页小助手保留详情弹层。
 library;
 
 import 'package:flutter/material.dart';
@@ -30,20 +29,42 @@ import 'proposal_actions.dart';
 import 'proposal_sheet.dart';
 import 'tag_diff.dart';
 
-class ResultStrip extends ConsumerWidget {
-  const ResultStrip({super.key, required this.msg, this.prev});
+class ResultStrip extends ConsumerStatefulWidget {
+  const ResultStrip({
+    super.key,
+    required this.msg,
+    this.prev,
+    this.inlineDetails = false,
+    this.showInlineActions = false,
+  });
 
   final AssistantMsg msg;
 
   /// 上一轮的提议,差异的基线(由调用方用 [prevProposal] 取)。
   /// 没有上一轮就是 null,那时基线是空的。
   final DrawProposal? prev;
+  final bool inlineDetails;
+  final bool showInlineActions;
+
+  @override
+  ConsumerState<ResultStrip> createState() => _ResultStripState();
+}
+
+class _ResultStripState extends ConsumerState<ResultStrip>
+    with AutomaticKeepAliveClientMixin {
+  bool _expanded = false;
+  AssistantMsg get msg => widget.msg;
+  DrawProposal? get prev => widget.prev;
+
+  @override
+  bool get wantKeepAlive => _expanded;
 
   /// 还没落到创作页(从没导入过,或者导入后又撤销了)。只影响弹层标题。
   bool get _live => msg.change == null || msg.change!.undone;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
+    super.build(context);
     final scheme = context.scheme;
     final p = msg.draw!;
     // 这一份差异条上和弹层里共用,两处各算一遍迟早对不上。
@@ -100,10 +121,52 @@ class ResultStrip extends ConsumerWidget {
                   removed: diff.removed.length,
                 ),
                 const Spacer(),
-                _openButton(context, scheme, openSheet),
+                _openButton(context, scheme, () {
+                  if (widget.inlineDetails) {
+                    setState(() => _expanded = !_expanded);
+                    updateKeepAlive();
+                  } else {
+                    openSheet();
+                  }
+                }),
               ],
             ),
           ),
+          if (widget.inlineDetails)
+            AnimatedSize(
+              duration: const Duration(milliseconds: 180),
+              alignment: Alignment.topCenter,
+              child: _expanded
+                  ? Padding(
+                      key: const ValueKey('assistant-inline-proposal'),
+                      padding: const EdgeInsets.only(top: 16, bottom: 8),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          ProposalDetails(
+                            diff: diff,
+                            words: markChangedWords(diff),
+                            positive: p.positive,
+                            characters: chars,
+                            emptyNote: '和上一轮的提示词一样',
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            '${totalPromptTokens(tok, main: p.positive, parts: parts)} tok',
+                            style: context.texts.labelSmall!.copyWith(
+                              color: scheme.outline,
+                            ),
+                          ),
+                          if (widget.showInlineActions) ...[
+                            const SizedBox(height: 10),
+                            ProposalActions(msg: msg, dense: true),
+                          ],
+                        ],
+                      ),
+                    )
+                  : const SizedBox.shrink(),
+            ),
         ],
       ),
     );
@@ -156,13 +219,15 @@ class ResultStrip extends ConsumerWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
-              Icons.open_in_full,
+              widget.inlineDetails
+                  ? (_expanded ? Icons.expand_less : Icons.expand_more)
+                  : Icons.open_in_full,
               size: 13,
               color: scheme.onSecondaryContainer,
             ),
             const SizedBox(width: 5),
             Text(
-              '展开',
+              _expanded ? '收起' : '展开',
               style: context.texts.labelSmall!.copyWith(
                 color: scheme.onSecondaryContainer,
                 fontWeight: FontWeight.w700,

@@ -22,6 +22,176 @@ import '../agent_model.dart';
 import '../custom_endpoint.dart';
 import 'endpoint_sheet.dart';
 
+/// Desktop model picker stays anchored to the assistant toolbar.
+class AssistantModelDropdown extends ConsumerStatefulWidget {
+  const AssistantModelDropdown({super.key, this.compact = false});
+
+  final bool compact;
+
+  @override
+  ConsumerState<AssistantModelDropdown> createState() =>
+      _AssistantModelDropdownState();
+}
+
+class _AssistantModelDropdownState
+    extends ConsumerState<AssistantModelDropdown> {
+  final menu = MenuController();
+
+  @override
+  Widget build(BuildContext context) {
+    final models = ref.watch(agentModelsProvider);
+    final current = ref.watch(assistantModelProvider);
+    final endpoints = ref.watch(customEndpointsProvider).value ?? const [];
+    final authorized = ref.watch(assistantBotAuthorizedProvider);
+    void edit([CustomEndpoint? endpoint]) {
+      menu.close();
+      showEndpointSheet(context, source: endpoint);
+    }
+
+    Widget choice(
+      String key,
+      String name, {
+      String? subtitle,
+      bool recommended = false,
+    }) => MenuItemButton(
+      key: ValueKey('assistant-model-$key'),
+      autofocus: current?.key == key,
+      leadingIcon: Icon(
+        current?.key == key ? Icons.check : Icons.smart_toy_outlined,
+        size: 17,
+      ),
+      onPressed: () => ref.read(assistantModelPrefProvider.notifier).set(key),
+      child: SizedBox(
+        width: 232,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 5),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                name,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: current?.key == key
+                      ? FontWeight.w600
+                      : FontWeight.w400,
+                ),
+              ),
+              if (subtitle != null || recommended)
+                Text(
+                  subtitle ?? '推荐',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: context.scheme.onSurfaceVariant,
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    return MenuAnchor(
+      key: const ValueKey('assistant-model-dropdown'),
+      controller: menu,
+      consumeOutsideTap: true,
+      style: MenuStyle(
+        maximumSize: const WidgetStatePropertyAll(Size(340, 480)),
+        shape: WidgetStatePropertyAll(
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        ),
+      ),
+      menuChildren: [
+        if (authorized) ...[
+          settingSection(context, 'Plana 后端'),
+          ...switch (models) {
+            AsyncData(:final value) when value.choices.isNotEmpty => [
+              for (final c in value.choices)
+                choice(c.key, c.name, recommended: c.recommended),
+            ],
+            AsyncLoading() => [
+              const Padding(
+                padding: EdgeInsets.all(20),
+                child: Center(
+                  child: SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                ),
+              ),
+            ],
+            _ => [
+              MenuItemButton(
+                leadingIcon: const Icon(Icons.refresh, size: 18),
+                onPressed: () => ref.invalidate(agentModelsProvider),
+                child: const Text('加载模型列表失败，点击重试'),
+              ),
+            ],
+          },
+          const Divider(height: 12),
+        ],
+        settingSection(context, '我的接口'),
+        for (final e in endpoints)
+          if (e.usable)
+            choice(customModelKey(e.id), e.displayName, subtitle: e.model)
+          else
+            MenuItemButton(
+              onPressed: () => edit(e),
+              leadingIcon: const Icon(Icons.edit_outlined, size: 17),
+              child: Text('${e.displayName} · 待完善'),
+            ),
+        if (endpoints.any((e) => e.usable))
+          SubmenuButton(
+            leadingIcon: const Icon(Icons.tune, size: 17),
+            menuChildren: [
+              for (final e in endpoints)
+                MenuItemButton(
+                  onPressed: () => edit(e),
+                  child: Text(e.displayName),
+                ),
+            ],
+            child: const Text('编辑接口'),
+          ),
+        MenuItemButton(
+          onPressed: () => edit(),
+          autofocus: current == null,
+          leadingIcon: const Icon(Icons.add, size: 18),
+          child: const Text('添加接口'),
+        ),
+      ],
+      builder: (context, controller, _) => TextButton(
+        key: const ValueKey('assistant-model-button'),
+        onPressed: () =>
+            controller.isOpen ? controller.close() : controller.open(),
+        style: TextButton.styleFrom(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+        ),
+        child: Row(
+          mainAxisSize: widget.compact ? MainAxisSize.min : MainAxisSize.max,
+          children: [
+            Flexible(
+              fit: widget.compact ? FlexFit.loose : FlexFit.tight,
+              child: Text(
+                current?.name ?? '选择模型',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 12),
+              ),
+            ),
+            const SizedBox(width: 6),
+            const Icon(Icons.expand_more, size: 16),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 Future<void> showModelSheet(BuildContext context) async {
   await showModalBottomSheet<void>(
     context: context,

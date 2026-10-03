@@ -15,13 +15,18 @@ import 'transparency.dart';
 
 Future<(Uint8List, int, int)> _decodeRgba(Uint8List bytes) async {
   final codec = await ui.instantiateImageCodec(bytes);
-  final frame = await codec.getNextFrame();
-  final img = frame.image;
-  final bd = await img.toByteData(format: ui.ImageByteFormat.rawRgba);
-  final w = img.width, h = img.height;
-  img.dispose();
-  if (bd == null) throw StateError('图片解码失败');
-  return (bd.buffer.asUint8List(), w, h);
+  try {
+    final img = (await codec.getNextFrame()).image;
+    try {
+      final bd = await img.toByteData(format: ui.ImageByteFormat.rawRgba);
+      if (bd == null) throw StateError('图片解码失败');
+      return (bd.buffer.asUint8List(), img.width, img.height);
+    } finally {
+      img.dispose();
+    }
+  } finally {
+    codec.dispose();
+  }
 }
 
 /// RGBA → PNG(测试也用它造样张)。
@@ -40,6 +45,47 @@ Future<Uint8List> cleanImagePng(Uint8List bytes) async {
   final (rgba, w, h) = await _decodeRgba(bytes);
   clearAlphaLsb(rgba);
   return encodePngFromRgba(rgba, w, h);
+}
+
+/// Write editable generation parameters as standard UTF-8 PNG iTXt. Removing
+/// the old alpha payload first prevents stale hidden prompts from surviving.
+/// Unlike steganography, text chunks also work with small preview images.
+Future<Uint8List> writeImageMetadataPng(
+  Uint8List bytes, {
+  required Map<String, dynamic> comment,
+  String source = 'Plana',
+}) async {
+  final (rgba, width, height) = await _decodeRgba(bytes);
+  clearAlphaLsb(rgba);
+  final png = await encodePngFromRgba(rgba, width, height);
+  final fields = {...comment, 'width': width, 'height': height};
+  final out = BytesBuilder(copy: false)
+    ..add(Uint8List.sublistView(png, 0, png.length - 12));
+  for (final entry in {
+    'Software': 'Plana',
+    'Source': source,
+    'Comment': jsonEncode(fields),
+  }.entries) {
+    // keyword NUL, uncompressed flag/method, empty language/translated keyword.
+    final data = [
+      ...ascii.encode(entry.key),
+      0,
+      0,
+      0,
+      0,
+      0,
+      ...utf8.encode(entry.value),
+    ];
+    final typeAndData = Uint8List.fromList([...ascii.encode('iTXt'), ...data]);
+    out
+      ..add((ByteData(4)..setUint32(0, data.length)).buffer.asUint8List())
+      ..add(typeAndData)
+      ..add(
+        (ByteData(4)..setUint32(0, getCrc32(typeAndData))).buffer.asUint8List(),
+      );
+  }
+  out.add(Uint8List.sublistView(png, png.length - 12));
+  return out.takeBytes();
 }
 
 class _LsbWriter {

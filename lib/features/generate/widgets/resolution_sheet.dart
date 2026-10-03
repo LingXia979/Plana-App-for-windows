@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/platform/desktop.dart';
 import '../../../core/theme/app_theme.dart';
+import '../../../core/ui/desktop_popover.dart';
 import '../generate_state.dart';
 import '../models.dart';
 import '../res_rules.dart';
@@ -19,6 +21,17 @@ const _vizOver = FixedSemantic.danger;
 /// 分辨率 Sheet:预设三档(小图免费/大图/壁纸)+ 自定义档(拖拽画布)
 /// + 统一档位状态条(MP·比例·免费/付费/超限)+ 确认生效。数值/交互对齐 web 桌面端。
 Future<void> showResolutionSheet(BuildContext context) {
+  if (ProviderScope.containerOf(
+    context,
+    listen: false,
+  ).read(desktopModeProvider)) {
+    return showDesktopPopover<void>(
+      context,
+      width: 340,
+      maxHeight: 640,
+      builder: (_) => const _ResolutionSheet(desktop: true),
+    );
+  }
   return showModalBottomSheet(
     context: context,
     useSafeArea: true,
@@ -28,7 +41,8 @@ Future<void> showResolutionSheet(BuildContext context) {
 }
 
 class _ResolutionSheet extends ConsumerStatefulWidget {
-  const _ResolutionSheet();
+  const _ResolutionSheet({this.desktop = false});
+  final bool desktop;
 
   @override
   ConsumerState<_ResolutionSheet> createState() => _ResolutionSheetState();
@@ -42,6 +56,9 @@ class _ResolutionSheetState extends ConsumerState<_ResolutionSheet> {
   late SizePreset selected;
   late int customW;
   late int customH;
+  late final TextEditingController _width;
+  late final TextEditingController _height;
+  String? _widthError, _heightError;
 
   @override
   void initState() {
@@ -51,6 +68,8 @@ class _ResolutionSheetState extends ConsumerState<_ResolutionSheet> {
     selected = sizeTabs[tab]!.first;
     customW = snapDim(p.width);
     customH = snapDim(p.height);
+    _width = TextEditingController(text: '$customW');
+    _height = TextEditingController(text: '$customH');
     var matched = false;
     for (final entry in sizeTabs.entries) {
       for (final preset in entry.value) {
@@ -70,18 +89,242 @@ class _ResolutionSheetState extends ConsumerState<_ResolutionSheet> {
   int get _effW => _isCustom ? customW : selected.width;
   int get _effH => _isCustom ? customH : selected.height;
 
+  @override
+  void dispose() {
+    _width.dispose();
+    _height.dispose();
+    super.dispose();
+  }
+
   void _setCustom(int w, int h) => setState(() {
     customW = w.clamp(kMinDim, kMaxDim);
     customH = h.clamp(kMinDim, kMaxDim);
+    _width.text = '$customW';
+    _height.text = '$customH';
+    _widthError = _heightError = null;
   });
+
+  // Parse a decimal as a number before truncating it; filtering out the dot
+  // would silently turn a pasted "832.5" into "8325".
+  int? _dimension(String text) {
+    final value = double.tryParse(text.trim());
+    if (value == null || !value.isFinite) return null;
+    final integer = value.toInt();
+    if (integer < kMinDim || integer > kMaxDim) return null;
+    return snapDim(integer).clamp(kMinDim, kMaxDim);
+  }
+
+  bool _commitDimensions({bool normalize = true}) {
+    final w = _dimension(_width.text), h = _dimension(_height.text);
+    setState(() {
+      _widthError = w == null ? '$kMinDim ～ $kMaxDim' : null;
+      _heightError = h == null ? '$kMinDim ～ $kMaxDim' : null;
+      if (w != null) {
+        customW = w;
+        if (normalize) _width.text = '$w';
+      }
+      if (h != null) {
+        customH = h;
+        if (normalize) _height.text = '$h';
+      }
+    });
+    return w != null && h != null;
+  }
+
+  Widget _dimensionInput({required bool width}) => SizedBox(
+    width: widget.desktop ? 96 : 108,
+    child: TextField(
+      key: ValueKey(width ? 'resolution-width' : 'resolution-height'),
+      controller: width ? _width : _height,
+      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+      textInputAction: TextInputAction.done,
+      style: mono(context, size: 16).copyWith(fontWeight: FontWeight.w700),
+      decoration: InputDecoration(
+        labelText: width ? '宽' : '高',
+        suffixText: 'px',
+        isDense: true,
+        contentPadding: widget.desktop
+            ? const EdgeInsets.symmetric(horizontal: 10, vertical: 12)
+            : null,
+        errorText: width ? _widthError : _heightError,
+        border: const OutlineInputBorder(),
+      ),
+      onChanged: (_) => _commitDimensions(normalize: false),
+      onSubmitted: (_) => _commitDimensions(),
+      onTapOutside: (_) {
+        _commitDimensions();
+        FocusManager.instance.primaryFocus?.unfocus();
+      },
+    ),
+  );
+
+  void _apply() {
+    if (_isCustom && !_commitDimensions()) return;
+    if (classifyPixels(_effW, _effH) == PixelTier.over) return;
+    ref.read(generateProvider.notifier).setSize(_effW, _effH);
+    Navigator.pop(context);
+  }
+
+  Widget _desktopPanel() {
+    final scheme = context.scheme;
+    final over = classifyPixels(_effW, _effH) == PixelTier.over;
+    final canApply =
+        !over && (!_isCustom || (_widthError == null && _heightError == null));
+    return SingleChildScrollView(
+      key: const ValueKey('resolution-panel'),
+      padding: const EdgeInsets.all(14),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '选择比例',
+                  style: context.texts.titleMedium!.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              IconButton(
+                tooltip: '关闭',
+                onPressed: () => Navigator.pop(context),
+                constraints: const BoxConstraints.tightFor(
+                  width: 32,
+                  height: 32,
+                ),
+                padding: EdgeInsets.zero,
+                icon: const Icon(Icons.close, size: 20),
+              ),
+            ],
+          ),
+          const Divider(height: 18),
+          Row(
+            children: [
+              for (final t in [...sizeTabs.keys, _customTab])
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 2),
+                    child: TextButton(
+                      onPressed: () => setState(() {
+                        tab = t;
+                        if (!_isCustom) {
+                          lastPresetTab = t;
+                          selected = sizeTabs[t]!.first;
+                        }
+                      }),
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 2),
+                        minimumSize: const Size(0, 34),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        backgroundColor: tab == t
+                            ? scheme.primaryContainer
+                            : null,
+                        foregroundColor: tab == t
+                            ? scheme.onPrimaryContainer
+                            : scheme.onSurfaceVariant,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                      ),
+                      child: Text(t),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          if (_isCustom)
+            _CanvasEditor(
+              width: customW,
+              height: customH,
+              onChanged: _setCustom,
+              maxSide: 280,
+            )
+          else
+            Row(
+              children: [
+                for (final p in sizeTabs[tab]!) ...[
+                  Expanded(
+                    child: _PresetCard(
+                      preset: p,
+                      selected: p == selected,
+                      onTap: () => setState(() => selected = p),
+                    ),
+                  ),
+                  if (p != sizeTabs[tab]!.last) const SizedBox(width: 6),
+                ],
+              ],
+            ),
+          const Divider(height: 24),
+          Tooltip(
+            message: '免费档（≤1.05 MP）：Opus ≤28 步单张免费；更大按张扣 Anlas。',
+            child: _StatusStrip(width: _effW, height: _effH),
+          ),
+          const SizedBox(height: 16),
+          if (_isCustom) ...[
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _dimensionInput(width: true),
+                Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 6,
+                  ),
+                  child: _SwapBtn(
+                    onTap: () {
+                      if (_commitDimensions()) _setCustom(customH, customW);
+                    },
+                  ),
+                ),
+                _dimensionInput(width: false),
+                const Spacer(),
+                Tooltip(
+                  message: over ? '超出像素上限' : '确认 · $_effW×$_effH',
+                  child: FilledButton(
+                    key: const ValueKey('resolution-confirm'),
+                    onPressed: canApply ? _apply : null,
+                    style: FilledButton.styleFrom(
+                      minimumSize: const Size(40, 42),
+                      padding: EdgeInsets.zero,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                    child: const Icon(Icons.check, size: 20),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Text(
+              over ? '超出像素上限' : '小数取整数部分，尺寸自动对齐 64 像素。',
+              style: context.texts.bodySmall!.copyWith(
+                fontSize: 11,
+                color: over ? scheme.error : scheme.onSurfaceVariant,
+              ),
+            ),
+          ] else
+            FilledButton(
+              key: const ValueKey('resolution-confirm'),
+              onPressed: canApply ? _apply : null,
+              child: Text('确认 · $_effW×$_effH'),
+            ),
+        ],
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
+    if (widget.desktop) return _desktopPanel();
     final scheme = context.scheme;
     final over = classifyPixels(_effW, _effH) == PixelTier.over;
 
     return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+      padding: EdgeInsets.fromLTRB(16, widget.desktop ? 12 : 0, 16, 16),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -147,8 +390,29 @@ class _ResolutionSheetState extends ConsumerState<_ResolutionSheet> {
               width: customW,
               height: customH,
               onChanged: _setCustom,
+              dimensions: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _dimensionInput(width: true),
+                  const SizedBox(width: 8),
+                  _SwapBtn(
+                    onTap: () {
+                      if (_commitDimensions()) _setCustom(customH, customW);
+                    },
+                  ),
+                  const SizedBox(width: 8),
+                  _dimensionInput(width: false),
+                ],
+              ),
             ),
           ),
+          if (_isCustom) ...[
+            const SizedBox(height: 8),
+            Text(
+              '可手动输入宽高；小数取整数部分，尺寸自动对齐 64 像素。',
+              style: context.texts.bodySmall,
+            ),
+          ],
           const SizedBox(height: 12),
           _StatusStrip(width: _effW, height: _effH),
           const SizedBox(height: 10),
@@ -158,12 +422,12 @@ class _ResolutionSheetState extends ConsumerState<_ResolutionSheet> {
           ),
           const SizedBox(height: 14),
           FilledButton(
-            onPressed: over
+            key: const ValueKey('resolution-confirm'),
+            onPressed:
+                over ||
+                    (_isCustom && (_widthError != null || _heightError != null))
                 ? null
-                : () {
-                    ref.read(generateProvider.notifier).setSize(_effW, _effH);
-                    Navigator.pop(context);
-                  },
+                : _apply,
             style: FilledButton.styleFrom(
               minimumSize: const Size.fromHeight(48),
               shape: RoundedRectangleBorder(
@@ -244,11 +508,15 @@ class _CanvasEditor extends StatelessWidget {
     required this.width,
     required this.height,
     required this.onChanged,
+    this.dimensions,
+    this.maxSide = 300,
   });
 
   final int width;
   final int height;
   final void Function(int w, int h) onChanged;
+  final Widget? dimensions;
+  final double maxSide;
 
   void _fromLocal(Offset local, double side) {
     final fx = (local.dx / side).clamp(0.0, 1.0);
@@ -269,7 +537,7 @@ class _CanvasEditor extends StatelessWidget {
           child: LayoutBuilder(
             builder: (context, cons) {
               final side = (cons.maxWidth.isFinite ? cons.maxWidth : 280.0)
-                  .clamp(0.0, 300.0)
+                  .clamp(0.0, maxSide)
                   .toDouble();
               return SizedBox(
                 width: side,
@@ -291,62 +559,43 @@ class _CanvasEditor extends StatelessWidget {
             },
           ),
         ),
-        const SizedBox(height: 10),
-        // 读数 + 动作:交换钮挪到长宽之间(替代 ×)省出横向空间;动作组用 Wrap,
-        // 数值很大又同时出两个 chip 时整组自动换行,不再把「缩到免费」挤出界。
-        Wrap(
-          alignment: WrapAlignment.spaceBetween,
-          crossAxisAlignment: WrapCrossAlignment.center,
-          spacing: 10,
-          runSpacing: 8,
-          children: [
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  '$width',
-                  style: mono(
-                    context,
-                    size: 16,
-                  ).copyWith(fontWeight: FontWeight.w700),
-                ),
-                const SizedBox(width: 6),
-                _SwapBtn(onTap: () => onChanged(height, width)),
-                const SizedBox(width: 6),
-                Text(
-                  '$height',
-                  style: mono(
-                    context,
-                    size: 16,
-                  ).copyWith(fontWeight: FontWeight.w700),
-                ),
-              ],
-            ),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (tier == PixelTier.over) ...[
-                  _QuickChip(
-                    '缩到上限',
-                    onTap: () {
-                      final r = clampToMaxPixels(width, height);
-                      onChanged(r.w, r.h);
-                    },
-                  ),
-                  const SizedBox(width: 8),
+        if (dimensions != null || tier != PixelTier.free) ...[
+          const SizedBox(height: 10),
+          // 读数 + 动作:交换钮挪到长宽之间(替代 ×)省出横向空间;动作组用 Wrap,
+          // 数值很大又同时出两个 chip 时整组自动换行,不再把「缩到免费」挤出界。
+          Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 10,
+            runSpacing: 8,
+            children: [
+              ?dimensions,
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (tier == PixelTier.over) ...[
+                    _QuickChip(
+                      '缩到上限',
+                      onTap: () {
+                        final r = clampToMaxPixels(width, height);
+                        onChanged(r.w, r.h);
+                      },
+                    ),
+                    const SizedBox(width: 8),
+                  ],
+                  if (tier != PixelTier.free)
+                    _QuickChip(
+                      '缩到免费',
+                      onTap: () {
+                        final r = scaleToFree(width, height);
+                        onChanged(r.w, r.h);
+                      },
+                    ),
                 ],
-                if (tier != PixelTier.free)
-                  _QuickChip(
-                    '缩到免费',
-                    onTap: () {
-                      final r = scaleToFree(width, height);
-                      onChanged(r.w, r.h);
-                    },
-                  ),
-              ],
-            ),
-          ],
-        ),
+              ),
+            ],
+          ),
+        ],
       ],
     );
   }

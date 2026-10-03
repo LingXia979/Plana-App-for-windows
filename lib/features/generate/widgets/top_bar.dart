@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/auth/auth_mode.dart';
 import '../../../core/auth/bot_session_store.dart';
 import '../../../core/theme/app_theme.dart';
+import '../../../core/platform/desktop.dart';
 import '../../../core/util/haptics.dart';
 import '../generate_state.dart';
 import '../gpu_rental.dart';
@@ -71,46 +72,48 @@ class GenerateTopBar extends ConsumerWidget {
           Flexible(
             child: Padding(
               padding: const EdgeInsets.only(right: 8),
-              child: Material(
-                color: scheme.surfaceContainerHigh,
-                borderRadius: BorderRadius.circular(19),
-                clipBehavior: Clip.antiAlias,
-                child: InkWell(
-                  onTap: () => _pickModel(context, ref),
-                  child: Padding(
-                    padding: const EdgeInsets.only(left: 14, right: 8),
-                    child: SizedBox(
-                      height: 42,
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Flexible(
-                            child: AnimatedSwitcher(
-                              duration: Motion.fast,
-                              child: Text(
-                                state.params.model,
-                                key: ValueKey(state.params.model),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: context.texts.bodyMedium!.copyWith(
-                                  fontWeight: FontWeight.w600,
-                                  color: scheme.onSurface,
+              child: ref.watch(desktopModeProvider)
+                  ? const _DesktopModelDropdown()
+                  : Material(
+                      color: scheme.surfaceContainerHigh,
+                      borderRadius: BorderRadius.circular(19),
+                      clipBehavior: Clip.antiAlias,
+                      child: InkWell(
+                        onTap: () => _pickModel(context, ref),
+                        child: Padding(
+                          padding: const EdgeInsets.only(left: 14, right: 8),
+                          child: SizedBox(
+                            height: 42,
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Flexible(
+                                  child: AnimatedSwitcher(
+                                    duration: Motion.fast,
+                                    child: Text(
+                                      state.params.model,
+                                      key: ValueKey(state.params.model),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: context.texts.bodyMedium!.copyWith(
+                                        fontWeight: FontWeight.w600,
+                                        color: scheme.onSurface,
+                                      ),
+                                    ),
+                                  ),
                                 ),
-                              ),
+                                const SizedBox(width: 2),
+                                Icon(
+                                  Icons.expand_more,
+                                  size: 20,
+                                  color: scheme.outline,
+                                ),
+                              ],
                             ),
                           ),
-                          const SizedBox(width: 2),
-                          Icon(
-                            Icons.expand_more,
-                            size: 20,
-                            color: scheme.outline,
-                          ),
-                        ],
+                        ),
                       ),
                     ),
-                  ),
-                ),
-              ),
             ),
           ),
           // 右侧那个位置给谁,看当前模型花的是哪种钱:
@@ -380,6 +383,122 @@ class _AuthModeChip extends ConsumerWidget {
                 ),
                 Icon(Icons.expand_more, size: 17, color: scheme.outline),
               ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DesktopModelDropdown extends ConsumerWidget {
+  const _DesktopModelDropdown();
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final model = ref.watch(generateProvider.select((s) => s.params.model));
+    final bot = ref.watch(authModeProvider).value == AuthMode.bot;
+    return MenuAnchor(
+      key: const ValueKey('desktop-model-dropdown'),
+      style: MenuStyle(
+        maximumSize: const WidgetStatePropertyAll(Size(360, 480)),
+        minimumSize: const WidgetStatePropertyAll(Size(280, 0)),
+        shape: WidgetStatePropertyAll(
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        ),
+      ),
+      menuChildren: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          child: Row(
+            children: [
+              Text(
+                '生成方式',
+                style: context.texts.labelMedium!.copyWith(
+                  color: context.scheme.onSurfaceVariant,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const Spacer(),
+              const _AuthModeChip(),
+            ],
+          ),
+        ),
+        const Divider(height: 8),
+        for (final group in [
+          m.GenProvider.nai,
+          if (bot) ...[m.GenProvider.anima, m.GenProvider.krea],
+        ]) ...[
+          if (bot)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 8, 14, 4),
+              child: Text(
+                m.providerLabel(group),
+                style: context.texts.labelSmall,
+              ),
+            ),
+          for (final value in m.modelsOf(group, nai5: true))
+            MenuItemButton(
+              autofocus: value == model,
+              onPressed: () =>
+                  ref.read(generateProvider.notifier).setModel(value),
+              trailingIcon: value == model
+                  ? const Icon(Icons.check, size: 16)
+                  : null,
+              child: SizedBox(
+                width: 262,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 5),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(value, style: const TextStyle(fontSize: 13)),
+                      if (m.modelDescriptions[value]
+                          case final String description)
+                        Text(
+                          description,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 10,
+                            color: context.scheme.onSurfaceVariant,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ],
+      builder: (context, controller, _) => Material(
+        color: context.scheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(19),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: () =>
+              controller.isOpen ? controller.close() : controller.open(),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: SizedBox(
+              height: 42,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Flexible(
+                    child: Text(
+                      model,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 3),
+                  const Icon(Icons.expand_more, size: 18),
+                ],
+              ),
             ),
           ),
         ),

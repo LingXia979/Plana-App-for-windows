@@ -10,7 +10,8 @@ import '../../core/theme/app_theme.dart';
 import '../generate/generate_state.dart';
 import '../generate/widgets/common.dart'
     show ParamSlider, confirmDialog, hintSnack;
-import 'naiv4vibe_codec.dart' show kEncodingKeyLabel;
+import 'naiv4vibe_codec.dart' show kEncodingKeyLabel, kModelToEncodingKey;
+import '../generate/nai_request.dart' show naiModelId;
 import 'vibe_library.dart';
 
 /// 「已编码」状态色(功能绿)—— 单一来源见 [FixedSemantic]。
@@ -135,7 +136,14 @@ class _VibeDetailSheetState extends ConsumerState<VibeDetailSheet> {
     }
     final data = await ref
         .read(vibeLibraryProvider.notifier)
-        .loadForGenerate(e);
+        .loadForGenerate(
+          e,
+          modelKey:
+              kModelToEncodingKey[naiModelId(
+                ref.read(generateProvider).params.model,
+              )] ??
+              '',
+        );
     if (!mounted) return;
     if (data == null) {
       hintSnack(context, '无法读取该 Vibe 文件', icon: Icons.error_outline);

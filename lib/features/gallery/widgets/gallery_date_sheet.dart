@@ -17,13 +17,25 @@ Widget _calendarLocale(BuildContext context, Widget? child) =>
 
 Future<GalleryDateFilter?> showGalleryDateFilter(
   BuildContext context,
-  GalleryDateFilter current,
-) async {
-  final kind = await showModalBottomSheet<GalleryDateKind>(
-    context: context,
-    isScrollControlled: true,
-    builder: (context) => _DateFilterSheet(current: current),
-  );
+  GalleryDateFilter current, {
+  bool desktop = false,
+  RelativeRect? menuPosition,
+}) async {
+  final kind = desktop
+      ? await showMenu<GalleryDateKind>(
+          context: context,
+          position: menuPosition ?? const RelativeRect.fromLTRB(24, 80, 24, 0),
+          constraints: const BoxConstraints(maxWidth: 440),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(18),
+          ),
+          items: [_DateFilterMenuEntry(current)],
+        )
+      : await showModalBottomSheet<GalleryDateKind>(
+          context: context,
+          isScrollControlled: true,
+          builder: (context) => _DateFilterSheet(current: current),
+        );
   if (kind == null || !context.mounted) return null;
   if (kind != GalleryDateKind.day && kind != GalleryDateKind.range) {
     return GalleryDateFilter(kind);
@@ -36,7 +48,7 @@ Future<GalleryDateFilter?> showGalleryDateFilter(
           !current.start!.isAfter(last)
       ? current.start!
       : DateTime(now.year, now.month, now.day);
-  if (kind == GalleryDateKind.day) {
+  if (kind == GalleryDateKind.day && !desktop) {
     final day = await showDatePicker(
       context: context,
       builder: _calendarLocale,
@@ -62,11 +74,17 @@ Future<GalleryDateFilter?> showGalleryDateFilter(
     builder: (context) => _calendarLocale(
       context,
       GalleryRangePicker(
+        desktop: desktop,
+        singleDay: kind == GalleryDateKind.day,
         firstDate: first,
         lastDate: last,
         initialRange: DateTimeRange(
           start: initial,
-          end: end != null && !end.isBefore(initial) && !end.isAfter(last)
+          end:
+              kind == GalleryDateKind.range &&
+                  end != null &&
+                  !end.isBefore(initial) &&
+                  !end.isAfter(last)
               ? end
               : initial,
         ),
@@ -75,7 +93,32 @@ Future<GalleryDateFilter?> showGalleryDateFilter(
   );
   return range == null
       ? null
-      : GalleryDateFilter(kind, start: range.start, end: range.end);
+      : GalleryDateFilter(
+          kind,
+          start: range.start,
+          end: kind == GalleryDateKind.day ? null : range.end,
+        );
+}
+
+class _DateFilterMenuEntry extends PopupMenuEntry<GalleryDateKind> {
+  const _DateFilterMenuEntry(this.current);
+  final GalleryDateFilter current;
+
+  @override
+  double get height => 300;
+  @override
+  bool represents(GalleryDateKind? value) => false;
+  @override
+  State<_DateFilterMenuEntry> createState() => _DateFilterMenuEntryState();
+}
+
+class _DateFilterMenuEntryState extends State<_DateFilterMenuEntry> {
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    key: const ValueKey('gallery-date-panel'),
+    width: 440,
+    child: _DateFilterSheet(current: widget.current),
+  );
 }
 
 class _DateFilterSheet extends StatelessWidget {
@@ -119,6 +162,7 @@ class _DateFilterSheet extends StatelessWidget {
                   Semantics(
                     selected: current.kind == value,
                     child: FilledButton.tonal(
+                      key: ValueKey('gallery-date-kind-${value.name}'),
                       style: FilledButton.styleFrom(
                         minimumSize: const Size(0, 30),
                         padding: const EdgeInsets.symmetric(
@@ -145,6 +189,7 @@ class _DateFilterSheet extends StatelessWidget {
             ),
             const SizedBox(height: 16),
             _CustomDateOption(
+              key: const ValueKey('gallery-date-kind-day'),
               title: '指定日期',
               subtitle: current.kind == GalleryDateKind.day && start != null
                   ? _date(start)
@@ -155,6 +200,7 @@ class _DateFilterSheet extends StatelessWidget {
             ),
             const SizedBox(height: 10),
             _CustomDateOption(
+              key: const ValueKey('gallery-date-kind-range'),
               title: '日期范围',
               subtitle: current.kind == GalleryDateKind.range && start != null
                   ? '${_date(start)} 至 ${_date(current.end ?? start)}'
@@ -172,6 +218,7 @@ class _DateFilterSheet extends StatelessWidget {
 
 class _CustomDateOption extends StatelessWidget {
   const _CustomDateOption({
+    super.key,
     required this.title,
     required this.subtitle,
     required this.icon,

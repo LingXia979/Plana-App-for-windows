@@ -4,12 +4,37 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
+
 import '../../core/store/atomic_file.dart';
 import '../../core/store/blob_store.dart';
 import '../../core/util/image_ops.dart';
 import '../generate/models.dart' show GenerateState;
 import '../generate/state_codec.dart';
 import 'models.dart';
+
+class InpaintHistoryInventory {
+  const InpaintHistoryInventory(this.ids, this.detachedRefs, this.retainedRefs);
+  final Set<String> ids;
+  final Set<String> detachedRefs;
+  final Set<String> retainedRefs;
+}
+
+class InpaintHistoryRemoval {
+  const InpaintHistoryRemoval(this.ids, this.detachedRefs, this.failedIds);
+  final Set<String> ids;
+  final Set<String> detachedRefs;
+  final Set<String> failedIds;
+}
+
+typedef _HistoryInput = ({
+  File file,
+  String id,
+  Map<String, dynamic> document,
+  Map<String, dynamic>? cleaned,
+  Set<String> detachedRefs,
+  Set<String> retainedRefs,
+});
 
 /// 图库持久化(`<support>/gallery/`):每张结果 `images/<id>.png` 原图 +
 /// `thumbs/<id>.png` 缩略图 + `inputs/<id>.json` 参数快照(参考图外置
@@ -27,8 +52,11 @@ class GalleryStore {
   Directory get _inputsDir => Directory('${_root.path}/inputs');
   File get _indexFile => File('${_root.path}/index.json');
 
+  File imageFileForPreview(String id) => _imageFile(id);
+
   File _imageFile(String id) => File('${_imagesDir.path}/$id.png');
   File _thumbFile(String id) => File('${_thumbsDir.path}/$id.png');
+  File _thumbSourceFile(String id) => File('${_thumbsDir.path}/$id.json');
   File _inputFile(String id) => File('${_inputsDir.path}/$id.json');
 
   /// 重绘产物要继承的源图 id:发起重绘时置,落新图时**消费一次**后清空。
@@ -38,6 +66,8 @@ class GalleryStore {
   List<ResultImage> initialResults = const [];
   String? initialSelectedId;
   int seq = 0;
+  final _clearedInpaintIds = <String>{};
+  final _thumbReads = <String, Future<Uint8List?>>{};
 
   static final _seqRe = RegExp(r'^gen(\d+)$');
 
@@ -62,6 +92,7 @@ class GalleryStore {
         for (final e in j['items'] as List) {
           if (e is! Map || e['id'] is! String) continue;
           final id = e['id'] as String;
+          if (e['inpaintHistoryCleared'] == true) _clearedInpaintIds.add(id);
           ResultBadge badge = ResultBadge.none;
           for (final b in ResultBadge.values) {
             if (b.name == e['badge']) badge = b;
@@ -76,6 +107,9 @@ class GalleryStore {
               createdAt: (e['t'] as num?)?.toInt() ?? 0,
               // 老索引没这键 → -1(不是批次产物)
               batchIndex: (e['bi'] as num?)?.toInt() ?? -1,
+              inpaintFrom: e['inpaintFrom'] as String?,
+              inpaintHistoryCleared: e['inpaintHistoryCleared'] == true,
+              favorite: e['favorite'] == true,
               hasInput: e['hasInput'] == true,
             ),
           );
@@ -88,10 +122,47 @@ class GalleryStore {
         }
         initialResults = List.unmodifiable(await _backfillCreatedAt(out));
       }
+      await _includeUnindexedImages();
     } catch (e) {
       logd('[gallery-store] 索引载入失败,改从目录重建: $e');
       await _rebuildFromDisk();
     }
+  }
+
+  /// 原图完成写入而索引未提交时，补回新增图片并推进发号器。
+  Future<void> _includeUnindexedImages() async {
+    final known = initialResults.map((r) => r.id).toSet();
+    final extra = <ResultImage>[];
+    await for (final entry in _imagesDir.list()) {
+      if (entry is! File || !entry.path.endsWith('.png')) continue;
+      final id = _idOf(entry);
+      final match = _seqRe.firstMatch(id);
+      if (match != null) {
+        final next = int.parse(match[1]!) + 1;
+        if (next > seq) seq = next;
+      }
+      if (known.contains(id)) continue;
+      final (width, height) = await _pngSize(entry);
+      extra.add(
+        ResultImage(
+          id: id,
+          width: width,
+          height: height,
+          seed: 0,
+          createdAt: (await entry.stat()).modified.millisecondsSinceEpoch,
+          hasInput: await _inputFile(id).exists(),
+        ),
+      );
+    }
+    if (extra.isEmpty) return;
+    extra.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    initialResults = List.unmodifiable([...extra, ...initialResults]);
+    initialSelectedId ??= extra.first.id;
+    scheduleIndex(
+      results: initialResults,
+      selectedId: initialSelectedId,
+      seq: seq,
+    );
   }
 
   /// 生成时刻缺失(升级前的老索引)→ 原图文件 mtime 一次性回填并落索引,
@@ -205,17 +276,21 @@ class GalleryStore {
   /// 写入队列排空(存储管理在清空后等它,再做 GC/重扫)。
   Future<void> get idle => _chain;
 
-  Future<void> _enqueue(Future<void> Function() job) {
+  Future<T> _enqueue<T>(Future<T> Function() job) {
     final work = _chain.then((_) => job());
-    _chain = work.catchError((Object e) {
-      logd('[gallery-store] 写入失败: $e');
-    });
+    _chain = work.then<void>(
+      (_) {},
+      onError: (Object e) {
+        logd('[gallery-store] 写入失败: $e');
+      },
+    );
     return work;
   }
 
   /// 新结果落盘:原图 + 缩略图 + 参数快照(有则)。
   /// 调用时机是 addResult 同帧,bytes/input 一定在内存里。
   Future<void> persistResult(ResultImage r) {
+    _blobs.referencesChanged();
     final bytes = r.bytes;
     if (bytes == null) return Future.value();
     final input = r.input;
@@ -224,11 +299,10 @@ class GalleryStore {
       // 「重新生成」读不出参数(见 atomic_file.dart)
       await writeBytesAtomic(_imageFile(r.id), bytes);
       try {
-        await writeBytesAtomic(
-          _thumbFile(r.id),
-          await coverResizePng(bytes, 256, 256, keepAlpha: true),
-        );
-      } catch (_) {} // 缩略图失败不阻断,读取端退回原图
+        await _writeThumb(r.id, bytes, await _imageFile(r.id).stat());
+      } catch (
+        _
+      ) {} // Invalid/missing provenance makes readers use the original.
       if (input != null) {
         final enc = await encodeGenerateState(input, _blobs);
         await writeStringAtomic(
@@ -251,7 +325,10 @@ class GalleryStore {
     required String? selectedId,
     required int seq,
   }) {
-    _idxItems = results;
+    initialResults = List.unmodifiable(results.map(_normalizedResult));
+    initialSelectedId = selectedId;
+    this.seq = seq;
+    _idxItems = initialResults;
     _idxSelected = selectedId;
     _idxSeq = seq;
     _idxTimer?.cancel();
@@ -268,31 +345,45 @@ class GalleryStore {
     final seq = _idxSeq;
     return _indexWrite = _enqueue(() async {
       // 索引是最不能半截的一个文件:坏了会让整库看起来是空的(见 S1C-01)
-      await writeStringAtomic(
-        _indexFile,
-        jsonEncode({
-          'v': 1,
-          'seq': seq,
-          'selectedId': ?selected,
-          'items': [
-            for (final r in items)
-              {
-                'id': r.id,
-                'w': r.width,
-                'h': r.height,
-                'seed': r.seed,
-                'badge': r.badge.name,
-                't': r.createdAt,
-                // 批次内位置。只有批次产物才写,单张不占位 ——
-                // 这张索引每次出图都要整份重写,能省一个键是一个。
-                if (r.batchIndex >= 0) 'bi': r.batchIndex,
-                'hasInput': r.hasInput,
-              },
-          ],
-        }),
-      );
+      await _writeIndex(items, selected, seq);
     });
   }
+
+  ResultImage _normalizedResult(ResultImage result) =>
+      _clearedInpaintIds.contains(result.id)
+      ? result.withoutInpaintHistory()
+      : result;
+
+  Future<void> _writeIndex(
+    List<ResultImage> items,
+    String? selected,
+    int seq,
+  ) => writeStringAtomic(
+    _indexFile,
+    jsonEncode({
+      'v': 1,
+      'seq': seq,
+      'selectedId': ?selected,
+      'items': [
+        for (final r in items.map(_normalizedResult))
+          {
+            'id': r.id,
+            'w': r.width,
+            'h': r.height,
+            'seed': r.seed,
+            'badge': r.badge.name,
+            't': r.createdAt,
+            // 批次内位置。只有批次产物才写,单张不占位 ——
+            // 这张索引每次出图都要整份重写,能省一个键是一个。
+            if (r.batchIndex >= 0) 'bi': r.batchIndex,
+            if (r.inpaintFrom != null) 'inpaintFrom': r.inpaintFrom,
+            if (r.inpaintHistoryCleared) 'inpaintHistoryCleared': true,
+            if (r.favorite) 'favorite': true,
+            'hasInput': r.hasInput,
+          },
+      ],
+    }),
+  );
 
   /// 删除若干条结果的文件(上限裁剪用):原图/缩略图/快照一并删。
   /// 索引由调用方随后 scheduleIndex 重写。
@@ -300,7 +391,12 @@ class GalleryStore {
     if (ids.isEmpty) return;
     _enqueue(() async {
       for (final id in ids) {
-        for (final f in [_imageFile(id), _thumbFile(id), _inputFile(id)]) {
+        for (final f in [
+          _imageFile(id),
+          _thumbFile(id),
+          _thumbSourceFile(id),
+          _inputFile(id),
+        ]) {
           try {
             if (await f.exists()) await f.delete();
           } catch (_) {}
@@ -309,10 +405,66 @@ class GalleryStore {
     });
   }
 
+  /// Export cleanup must preserve records whose original file cannot be
+  /// removed. Delete the original first, then remove only its auxiliary files.
+  Future<Set<String>> deleteResultFilesVerified(
+    List<String> ids, {
+    bool Function(String id)? canDelete,
+  }) => _enqueue(() async {
+    final deleted = <String>{};
+    for (final id in ids.toSet()) {
+      final original = _imageFile(id);
+      try {
+        final type = await FileSystemEntity.type(
+          original.path,
+          followLinks: false,
+        );
+        if (type == FileSystemEntityType.file ||
+            type == FileSystemEntityType.link) {
+          if (canDelete != null) {
+            // A membership change may arrive while stat is in progress. Keep
+            // the last guard and unlink in one event-loop turn for this path.
+            if (!canDelete(id)) continue;
+            original.deleteSync();
+          } else {
+            await original.delete();
+          }
+        }
+        final remaining = canDelete != null
+            ? FileSystemEntity.typeSync(original.path, followLinks: false)
+            : await FileSystemEntity.type(original.path, followLinks: false);
+        if (remaining != FileSystemEntityType.notFound) {
+          continue;
+        }
+        if (type == FileSystemEntityType.notFound &&
+            canDelete?.call(id) == false) {
+          continue;
+        }
+        deleted.add(id);
+      } catch (error) {
+        logd('[gallery-store] 原图未能删除 $id: $error');
+        continue;
+      }
+      for (final file in [
+        _thumbFile(id),
+        _thumbSourceFile(id),
+        _inputFile(id),
+      ]) {
+        try {
+          if (await file.exists()) await file.delete();
+        } catch (_) {}
+      }
+    }
+    return Set<String>.unmodifiable(deleted);
+  });
+
   /// 清空图库文件(存储管理「清空图库」):删光原图/缩略图/快照,
   /// 写空索引但**保留发号器**(id 永不复用)。作废挂起的索引写,
   /// 串行队列保证在途的 persistResult 先完成再删。
   Future<void> clearAllFiles({required int seq}) {
+    initialResults = const [];
+    initialSelectedId = null;
+    this.seq = seq;
     _idxItems = null;
     _idxTimer?.cancel();
     return _indexWrite = _enqueue(() async {
@@ -334,6 +486,97 @@ class GalleryStore {
 
   // ---- 懒读 ----
 
+  Future<List<_HistoryInput>> _historyInputs() async {
+    final inputs = <_HistoryInput>[];
+    if (!await _inputsDir.exists()) return inputs;
+    await for (final entry in _inputsDir.list(followLinks: false)) {
+      if (entry is! File || !entry.path.endsWith('.json')) continue;
+      final document = jsonDecode(await entry.readAsString());
+      if (document is! Map<String, dynamic>) {
+        throw const FormatException('历史参数引用记录无法读取，已停止清理');
+      }
+      final state = document['state'];
+      final detached = state is Map && state['inpaint'] is Map
+          ? BlobStore.referencedHashes(state['inpaint'])
+          : <String>{};
+      Map<String, dynamic>? cleaned;
+      var retained = BlobStore.referencedHashes(document);
+      if (state is Map<String, dynamic> && state['inpaint'] != null) {
+        final nextState = Map<String, dynamic>.of(state)..remove('inpaint');
+        final nextDocument = Map<String, dynamic>.of(document)
+          ..remove('refs')
+          ..['state'] = nextState
+          ..['inpaintHistoryCleared'] = true;
+        retained = retained.difference(detached)
+          ..addAll(BlobStore.referencedHashes(nextDocument));
+        cleaned = {...nextDocument, 'refs': retained.toList()};
+      }
+      final filename = entry.uri.pathSegments.last;
+      inputs.add((
+        file: entry,
+        id: filename.substring(0, filename.length - 5),
+        document: document,
+        cleaned: cleaned,
+        detachedRefs: detached,
+        retainedRefs: retained,
+      ));
+    }
+    return inputs;
+  }
+
+  Future<InpaintHistoryInventory> inspectInpaintHistory() => _enqueue(() async {
+    final results = List<ResultImage>.of(initialResults);
+    final inputs = await _historyInputs();
+    return InpaintHistoryInventory(
+      {
+        for (final input in inputs)
+          if (input.cleaned != null) input.id,
+        for (final result in results)
+          if (result.hasInpaintComparison) result.id,
+      },
+      {for (final input in inputs) ...input.detachedRefs},
+      {for (final input in inputs) ...input.retainedRefs},
+    );
+  });
+
+  /// Serialized with result writes. The explicit marker is committed first:
+  /// interrupted cleanup can leave extra bytes, but cannot resurrect "旧的".
+  Future<InpaintHistoryRemoval> clearInpaintHistory() => _enqueue(() async {
+    final results = List<ResultImage>.of(initialResults);
+    final inputs = await _historyInputs();
+    final ids = {
+      for (final input in inputs)
+        if (input.cleaned != null) input.id,
+      for (final result in results)
+        if (result.hasInpaintComparison) result.id,
+    };
+    final added = ids.difference(_clearedInpaintIds);
+    _clearedInpaintIds.addAll(ids);
+    try {
+      await _writeIndex(initialResults, initialSelectedId, seq);
+    } catch (_) {
+      _clearedInpaintIds.removeAll(added);
+      rethrow;
+    }
+    initialResults = List.unmodifiable(initialResults.map(_normalizedResult));
+    if (_idxItems != null) {
+      _idxItems = List.unmodifiable(_idxItems!.map(_normalizedResult));
+    }
+    final detached = <String>{};
+    final failed = <String>{};
+    for (final input in inputs) {
+      if (input.cleaned == null) continue;
+      try {
+        await writeStringAtomic(input.file, jsonEncode(input.cleaned));
+        detached.addAll(input.detachedRefs);
+      } catch (error) {
+        failed.add(input.id);
+        logd('[gallery-store] 重绘历史清理失败 ${input.id}: $error');
+      }
+    }
+    return InpaintHistoryRemoval(ids, detached, failed);
+  });
+
   Future<Uint8List?> readImage(String id) async {
     try {
       final f = _imageFile(id);
@@ -344,13 +587,78 @@ class GalleryStore {
     }
   }
 
-  /// 缩略图;缺失(旧数据/生成失败)退回原图。
-  Future<Uint8List?> readThumb(String id) async {
+  Future<Uint8List> _writeThumb(
+    String id,
+    Uint8List bytes,
+    FileStat source,
+  ) async {
+    final thumb = await coverResizePng(bytes, 256, 256, keepAlpha: true);
+    final current = await _imageFile(id).stat();
+    if (!_sameSource(current, source)) return thumb;
+    await writeBytesAtomic(_thumbFile(id), thumb);
+    await writeStringAtomic(
+      _thumbSourceFile(id),
+      jsonEncode({
+        'v': 2,
+        'id': id,
+        'size': source.size,
+        'modified': source.modified.microsecondsSinceEpoch,
+        'thumbSha256': sha256.convert(thumb).toString(),
+      }),
+    );
+    return thumb;
+  }
+
+  bool _sameSource(FileStat a, FileStat b) =>
+      a.type == FileSystemEntityType.file &&
+      a.size == b.size &&
+      a.modified == b.modified;
+
+  /// A thumbnail can be replaced independently of its source/signature. Rebuild
+  /// legacy caches once, then verify both the source and the cached pixels.
+  Future<Uint8List?> readThumb(String id) => _thumbReads.putIfAbsent(
+    id,
+    () => _readThumb(id).whenComplete(() {
+      _thumbReads.remove(id);
+    }),
+  );
+
+  Future<Uint8List?> _readThumb(String id) async {
+    final source = await _imageFile(id).stat();
+    if (source.type != FileSystemEntityType.file) return null;
     try {
-      final f = _thumbFile(id);
-      if (await f.exists()) return await f.readAsBytes();
+      final signature = jsonDecode(await _thumbSourceFile(id).readAsString());
+      if (signature is Map &&
+          signature['v'] == 2 &&
+          signature['id'] == id &&
+          signature['size'] == source.size &&
+          signature['modified'] == source.modified.microsecondsSinceEpoch) {
+        final thumb = await _thumbFile(id).readAsBytes();
+        if (signature['thumbSha256'] == sha256.convert(thumb).toString() &&
+            _sameSource(await _imageFile(id).stat(), source)) {
+          return thumb;
+        }
+      }
     } catch (_) {}
-    return readImage(id);
+    final bytes = await readImage(id);
+    if (bytes == null) return null;
+    try {
+      final thumb = await _writeThumb(id, bytes, source);
+      final current = await _imageFile(id).stat();
+      if (current.type == FileSystemEntityType.notFound) {
+        for (final file in [_thumbFile(id), _thumbSourceFile(id)]) {
+          try {
+            await file.delete();
+          } on FileSystemException {
+            /* already removed */
+          }
+        }
+        return null;
+      }
+      return _sameSource(current, source) ? thumb : await readImage(id);
+    } catch (_) {
+      return bytes;
+    }
   }
 
   // ---- 检索索引(search.json;可重建,容错语义与 index.json 不同) ----
@@ -449,10 +757,14 @@ class GalleryStore {
       if (!await f.exists()) return null;
       final j = jsonDecode(await f.readAsString());
       if (j is! Map || j['state'] is! Map<String, dynamic>) return null;
-      return await decodeGenerateState(
+      final input = await decodeGenerateState(
         j['state'] as Map<String, dynamic>,
         _blobs,
       );
+      return _clearedInpaintIds.contains(id) ||
+              j['inpaintHistoryCleared'] == true
+          ? input.copyWith(inpaint: null)
+          : input;
     } catch (e) {
       logd('[gallery-store] 快照读取失败 $id: $e');
       return null;
@@ -460,21 +772,22 @@ class GalleryStore {
   }
 
   /// 全部参数快照引用的 blob 哈希(启动 GC 的引用清单)。
-  Future<Set<String>> liveRefs() async {
+  Future<Set<String>> liveRefs({bool strict = false}) async {
     final out = <String>{};
     try {
       await for (final ent in _inputsDir.list()) {
         if (ent is! File || !ent.path.endsWith('.json')) continue;
         try {
           final j = jsonDecode(await ent.readAsString());
-          if (j is Map && j['refs'] is List) {
-            for (final r in j['refs'] as List) {
-              if (r is String) out.add(r);
-            }
-          }
-        } catch (_) {}
+          if (j is! Map) throw const FormatException('历史参数引用记录无法读取');
+          out.addAll(BlobStore.referencedHashes(j));
+        } catch (_) {
+          if (strict) rethrow;
+        }
       }
-    } catch (_) {}
+    } catch (_) {
+      if (strict && await _inputsDir.exists()) rethrow;
+    }
     return out;
   }
 }

@@ -19,6 +19,36 @@ class BlobStore {
 
   final Directory _dir;
 
+  int _referenceRevision = 0;
+  int _activePuts = 0;
+
+  /// A cleanup plan is valid only while no reference producer has changed.
+  int get referenceRevision => _referenceRevision;
+  void referencesChanged() => _referenceRevision++;
+
+  static final _hashPattern = RegExp(r'^[a-f0-9]{64}$');
+
+  /// Preserve unknown future snapshot fields conservatively as well.
+  static Set<String> referencedHashes(Object? value) {
+    final hashes = <String>{};
+    void visit(Object? item) {
+      if (item is String && _hashPattern.hasMatch(item)) {
+        hashes.add(item);
+      } else if (item is Map) {
+        for (final child in item.values) {
+          visit(child);
+        }
+      } else if (item is List) {
+        for (final child in item) {
+          visit(child);
+        }
+      }
+    }
+
+    visit(value);
+    return hashes;
+  }
+
   /// bytes 对象 → 已算过的哈希备忘(同一对象在防抖保存里反复出现,
   /// 不重复算 sha256)。
   static final Expando<String> _hashMemo = Expando<String>();
@@ -43,10 +73,51 @@ class BlobStore {
   /// 原子写不是可选项:这里是**内容寻址**存储,半截文件的内容与文件名里的
   /// 哈希对不上,却会被后续 [get] 当成有效缓存命中 —— 比文件缺失更糟。
   Future<String> put(Uint8List bytes, {String? known}) async {
-    final h = await hashOf(bytes, known: known);
-    final f = _fileOf(h);
-    if (!await f.exists()) await writeBytesAtomic(f, bytes);
-    return h;
+    referencesChanged();
+    _activePuts++;
+    try {
+      final h = await hashOf(bytes, known: known);
+      final f = _fileOf(h);
+      if (!await f.exists()) await writeBytesAtomic(f, bytes);
+      return h;
+    } finally {
+      _activePuts--;
+    }
+  }
+
+  Future<int> sizeOfHashes(Set<String> hashes) async {
+    var bytes = 0;
+    for (final hash in hashes) {
+      if (!_hashPattern.hasMatch(hash)) continue;
+      final file = _fileOf(hash);
+      if (await file.exists()) bytes += await file.length();
+    }
+    return bytes;
+  }
+
+  /// Only remove the detached history candidates, never unrelated orphan blobs.
+  /// A producer starting work invalidates the plan. The final check and unlink
+  /// share one event-loop turn so a new put cannot pass exists() before unlink.
+  Future<int> removeDetachedHashes(
+    Set<String> candidates,
+    Set<String> live, {
+    required int expectedRevision,
+  }) async {
+    var released = 0;
+    for (final hash in candidates.difference(live)) {
+      if (!_hashPattern.hasMatch(hash)) continue;
+      final file = _fileOf(hash);
+      final stat = await file.stat();
+      if (_activePuts != 0 || _referenceRevision != expectedRevision) break;
+      if (stat.type != FileSystemEntityType.file) continue;
+      try {
+        file.deleteSync();
+        released += stat.size;
+      } on FileSystemException {
+        // A later ordinary orphan cleanup can retry an inaccessible file.
+      }
+    }
+    return released;
   }
 
   Future<Uint8List?> get(String hash) async {

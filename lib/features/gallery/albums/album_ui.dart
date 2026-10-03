@@ -4,7 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/store/app_stores.dart';
+import '../../../core/platform/desktop.dart';
 import '../../../core/theme/app_theme.dart';
+import '../../../core/ui/image_drop.dart';
 import '../../../core/util/image_ops.dart';
 import '../../../core/util/image_pick.dart';
 import '../../generate/widgets/common.dart' show hintSnack;
@@ -16,6 +18,7 @@ import '../models.dart';
 import '../widgets/gallery_date_sheet.dart';
 import '../widgets/result_thumb.dart';
 import 'album_models.dart';
+import 'album_cover_dialog.dart';
 import 'album_state.dart';
 
 void albumError(BuildContext context, Object error) => hintSnack(
@@ -238,8 +241,13 @@ class _AlbumNameDialogState extends ConsumerState<_AlbumNameDialog> {
 }
 
 class AlbumCoverImage extends ConsumerWidget {
-  const AlbumCoverImage({super.key, this.albumId});
+  const AlbumCoverImage({
+    super.key,
+    this.albumId,
+    this.fallbackFit = BoxFit.cover,
+  });
   final String? albumId;
+  final BoxFit fallbackFit;
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final data = ref.watch(albumsProvider);
@@ -270,6 +278,7 @@ class AlbumCoverImage extends ConsumerWidget {
             width: size.maxWidth,
             height: size.maxHeight,
             radius: 12,
+            fit: fallbackFit,
           );
         }
         return Container(
@@ -353,6 +362,9 @@ class _AlbumLibraryState extends ConsumerState<_AlbumLibrary> {
   }
 
   Future<void> _setCover(String? id) async {
+    if (ref.read(desktopModeProvider)) {
+      return showAlbumCoverDialog(context, albumId: id);
+    }
     final hasImages = ref
         .read(galleryProvider)
         .results
@@ -431,6 +443,22 @@ class _AlbumLibraryState extends ConsumerState<_AlbumLibrary> {
     } catch (e) {
       albumError(context, e);
     }
+  }
+
+  Widget _coverDrop(String? id, Widget child) {
+    if (!ref.watch(desktopModeProvider)) return child;
+    return ImageDropRegion(
+      key: ValueKey('album-library-cover-drop-${id ?? 'all'}'),
+      label: '设为图库封面',
+      enabled: !ref.read(appStoresProvider).albums.readOnly,
+      onDrop: (images, payload) => showAlbumCoverDialog(
+        context,
+        albumId: id,
+        initialImageBytes: images.first.bytes,
+        sourceImageId: payload.imageId,
+      ),
+      child: child,
+    );
   }
 
   @override
@@ -571,14 +599,17 @@ class _AlbumLibraryState extends ConsumerState<_AlbumLibrary> {
                             children: [
                               SizedBox(
                                 height: coverWidth,
-                                child: InkWell(
-                                  borderRadius: BorderRadius.circular(12),
-                                  onTap: () => setState(() {
-                                    _id = id;
-                                    _preview = true;
-                                    _alsoSave = false;
-                                  }),
-                                  child: AlbumCoverImage(albumId: id),
+                                child: _coverDrop(
+                                  id,
+                                  InkWell(
+                                    borderRadius: BorderRadius.circular(12),
+                                    onTap: () => setState(() {
+                                      _id = id;
+                                      _preview = true;
+                                      _alsoSave = false;
+                                    }),
+                                    child: AlbumCoverImage(albumId: id),
+                                  ),
                                 ),
                               ),
                               Row(

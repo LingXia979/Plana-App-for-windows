@@ -104,6 +104,18 @@ class AssistantStore {
     }
   }
 
+  /// 一轮附件必须全部保存成功，才能提交消息，避免重试时只剩其中一张。
+  /// 部分写入失败产生的未引用 blob 留给常规 GC，不影响已有会话。
+  Future<List<String>> putImages(List<Uint8List> images) async {
+    final hashes = <String>[];
+    for (final image in images) {
+      final hash = await putImage(image);
+      if (hash == null) throw StateError('图片附件保存失败，原对话已保留，请重试。');
+      hashes.add(hash);
+    }
+    return List.unmodifiable(hashes);
+  }
+
   Future<Uint8List?> image(String? hash) async {
     if (hash == null || hash.isEmpty) return null;
     try {
@@ -117,9 +129,13 @@ class AssistantStore {
   List<ArchivedSession>? _pendingSessions;
   Timer? _timer;
   Future<void> _chain = Future.value();
+  Future<void> get idle => _chain;
+  Set<String>? _latestRefs;
 
   /// 状态一变就排队;真正写盘在防抖窗口后。
   void schedule(List<AssistantMsg> current, List<ArchivedSession> sessions) {
+    _blobs.referencesChanged();
+    _latestRefs = _refsOf(current, sessions);
     _pendingCurrent = List.of(current);
     _pendingSessions = List.of(sessions);
     _timer?.cancel();
@@ -155,25 +171,25 @@ class AssistantStore {
     List<AssistantMsg> current,
     List<ArchivedSession> sessions,
   ) => {
-    for (final m in current)
-      if (m.imageHash != null) m.imageHash!,
+    for (final m in current) ...m.imageHashes,
     for (final s in sessions)
-      for (final m in s.msgs)
-        if (m.imageHash != null) m.imageHash!,
+      for (final m in s.msgs) ...m.imageHashes,
   };
 
   /// 盘上存档引用的 blob 哈希(启动 GC 的引用清单)。
-  Future<Set<String>> liveRefs() async {
+  Future<Set<String>> liveRefs({bool strict = false}) async {
+    final refs = <String>{
+      ...?_latestRefs,
+      if (_latestRefs == null) ..._refsOf(initialCurrent, initialSessions),
+    };
     try {
-      if (!await _file.exists()) return {};
+      if (!await _file.exists()) return refs;
       final j = jsonDecode(await _file.readAsString());
-      if (j is Map && j['refs'] is List) {
-        return {
-          for (final r in j['refs'] as List)
-            if (r is String) r,
-        };
-      }
-    } catch (_) {}
-    return {};
+      if (j is! Map) throw const FormatException('AI 助手引用记录无法读取');
+      refs.addAll(BlobStore.referencedHashes(j));
+    } catch (_) {
+      if (strict) rethrow;
+    }
+    return refs;
   }
 }

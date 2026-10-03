@@ -1,14 +1,20 @@
+import 'dart:math' as math;
+
 import 'albums/album_state.dart';
 import 'albums/album_ui.dart';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../../core/store/app_stores.dart';
+import '../../core/platform/desktop.dart';
+import '../import/desktop_image_drop.dart';
 import '../../core/theme/app_theme.dart';
 import '../generate/generation_controller.dart';
+import '../generate/generate_state.dart';
 import '../generate/widgets/common.dart' show hintSnack;
 import '../inpaint/inpaint_overlay.dart';
 import 'gallery_state.dart';
@@ -16,6 +22,7 @@ import 'models.dart';
 import 'save_settings.dart';
 import 'share_pipeline.dart';
 import 'widgets/film_strip.dart';
+import 'widgets/desktop_canvas_gutters.dart';
 import 'widgets/result_canvas.dart';
 
 /// 图库页:上方结果画布(大图 + 操作轨 + seed)、下方历史胶片条。
@@ -26,7 +33,9 @@ import 'widgets/result_canvas.dart';
 /// 图跟手走、松手吸附 —— 以前那套「raw pointer 认快滑 + 自己放一段推移动画」的
 /// 假翻页已删。shell 的 tab 横滑同时关掉了,横向手势这一层现在归画布独占。
 class GalleryPage extends ConsumerStatefulWidget {
-  const GalleryPage({super.key});
+  const GalleryPage({super.key, this.desktop = false, this.libraryControl});
+  final Widget? libraryControl;
+  final bool desktop;
 
   @override
   ConsumerState<GalleryPage> createState() => _GalleryPageState();
@@ -55,6 +64,9 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
     with AutomaticKeepAliveClientMixin {
   bool _keep = false;
   bool _hintChecked = false;
+  bool _historyOpen = true;
+  final _historyFocus = FocusNode(debugLabel: 'Canvas and history');
+  bool _importingHistory = false;
 
   /// 最近一次成功显示的原图字节。切到尚未读盘的老图时先继续画它,
   /// 避免空窗期露占位;新图解码完由 gaplessPlayback 无缝换掉。
@@ -96,11 +108,97 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
   @override
   void dispose() {
     _pv.dispose();
+    _historyFocus.dispose();
     super.dispose();
   }
 
   @override
-  bool get wantKeepAlive => _keep;
+  bool get wantKeepAlive => widget.desktop || _keep;
+
+  Widget _canvasDrop(Widget child) =>
+      widget.desktop ? DesktopImportRegion(canvas: true, child: child) : child;
+
+  void _selectHistory(String id) {
+    if (widget.desktop) _historyFocus.requestFocus();
+    ref.read(galleryResultPreviewProvider.notifier).clear();
+    ref.read(generationProvider.notifier).select(null);
+    ref.read(galleryProvider.notifier).select(id);
+  }
+
+  Future<void> _importHistory(String id) async {
+    if (_importingHistory) return;
+    final image = ref
+        .read(galleryProvider)
+        .results
+        .where((r) => r.id == id)
+        .firstOrNull;
+    if (image == null) return;
+    _importingHistory = true;
+    try {
+      await openResultImport(context, ref, image);
+    } finally {
+      _importingHistory = false;
+    }
+  }
+
+  KeyEventResult _onHistoryKey(FocusNode node, KeyEvent event) {
+    if (!widget.desktop ||
+        event is KeyUpEvent ||
+        HardwareKeyboard.instance.isControlPressed ||
+        HardwareKeyboard.instance.isAltPressed ||
+        HardwareKeyboard.instance.isShiftPressed ||
+        HardwareKeyboard.instance.isMetaPressed ||
+        ref.read(inpaintSessionProvider) != null ||
+        ref.read(galleryZoomedProvider)) {
+      return KeyEventResult.ignored;
+    }
+    final focused = FocusManager.instance.primaryFocus?.context;
+    if (focused?.widget is EditableText ||
+        focused?.findAncestorStateOfType<EditableTextState>() != null) {
+      return KeyEventResult.ignored;
+    }
+    final delta = event.logicalKey == LogicalKeyboardKey.arrowLeft
+        ? -1
+        : event.logicalKey == LogicalKeyboardKey.arrowRight
+        ? 1
+        : 0;
+    if (delta == 0) return KeyEventResult.ignored;
+    final history = ref.read(galleryViewProvider);
+    if (history.results.isEmpty) return KeyEventResult.ignored;
+    final current = history.results.indexWhere(
+      (r) => r.id == history.selectedId,
+    );
+    final next = ((current < 0 ? 0 : current) + delta).clamp(
+      0,
+      history.results.length - 1,
+    );
+    _selectHistory(history.results[next].id);
+    return KeyEventResult.handled;
+  }
+
+  Widget _historyHeader(int count) => Padding(
+    padding: const EdgeInsets.fromLTRB(12, 6, 12, 0),
+    child: Row(
+      children: [
+        IconButton(
+          tooltip: _historyOpen ? '收起历史' : '展开历史',
+          onPressed: () => setState(() => _historyOpen = !_historyOpen),
+          icon: Icon(
+            _historyOpen ? Icons.expand_more : Icons.expand_less,
+            size: 18,
+          ),
+        ),
+        Text('历史记录 · $count', style: context.texts.bodySmall),
+        if (widget.libraryControl != null)
+          Expanded(
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: widget.libraryControl!,
+            ),
+          ),
+      ],
+    ),
+  );
 
   /// 跳页只能在帧后做(build 里动 controller 会打断本帧布局)。空窗这一两帧
   /// 由 build 里的「顶图层」盖着,看不出断层。
@@ -174,6 +272,7 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
   /// 图库里有图了 → 提一条还没提过的引导(见 [_kGalleryHints])。
   /// 每进程只判一次(_hintChecked),真正的"提过没"以落盘的标记为准。
   void _maybeHint(bool hasImage) {
+    if (widget.desktop) return;
     if (_hintChecked || !hasImage) return;
     _hintChecked = true;
     final prefs = ref.read(prefsStoreProvider);
@@ -225,10 +324,22 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
     _maybeHint(!state.isEmpty);
 
     if (!gen.busy && state.isEmpty && inpaint == null && pool.jobs.isEmpty) {
-      return const Column(
+      return Column(
         children: [
-          Expanded(child: _EmptyGallery()),
-          GalleryContextBar(),
+          if (widget.desktop)
+            const ResultActions(result: null, canvasBar: CanvasActionBar.top),
+          Expanded(
+            child: widget.desktop
+                ? _canvasDrop(const _DesktopEmptyCanvas())
+                : const _EmptyGallery(),
+          ),
+          if (widget.desktop)
+            const ResultActions(
+              result: null,
+              canvasBar: CanvasActionBar.bottom,
+            ),
+          if (!widget.desktop) const GalleryContextBar(),
+          if (widget.desktop) _historyHeader(0),
         ],
       );
     }
@@ -282,178 +393,237 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
     // 缩放态把翻页物理整个撤掉,横向拖动让回 InteractiveViewer 做平移。
     final zoomed = ref.watch(galleryZoomedProvider);
 
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        Column(
+    return Focus(
+      focusNode: _historyFocus,
+      onKeyEvent: _onHistoryKey,
+      child: Listener(
+        onPointerDown: widget.desktop && inpaint == null
+            ? (_) {
+                if (!_historyFocus.hasFocus) _historyFocus.requestFocus();
+              }
+            : null,
+        child: Stack(
+          fit: StackFit.expand,
           children: [
-            Expanded(
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  // 分页画布:一页一张结果,图跟手走、松手吸附。
-                  // 未缩放时横向拖动归 PageView(触摸 slop 18 先于
-                  // InteractiveViewer 的 pan slop 36 判定成立,竞技场稳赢);
-                  // 缩放后 physics 撤成 NeverScrollable,Scrollable 干脆不装
-                  // 拖动识别器,横向拖动整个让回去做平移。
-                  NotificationListener<ScrollNotification>(
-                    onNotification: _onScroll,
-                    child: PageView.builder(
-                      key: ValueKey(viewKey),
-                      controller: _pv,
-                      physics: zoomed
-                          ? const NeverScrollableScrollPhysics()
-                          : null,
-                      itemCount: results.length,
-                      onPageChanged: _onPageChanged,
-                      itemBuilder: (_, i) => _ResultPage(result: results[i]),
-                    ),
+            Column(
+              children: [
+                if (widget.desktop)
+                  ResultActions(
+                    key: ValueKey('canvas-top-${selected?.id}'),
+                    result: selected,
+                    canvasBar: CanvasActionBar.top,
+                    enabled: showChrome,
                   ),
-                  // 顶图层:跳页空窗 / 老图还没读上来时顶住,不露空画框
-                  if (bridge != null)
-                    IgnorePointer(
-                      child: GalleryImageLayer(
-                        bytes: bridge,
-                        width: selected?.width ?? 0,
-                        height: selected?.height ?? 0,
-                      ),
-                    ),
-                  // 生成视角:预览层盖住分页画布。预览没有邻居语义,不参与翻页;
-                  // 它自带 opaque 命中行为,底下的 PageView 拿不到指针,不会误翻。
-                  // 撤层那一帧,page 0 画的是同一份终帧字节(入库与预览同引用,
-                  // ImageCache 直接命中),所以「生成中 → 出图」照旧不闪。
-                  if (showGen)
-                    // 局部重绘:发出去的只是那块裁切区,流帧本身是一小张。拿整
-                    // 张原图垫底、把流帧盖回原位,画面才和入库结果(贴回后的整图)
-                    // 是同一个东西 —— 否则生成中看一张小图、出图那一刻啪地换成
-                    // 整图。整图生成时 pasteUnder 为空,走原来那条。
-                    _ZoomableImage(
-                      bytes: gen.pasteUnder ?? gen.preview ?? selBytes,
-                      width: gen.pasteUnder != null
-                          ? (selected?.width ?? gen.width)
-                          : gen.width,
-                      height: gen.pasteUnder != null
-                          ? (selected?.height ?? gen.height)
-                          : gen.height,
-                      overlay: gen.pasteUnder == null ? null : gen.preview,
-                      overlayAt: gen.pasteAt,
-                    ),
-                  // 结果操作层:非生成态淡入,生成时淡出
-                  AnimatedOpacity(
-                    duration: Motion.medium,
-                    curve: Motion.standard,
-                    opacity: showChrome ? 1 : 0,
-                    child: IgnorePointer(
-                      ignoring: !showChrome,
-                      child: selected != null
-                          ? ResultChrome(result: selected)
-                          : const SizedBox.shrink(),
-                    ),
-                  ),
-                  // 进度胶囊:渐显+上滑进 / 渐隐+下滑出
-                  Positioned(
-                    left: 0,
-                    right: 0,
-                    bottom: 22,
-                    child: Center(
-                      child: AnimatedSwitcher(
-                        duration: Motion.medium,
-                        switchInCurve: Motion.emphasized,
-                        switchOutCurve: Motion.standard,
-                        transitionBuilder: (child, anim) => FadeTransition(
-                          opacity: anim,
-                          child: SlideTransition(
-                            position: Tween<Offset>(
-                              begin: const Offset(0, 0.5),
-                              end: Offset.zero,
-                            ).animate(anim),
-                            child: child,
+                Expanded(
+                  child: _canvasDrop(
+                    Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        // 分页画布:一页一张结果,图跟手走、松手吸附。
+                        // 未缩放时横向拖动归 PageView(触摸 slop 18 先于
+                        // InteractiveViewer 的 pan slop 36 判定成立,竞技场稳赢);
+                        // 缩放后 physics 撤成 NeverScrollable,Scrollable 干脆不装
+                        // 拖动识别器,横向拖动整个让回去做平移。
+                        NotificationListener<ScrollNotification>(
+                          onNotification: _onScroll,
+                          child: PageView.builder(
+                            key: ValueKey(viewKey),
+                            controller: _pv,
+                            physics: zoomed
+                                ? const NeverScrollableScrollPhysics()
+                                : null,
+                            itemCount: results.length,
+                            onPageChanged: _onPageChanged,
+                            itemBuilder: (_, i) =>
+                                _ResultPage(result: results[i]),
                           ),
                         ),
-                        // 切看历史图时胶囊让位(进度看占位卡),不挡图
-                        child: showGen
-                            ? ProgressPill(
-                                key: const ValueKey('pill'),
-                                status: gen,
-                                // 取消**跟随的这一条**,不动循环/队列 ——
-                                // 那是「停这一条」,不是「别再续了」(后者在
-                                // 创作页那颗生成按钮内部的停止区)。
-                                onCancel: () {
-                                  final id = pool.selectedId;
-                                  if (id != null) {
-                                    ref
-                                        .read(generationProvider.notifier)
-                                        .cancelJob(id);
-                                  }
-                                },
-                              )
-                            : const SizedBox.shrink(key: ValueKey('nopill')),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            if (previewImage != null && !showGen)
-              Material(
-                color: context.scheme.surfaceContainer,
-                child: Row(
-                  children: [
-                    IconButton(
-                      tooltip: '返回历史',
-                      onPressed: () => ref
-                          .read(galleryResultPreviewProvider.notifier)
-                          .clear(),
-                      icon: const Icon(Icons.close),
-                    ),
-                    Expanded(
-                      child: Text(
-                        '已保存到 ${ref.watch(albumsProvider).name(preview!.target.albumId)}',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                    TextButton(
-                      onPressed: () => ref
-                          .read(albumsProvider.notifier)
-                          .browse(
-                            ref
-                                    .read(albumsProvider)
-                                    .exists(preview.target.albumId)
-                                ? preview.target.albumId
+                        // 顶图层:跳页空窗 / 老图还没读上来时顶住,不露空画框
+                        if (bridge != null)
+                          IgnorePointer(
+                            child: GalleryImageLayer(
+                              bytes: bridge,
+                              width: selected?.width ?? 0,
+                              height: selected?.height ?? 0,
+                            ),
+                          ),
+                        // 生成视角:预览层盖住分页画布。预览没有邻居语义,不参与翻页;
+                        // 它自带 opaque 命中行为,底下的 PageView 拿不到指针,不会误翻。
+                        // 撤层那一帧,page 0 画的是同一份终帧字节(入库与预览同引用,
+                        // ImageCache 直接命中),所以「生成中 → 出图」照旧不闪。
+                        if (showGen)
+                          // 局部重绘:发出去的只是那块裁切区,流帧本身是一小张。拿整
+                          // 张原图垫底、把流帧盖回原位,画面才和入库结果(贴回后的整图)
+                          // 是同一个东西 —— 否则生成中看一张小图、出图那一刻啪地换成
+                          // 整图。整图生成时 pasteUnder 为空,走原来那条。
+                          _ZoomableImage(
+                            bytes: gen.pasteUnder ?? gen.preview ?? selBytes,
+                            width: gen.pasteUnder != null
+                                ? (selected?.width ?? gen.width)
+                                : gen.width,
+                            height: gen.pasteUnder != null
+                                ? (selected?.height ?? gen.height)
+                                : gen.height,
+                            overlay: gen.pasteUnder == null
+                                ? null
+                                : gen.preview,
+                            overlayAt: gen.pasteAt,
+                          ),
+                        // 结果操作层:非生成态淡入,生成时淡出
+                        if (widget.desktop &&
+                            !showGen &&
+                            !zoomed &&
+                            inpaint == null &&
+                            previewImage == null &&
+                            selected != null)
+                          DesktopCanvasGutters(
+                            imageSize: Size(
+                              selected.width.toDouble(),
+                              selected.height.toDouble(),
+                            ),
+                            onPrevious: selIdx > 0
+                                ? () => _selectHistory(results[selIdx - 1].id)
+                                : null,
+                            onNext: selIdx >= 0 && selIdx < results.length - 1
+                                ? () => _selectHistory(results[selIdx + 1].id)
                                 : null,
                           ),
-                      child: const Text('浏览图库'),
+                        AnimatedOpacity(
+                          duration: Motion.medium,
+                          curve: Motion.standard,
+                          opacity: showChrome ? 1 : 0,
+                          child: IgnorePointer(
+                            ignoring: !showChrome,
+                            child: selected != null
+                                ? ResultChrome(
+                                    result: selected,
+                                    showActions: !widget.desktop,
+                                    desktop: widget.desktop,
+                                    enabled: showChrome,
+                                  )
+                                : const SizedBox.shrink(),
+                          ),
+                        ),
+                        // 进度胶囊:渐显+上滑进 / 渐隐+下滑出
+                        Positioned(
+                          left: 0,
+                          right: 0,
+                          bottom: 22,
+                          child: Center(
+                            child: AnimatedSwitcher(
+                              duration: Motion.medium,
+                              switchInCurve: Motion.emphasized,
+                              switchOutCurve: Motion.standard,
+                              transitionBuilder: (child, anim) =>
+                                  FadeTransition(
+                                    opacity: anim,
+                                    child: SlideTransition(
+                                      position: Tween<Offset>(
+                                        begin: const Offset(0, 0.5),
+                                        end: Offset.zero,
+                                      ).animate(anim),
+                                      child: child,
+                                    ),
+                                  ),
+                              // 切看历史图时胶囊让位(进度看占位卡),不挡图
+                              child: showGen
+                                  ? ProgressPill(
+                                      key: const ValueKey('pill'),
+                                      status: gen,
+                                      // 取消**跟随的这一条**,不动循环/队列 ——
+                                      // 那是「停这一条」,不是「别再续了」(后者在
+                                      // 创作页那颗生成按钮内部的停止区)。
+                                      onCancel: () {
+                                        final id = pool.selectedId;
+                                        if (id != null) {
+                                          ref
+                                              .read(generationProvider.notifier)
+                                              .cancelJob(id);
+                                        }
+                                      },
+                                    )
+                                  : const SizedBox.shrink(
+                                      key: ValueKey('nopill'),
+                                    ),
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
-                  ],
+                  ),
                 ),
-              ),
-            const GalleryContextBar(),
-            FilmStrip(
-              results: history.results,
-              selectedId: previewImage == null ? history.selectedId : null,
-              onSelect: (id) {
-                // 生成中点历史图 = 解除跟随(任务继续);平时就是普通选图
-                ref.read(generationProvider.notifier).select(null);
-                ref.read(galleryProvider.notifier).select(id);
-              },
-              onShare: _shareOne,
-              onDelete: (id) =>
-                  ref.read(galleryProvider.notifier).deleteResults([id]),
-              jobs: pool.newestFirst,
-              selectedJobId: pool.selectedId,
-              onSelectJob: (id) {
-                ref.read(galleryResultPreviewProvider.notifier).clear();
-                ref.read(generationProvider.notifier).select(id);
-              },
+                if (widget.desktop)
+                  ResultActions(
+                    key: ValueKey('canvas-bottom-${selected?.id}'),
+                    result: selected,
+                    canvasBar: CanvasActionBar.bottom,
+                    enabled: showChrome,
+                  ),
+                if (previewImage != null && !showGen)
+                  Material(
+                    color: context.scheme.surfaceContainer,
+                    child: Row(
+                      children: [
+                        IconButton(
+                          tooltip: '返回历史',
+                          onPressed: () => ref
+                              .read(galleryResultPreviewProvider.notifier)
+                              .clear(),
+                          icon: const Icon(Icons.close),
+                        ),
+                        Expanded(
+                          child: Text(
+                            '已保存到 ${ref.watch(albumsProvider).name(preview!.target.albumId)}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: () => ref
+                              .read(albumsProvider.notifier)
+                              .browse(
+                                ref
+                                        .read(albumsProvider)
+                                        .exists(preview.target.albumId)
+                                    ? preview.target.albumId
+                                    : null,
+                              ),
+                          child: const Text('浏览图库'),
+                        ),
+                      ],
+                    ),
+                  ),
+                if (!widget.desktop) const GalleryContextBar(),
+                if (widget.desktop) _historyHeader(history.results.length),
+                if (!widget.desktop || _historyOpen)
+                  FilmStrip(
+                    desktop: widget.desktop,
+                    onImport: _importHistory,
+                    showMore: !widget.desktop,
+                    results: history.results,
+                    selectedId: previewImage == null
+                        ? history.selectedId
+                        : null,
+                    onSelect: _selectHistory,
+                    onShare: _shareOne,
+                    onDelete: (id) =>
+                        ref.read(galleryProvider.notifier).deleteResults([id]),
+                    jobs: pool.newestFirst,
+                    selectedJobId: pool.selectedId,
+                    onSelectJob: (id) {
+                      ref.read(galleryResultPreviewProvider.notifier).clear();
+                      ref.read(generationProvider.notifier).select(id);
+                    },
+                  ),
+              ],
             ),
+            // 重绘编辑面板:原地切入覆盖(出入场动画由 overlay 自己编排,
+            // 收起动画结束后 session 置空、此层卸载)
+            if (inpaint != null)
+              InpaintOverlay(key: ObjectKey(inpaint), session: inpaint),
           ],
         ),
-        // 重绘编辑面板:原地切入覆盖(出入场动画由 overlay 自己编排,
-        // 收起动画结束后 session 置空、此层卸载)
-        if (inpaint != null)
-          InpaintOverlay(key: ObjectKey(inpaint), session: inpaint),
-      ],
+      ),
     );
   }
 }
@@ -474,11 +644,22 @@ class _ResultPage extends ConsumerWidget {
     final selected =
         ref.watch(galleryViewProvider).selectedId == result.id ||
         ref.watch(galleryResultPreviewProvider)?.imageId == result.id;
-    return _ZoomableImage(
+    final comparison = selected ? ref.watch(comparePreviewProvider) : null;
+    final image = _ZoomableImage(
       bytes: bytes,
       width: result.width,
       height: result.height,
-      compare: selected ? ref.watch(compareBytesProvider) : null,
+      desktopDrag: ref.watch(desktopModeProvider),
+      compare: comparison?.resultId == result.id ? comparison?.bytes : null,
+    );
+    if (!ref.watch(desktopModeProvider)) return image;
+    return GalleryImageDrag(
+      result: result,
+      canvas: true,
+      // A fitted image can be carried to another pane. Zooming keeps the
+      // existing pan gesture; double-click returns to fit before carrying it.
+      enabled: !ref.watch(galleryZoomedProvider),
+      child: image,
     );
   }
 }
@@ -499,18 +680,20 @@ class _ZoomableImage extends ConsumerStatefulWidget {
     this.overlay,
     this.overlayAt,
     this.compare,
+    this.desktopDrag = false,
   });
 
   final Uint8List? bytes;
   final int width;
   final int height;
+  final bool desktopDrag;
 
   /// 盖在底图上的一小张(局部重绘的流帧),[overlayAt] 是它在**原图坐标**里的位置。
   /// 两个都为空 = 普通生成,只画底图。
   final Uint8List? overlay;
   final ({int x, int y, int w, int h})? overlayAt;
 
-  /// 「按住对比」要盖的重绘前原图;满幅,和底图同一个盒子。
+  /// 「旧的」按住时显示的合成对比图；只替换蒙版区域，满幅尺寸不变。
   ///
   /// **必须画在这里面**,不能在外层 Stack 上另起一层:缩放/平移是
   /// InteractiveViewer 做的,外层那层不吃这个变换 —— 图放大之后一按对比,
@@ -534,6 +717,8 @@ class _ZoomableImageState extends ConsumerState<_ZoomableImage>
   );
   Animation<Matrix4>? _zoomAnim;
   Offset? _doubleTapPos;
+  Offset _panScene = Offset.zero;
+  double _panScale = 1;
   late final GalleryZoomedNotifier _zoomed;
 
   double get _scale => _tc.value.getMaxScaleOnAxis();
@@ -584,12 +769,99 @@ class _ZoomableImageState extends ConsumerState<_ZoomableImage>
     return GestureDetector(
       onDoubleTapDown: (d) => _doubleTapPos = d.localPosition,
       onDoubleTap: _onDoubleTap,
-      child: InteractiveViewer(
-        transformationController: _tc,
-        maxScale: 10,
-        child: _layer(),
-      ),
+      child: widget.desktopDrag
+          ? _desktopViewport()
+          : InteractiveViewer(
+              transformationController: _tc,
+              maxScale: 10,
+              child: _layer(),
+            ),
     );
+  }
+
+  /// InteractiveViewer always installs a mouse scale recognizer, even with
+  /// panEnabled:false. Its 2px threshold would steal fitted-image drags before
+  /// the image's 4px threshold. Here only fitted mouse motion is excluded;
+  /// touch/trackpad zoom and zoomed mouse pan keep the same controller.
+  Widget _desktopViewport() => LayoutBuilder(
+    builder: (context, box) {
+      final viewport = box.biggest;
+      return Listener(
+        onPointerSignal: (event) {
+          if (event is! PointerScrollEvent && event is! PointerScaleEvent) {
+            return;
+          }
+          GestureBinding.instance.pointerSignalResolver.register(event, (
+            event,
+          ) {
+            _ac.stop();
+            final focal = event.localPosition;
+            final scene = _tc.toScene(focal);
+            if (event is PointerScrollEvent &&
+                event.kind == PointerDeviceKind.trackpad) {
+              _setDesktopTransform(
+                _scale,
+                focal - event.scrollDelta,
+                scene,
+                viewport,
+              );
+              return;
+            }
+            final factor = event is PointerScaleEvent
+                ? event.scale
+                : math.exp(-(event as PointerScrollEvent).scrollDelta.dy / 200);
+            _setDesktopTransform(_scale * factor, focal, scene, viewport);
+          });
+        },
+        child: AnimatedBuilder(
+          animation: _tc,
+          child: _layer(),
+          builder: (context, image) => ClipRect(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              supportedDevices: _scale > 1.02
+                  ? null
+                  : {
+                      for (final kind in PointerDeviceKind.values)
+                        if (kind != PointerDeviceKind.mouse) kind,
+                    },
+              onScaleStart: (details) {
+                _ac.stop();
+                _panScale = _scale;
+                _panScene = _tc.toScene(details.localFocalPoint);
+              },
+              onScaleUpdate: (details) => _setDesktopTransform(
+                _panScale * details.scale,
+                details.localFocalPoint,
+                _panScene,
+                viewport,
+              ),
+              child: Transform(
+                key: const ValueKey('desktop-canvas-transform'),
+                transform: _tc.value,
+                child: image,
+              ),
+            ),
+          ),
+        ),
+      );
+    },
+  );
+
+  void _setDesktopTransform(
+    double scale,
+    Offset focal,
+    Offset scene,
+    Size viewport,
+  ) {
+    final zoom = scale.clamp(1.0, 10.0);
+    final offset = focal - scene * zoom;
+    // The fitted layer occupies the viewport; avoid moving its edges inside it.
+    final dx = offset.dx.clamp(viewport.width * (1 - zoom), 0.0);
+    final dy = offset.dy.clamp(viewport.height * (1 - zoom), 0.0);
+    _tc.value = Matrix4.identity()
+      ..translateByDouble(dx, dy, 0, 1)
+      ..scaleByDouble(zoom, zoom, 1, 1);
   }
 }
 
@@ -650,6 +922,58 @@ extension on _ZoomableImageState {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _DesktopEmptyCanvas extends ConsumerWidget {
+  const _DesktopEmptyCanvas();
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final p = ref.watch(generateProvider).params;
+    return Padding(
+      padding: const EdgeInsets.all(24),
+      child: Center(
+        child: AspectRatio(
+          aspectRatio: p.width / p.height,
+          child: Container(
+            constraints: const BoxConstraints(maxWidth: 720),
+            decoration: BoxDecoration(
+              color: context.scheme.surfaceContainerLow,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: context.scheme.outlineVariant),
+            ),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  Icons.image_outlined,
+                  size: 38,
+                  color: context.scheme.primary,
+                ),
+                const SizedBox(height: 20),
+                const Text(
+                  '等待灵感落笔',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  '写下提示词，开始第一张创作',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: context.scheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Text(
+                  '${p.width} × ${p.height}',
+                  style: TextStyle(fontSize: 11, color: context.scheme.outline),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

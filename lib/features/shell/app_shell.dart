@@ -7,12 +7,16 @@ import '../../core/auth/bot_session_store.dart';
 import '../../core/auth/nai_credential_login.dart';
 import '../../core/auth/token_store.dart';
 import '../../core/net/backend_config.dart';
+import '../../core/platform/desktop.dart';
 import '../../core/store/app_stores.dart';
 import '../../core/store/prefs_store.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/theme/theme_settings.dart';
 import '../assistant/assistant_page.dart';
 import '../assistant/assistant_state.dart';
+import '../desktop/desktop_workspace.dart';
+import '../desktop/desktop_gallery_page.dart';
+import '../desktop/desktop_profile_page.dart';
 import '../gallery/gallery_page.dart';
 import '../gallery/gallery_state.dart';
 import '../gallery/albums/album_models.dart';
@@ -54,6 +58,14 @@ class _AppShellState extends ConsumerState<AppShell> {
     ProfilePage(),
   ];
 
+  static const _desktopPages = [
+    DesktopWorkspace(),
+    DesktopGalleryPage(),
+    AssistantPage(),
+    InspirationPage(),
+    DesktopProfilePage(),
+  ];
+
   Timer? _updateTimer;
 
   @override
@@ -75,6 +87,7 @@ class _AppShellState extends ConsumerState<AppShell> {
   /// 存下来并在 dispose 取消** —— 裸 `Future.delayed` 在页面提前销毁后照样会醒,
   /// 属于真实泄漏(widget 冒烟测试会直接报 pending timer)。
   void _scheduleAutoCheck() {
+    if (ref.read(desktopModeProvider)) return;
     final prefs = ref.read(prefsStoreProvider);
     if (!shouldAutoCheck(prefs)) return;
     _updateTimer = Timer(
@@ -118,6 +131,7 @@ class _AppShellState extends ConsumerState<AppShell> {
   @override
   Widget build(BuildContext context) {
     final index = ref.watch(shellIndexProvider);
+    final desktop = ref.watch(desktopModeProvider);
     // 底栏可以藏掉「AI」那一格(外观设置里)。**页面列表不跟着变**:
     // PageView 五页照旧,跨页跳转用的还是 kTab* 那几个逻辑下标,
     // 只在画底栏和读回点击时做一次映射 —— 把下标也跟着挪的话,
@@ -152,11 +166,15 @@ class _AppShellState extends ConsumerState<AppShell> {
         // (灵感页搜索框最容易中招),之后**在任何一页**切页都会把软键盘重新
         // 顶出来一下。放在动画开始前,不是切完再收 —— 否则过渡里照样闪一下。
         FocusManager.instance.primaryFocus?.unfocus();
-        _pc.animateToPage(
-          next,
-          duration: Motion.medium,
-          curve: Motion.emphasized,
-        );
+        if (desktop) {
+          _pc.jumpToPage(next);
+        } else {
+          _pc.animateToPage(
+            next,
+            duration: Motion.medium,
+            curve: Motion.emphasized,
+          );
+        }
       }
     });
 
@@ -215,11 +233,103 @@ class _AppShellState extends ConsumerState<AppShell> {
           ref
               .read(galleryResultPreviewProvider.notifier)
               .show(next.imageId, target);
-          ref.read(shellIndexProvider.notifier).select(kTabGallery);
+          ref
+              .read(shellIndexProvider.notifier)
+              .select(desktop ? kTabCreate : kTabGallery);
         },
       );
       ref.read(gallerySavedNoticeProvider.notifier).clear();
     });
+
+    if (desktop) {
+      const labels = ['创作', '图库', 'AI 助手', '灵感', '我的'];
+      const icons = [
+        Icons.draw_outlined,
+        Icons.photo_library_outlined,
+        Icons.auto_awesome_outlined,
+        Icons.lightbulb_outline,
+        Icons.person_outline,
+      ];
+      return Scaffold(
+        body: Column(
+          children: [
+            Material(
+              color: context.scheme.surfaceContainerLow,
+              child: SizedBox(
+                height: 52,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 14),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.auto_awesome,
+                        size: 23,
+                        color: context.scheme.primary,
+                      ),
+                      const SizedBox(width: 9),
+                      const Text(
+                        'Plana',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(width: 24),
+                      for (final tab in tabs)
+                        Padding(
+                          padding: const EdgeInsets.only(right: 5),
+                          child: TextButton.icon(
+                            key: ValueKey('desktop-nav-$tab'),
+                            onPressed: () {
+                              if (tab == kTabGallery) {
+                                openDesktopGallery(ref);
+                              } else {
+                                ref
+                                    .read(shellIndexProvider.notifier)
+                                    .select(tab);
+                              }
+                              if (tab == kTabCreate) _onEnterCreate();
+                            },
+                            style: TextButton.styleFrom(
+                              backgroundColor: index == tab
+                                  ? context.scheme.primaryContainer
+                                  : null,
+                              foregroundColor: index == tab
+                                  ? context.scheme.primary
+                                  : context.scheme.onSurfaceVariant,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                            ),
+                            icon: Icon(icons[tab], size: 17),
+                            label: Text(labels[tab]),
+                          ),
+                        ),
+                      const Spacer(),
+                      Text(
+                        'Windows',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: context.scheme.outline,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            const Divider(height: 1),
+            Expanded(
+              child: PageView(
+                controller: _pc,
+                physics: const NeverScrollableScrollPhysics(),
+                children: _desktopPages,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
 
     return Scaffold(
       body: SafeArea(

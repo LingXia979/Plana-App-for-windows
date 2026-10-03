@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../core/platform/desktop.dart';
 
 import '../../core/theme/app_theme.dart';
 import '../../core/theme/editor_theme.dart';
@@ -56,12 +57,16 @@ class _WeightConvertViewState extends ConsumerState<WeightConvertView> {
     ref.read(generateProvider.notifier).setPrompts(positive: out);
     hintSnack(context, '已导入提示词', icon: Icons.download_done);
     ref.read(shellIndexProvider.notifier).select(kTabCreate);
-    Navigator.of(context).pop();
+    // On desktop this tool is the root of the persistent settings pane.
+    Navigator.of(context).maybePop();
   }
 
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
+    final desktop = ref.watch(desktopModeProvider);
+    Widget sized({required int flex, required Widget child}) =>
+        desktop ? child : Expanded(flex: flex, child: child);
     return SafeArea(
       top: false,
       child: Padding(
@@ -103,12 +108,13 @@ class _WeightConvertViewState extends ConsumerState<WeightConvertView> {
               ],
             ),
             const SizedBox(height: 10),
-            Expanded(
+            sized(
               flex: 2,
               child: TextField(
                 controller: _input,
-                expands: true,
-                maxLines: null,
+                expands: !desktop,
+                minLines: desktop ? 8 : null,
+                maxLines: desktop ? 14 : null,
                 textAlignVertical: TextAlignVertical.top,
                 style: mono(context, size: 13, weight: FontWeight.w400),
                 decoration: InputDecoration(
@@ -137,7 +143,7 @@ class _WeightConvertViewState extends ConsumerState<WeightConvertView> {
             ),
             if (_output != null) ...[
               const SizedBox(height: 12),
-              Expanded(
+              sized(
                 flex: 3,
                 child: Container(
                   width: double.infinity,

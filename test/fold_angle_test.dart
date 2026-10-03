@@ -61,12 +61,12 @@ void main() {
   group('老草稿(裸 > 收尾)仍读得回', () {
     // 截图那一串的结构:名字 + `<artist>` 换行 + 一堆带权重的画师 + `</artist>` + 折叠尾
     const artistDraft =
-        '<#也是老大的串: <artist>\n'
-        '0.5::artist:ningen mame::,\n'
-        '0.7::artist:shiratama (shiratamaco)::,\n'
-        'artist:chen_bin, 0.5::artist:onineko::,\n'
-        '1.5::artist:ciloranko::, 0.8::artist:min_(120716)::,\n'
-        '0.8::artist:konya_karasue, artist:rella::\n'
+        '<#测试画风: <artist>\n'
+        '0.5::artist:fixture_a::,\n'
+        '0.7::artist:fixture_b::,\n'
+        'artist:fixture_c, 0.5::artist:fixture_d::,\n'
+        '1.5::artist:fixture_e::, 0.8::artist:fixture_f::,\n'
+        '0.8::artist:fixture_g, artist:fixture_h::\n'
         '</artist>>';
 
     test('截图那一串:整串都在折叠里,不再提前收尾', () {
@@ -74,13 +74,13 @@ void main() {
       expect(folds.length, 1);
       expect(folds.single.start, 0);
       expect(folds.single.end, artistDraft.length); // 老实现停在 18
-      expect(folds.single.name, '也是老大的串');
+      expect(folds.single.name, '测试画风');
 
       final (text, bodies) = collapseFolds(artistDraft);
       // 正文只剩一枚占位符,画师串一个字都没漏在外面
-      expect(text, foldRefLiteral('也是老大的串'));
-      expect(bodies['也是老大的串']!.startsWith('<artist>'), isTrue);
-      expect(bodies['也是老大的串']!.endsWith('</artist>'), isTrue);
+      expect(text, foldRefLiteral('测试画风'));
+      expect(bodies['测试画风']!.startsWith('<artist>'), isTrue);
+      expect(bodies['测试画风']!.endsWith('</artist>'), isTrue);
     });
 
     test('读回后重存 = 自动换成新记号,内容一字不差', () {

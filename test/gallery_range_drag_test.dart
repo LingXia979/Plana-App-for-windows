@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plana_app/core/theme/app_theme.dart';
@@ -15,6 +16,8 @@ void main() {
     Size size = const Size(390, 844),
     double scale = 1,
     bool dark = false,
+    bool desktop = false,
+    bool singleDay = false,
   }) async {
     result = null;
     tester.view.physicalSize = size;
@@ -40,9 +43,15 @@ void main() {
                 result = await showDialog<DateTimeRange>(
                   context: context,
                   builder: (_) => GalleryRangePicker(
+                    desktop: desktop,
+                    singleDay: singleDay,
                     initialRange: DateTimeRange(
                       start: start ?? DateTime(2026, 9, 3),
-                      end: end ?? DateTime(2026, 9, 11),
+                      end:
+                          end ??
+                          (singleDay
+                              ? start ?? DateTime(2026, 9, 3)
+                              : DateTime(2026, 9, 11)),
                     ),
                     firstDate: first ?? DateTime(1900),
                     lastDate: last ?? DateTime(2027, 12, 31),
@@ -77,6 +86,73 @@ void main() {
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
   }
+
+  Future<void> wheel(WidgetTester tester, double delta) async {
+    await tester.sendEventToBinding(
+      PointerScrollEvent(
+        position: tester.getCenter(find.byType(CustomScrollView)),
+        scrollDelta: Offset(0, delta),
+        kind: PointerDeviceKind.mouse,
+      ),
+    );
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets(
+    'desktop single day scrolls continuously both ways and applies only the chosen day',
+    (tester) async {
+      await mount(
+        tester,
+        desktop: true,
+        singleDay: true,
+        size: const Size(1440, 900),
+      );
+      final popup = find.byKey(const ValueKey('desktop-gallery-calendar'));
+      expect(tester.getSize(popup), const Size(660, 540));
+      await wheel(tester, 360);
+      expect(date(DateTime(2026, 10, 8)).hitTestable(), findsOneWidget);
+      await tester.tap(date(DateTime(2026, 10, 8)));
+      await tester.pumpAndSettle();
+      await wheel(tester, -360);
+      expect(day(7).hitTestable(), findsOneWidget);
+      await tester.tap(day(7));
+      await tester.pumpAndSettle();
+      tester.view.physicalSize = const Size(500, 600);
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      await apply(tester);
+      expect(
+        result,
+        DateTimeRange(start: DateTime(2026, 9, 7), end: DateTime(2026, 9, 7)),
+      );
+    },
+  );
+
+  testWidgets(
+    'desktop range remains compact and wheel scroll selects across months; cancel preserves input',
+    (tester) async {
+      await mount(tester, desktop: true, size: const Size(1440, 900));
+      expect(
+        tester.getSize(find.byKey(const ValueKey('desktop-gallery-calendar'))),
+        const Size(660, 540),
+      );
+      await tester.tap(day(27));
+      await tester.pumpAndSettle();
+      await wheel(tester, 360);
+      await tester.tap(date(DateTime(2026, 10, 8)));
+      await tester.pumpAndSettle();
+      await apply(tester);
+      expect(
+        result,
+        DateTimeRange(start: DateTime(2026, 9, 27), end: DateTime(2026, 10, 8)),
+      );
+      await mount(tester, desktop: true, size: const Size(1440, 900));
+      await tester.tap(day(7));
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+      expect(result, isNull);
+    },
+  );
 
   testWidgets('直接纵向拖动终点，不滚动月份', (tester) async {
     await mount(tester);

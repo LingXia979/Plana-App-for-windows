@@ -1305,7 +1305,8 @@ void main() {
   });
 
   group('自定义接口:本地库不出本机', () {
-    const d11 = '<artist>\n1.2::harukui::,\n</artist>\n\n<style>\nthick paint,\n</style>,';
+    const d11 =
+        '<artist>\n1.2::harukui::,\n</artist>\n\n<style>\nthick paint,\n</style>,';
     const a1 = '[[artist:as109]],{{artist:wlop}}';
     const endpoint = CustomEndpoint(
       id: 'e',
@@ -1411,7 +1412,11 @@ void main() {
       });
       for (final r in backend) {
         for (final leaked in ['harukui', 'rella', 'twin braids', 'as109']) {
-          expect(r.body, isNot(contains(leaked)), reason: '${r.url.path} 带了库内容');
+          expect(
+            r.body,
+            isNot(contains(leaked)),
+            reason: '${r.url.path} 带了库内容',
+          );
         }
       }
 
@@ -1456,7 +1461,11 @@ void main() {
           }),
           '/api/agent/tools/call' => json({
             'result': [
-              {'name': 'xiao_(game)', 'tags': 'xiao_(game)', 'source': 'roleTag'},
+              {
+                'name': 'xiao_(game)',
+                'tags': 'xiao_(game)',
+                'source': 'roleTag',
+              },
             ],
           }),
           _ => http.Response('{}', 404),
@@ -1466,8 +1475,13 @@ void main() {
       await run(mock, scope: 'all', userRequest: '用 D11 和 Z9 画小小纺');
 
       // 请求体是 JSON,换行在里面是转义过的
-      expect(model.first, contains(r'D11 → __ARTIST_D11__\nZ9 → __ARTIST_Z9__'));
-      final call = backend.firstWhere((r) => r.url.path == '/api/agent/tools/call');
+      expect(
+        model.first,
+        contains(r'D11 → __ARTIST_D11__\nZ9 → __ARTIST_Z9__'),
+      );
+      final call = backend.firstWhere(
+        (r) => r.url.path == '/api/agent/tools/call',
+      );
       expect(jsonDecode(call.body), {
         'name': 'search_character',
         'arguments': {'query': '小小纺'},
@@ -1637,9 +1651,9 @@ void main() {
     );
     const img = (mime: 'image/jpeg', data: 'QUJD');
     List<DirectMsg> msgs({DirectImage? image, String text = '画个芙兰'}) => [
-      (role: 'user', content: '上一轮', image: null),
-      (role: 'assistant', content: '好的', image: null),
-      (role: 'user', content: text, image: image),
+      (role: 'user', content: '上一轮', images: const []),
+      (role: 'assistant', content: '好的', images: const []),
+      (role: 'user', content: text, images: [?image]),
     ];
     Map<String, dynamic> body(AgentApiFormat f, List<DirectMsg> m) =>
         directRequest(ep(f), system: 'sys', msgs: m, think: ThinkLevel.auto).$2;

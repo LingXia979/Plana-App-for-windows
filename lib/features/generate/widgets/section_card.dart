@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../../core/platform/desktop.dart';
 
 import '../../../core/theme/app_theme.dart';
 import 'common.dart';
@@ -6,7 +8,7 @@ import 'common.dart';
 /// 创作页折叠卡的统一骨架:
 /// 头部一行(图标·标题·徽章·内联元素·动作按钮·chevron),
 /// 展开体用 AnimatedSize + FadeTransition 过渡。
-class SectionCard extends StatelessWidget {
+class SectionCard extends ConsumerWidget {
   const SectionCard({
     super.key,
     required this.icon,
@@ -44,13 +46,16 @@ class SectionCard extends StatelessWidget {
   final bool chevronPlaceholder;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final desktop = ref.watch(desktopModeProvider);
     final scheme = context.scheme;
     final titleColor = muted ? scheme.onSurfaceVariant : scheme.onSurface;
     Widget header = InkWell(
       onTap: onHeaderTap,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(15, 13, 13, 13),
+        padding: desktop
+            ? const EdgeInsets.all(10)
+            : const EdgeInsets.fromLTRB(15, 13, 13, 13),
         child: Row(
           children: [
             // 卡头高度下限 = 动作按钮的高度(RoundIconBtn 36 / RefEnableToggle 38)。
@@ -64,7 +69,10 @@ class SectionCard extends StatelessWidget {
               style: context.texts.bodyLarge!.copyWith(
                 fontWeight: FontWeight.w600,
                 color: titleColor,
+                fontSize: desktop ? 13 : null,
               ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
             if (badge != null) ...[const SizedBox(width: 8), badge!],
             const SizedBox(width: 8),
@@ -76,7 +84,7 @@ class SectionCard extends StatelessWidget {
                 ],
               ),
             ),
-            for (final a in actions) ...[a, const SizedBox(width: 6)],
+            for (final a in actions) ...[a, SizedBox(width: desktop ? 3 : 6)],
             if (onHeaderTap != null)
               AnimatedRotation(
                 turns: expanded ? .5 : 0,
@@ -90,6 +98,49 @@ class SectionCard extends StatelessWidget {
         ),
       ),
     );
+    if (desktop) {
+      header = InkWell(
+        onTap: onHeaderTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+          child: Row(
+            children: [
+              Icon(icon, size: 19, color: scheme.primary),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: titleColor,
+                        ),
+                      ),
+                    ),
+                    if (badge != null) ...[const SizedBox(width: 5), badge!],
+                  ],
+                ),
+              ),
+              for (final action in actions) ...[
+                action,
+                const SizedBox(width: 3),
+              ],
+              if (onHeaderTap != null || chevronPlaceholder)
+                Icon(
+                  expanded ? Icons.expand_less : Icons.expand_more,
+                  size: 18,
+                  color: scheme.outline,
+                ),
+            ],
+          ),
+        ),
+      );
+    }
     final idx = reorderIndex;
     if (idx != null) {
       header = ReorderableDelayedDragStartListener(index: idx, child: header);
@@ -105,7 +156,9 @@ class SectionCard extends StatelessWidget {
           ExpandBody(
             expanded: expanded && body != null,
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+              padding: desktop
+                  ? const EdgeInsets.fromLTRB(12, 0, 12, 10)
+                  : const EdgeInsets.fromLTRB(14, 0, 14, 14),
               child: body ?? const SizedBox(width: double.infinity),
             ),
           ),

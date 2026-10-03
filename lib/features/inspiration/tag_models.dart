@@ -1,7 +1,9 @@
+import 'dart:math';
+
 import 'package:flutter/material.dart' show IconData, Icons;
 
 import '../../core/util/prompt_tokens.dart';
-import '../editor/editor_models.dart' show foldWrap, outputOf;
+import '../editor/editor_models.dart';
 
 /// 灵感页(Tag 管理器)数据模型,对齐 web tag-manager 的注册表与条目结构。
 /// 分类 id 沿用 web(character/artist-style/scene/other),云备份四类键
@@ -341,6 +343,94 @@ String appendTagNegatives(String negative, Iterable<TagEntry> entries) {
   }
   return out;
 }
+
+/// Imports only new words, preserving their weights. Each newly imported side
+/// is one fold (including a single word); existing text is never adopted into
+/// a paired group. Provenance is created only when both sides were added.
+({String positiveDraft, String negativeDraft, List<PromptFoldLink> links})
+appendTagPromptsFolded({
+  required String positiveDraft,
+  required String negativeDraft,
+  required Iterable<TagEntry> entries,
+  Iterable<PromptFoldLink> links = const [],
+}) {
+  var positive = positiveDraft.trim(), negative = negativeDraft.trim();
+  final paired = [...validPromptFoldLinks(positive, negative, links)];
+  final names = <String>{
+    for (final fold in parseFolds(positive)) fold.name,
+    for (final fold in parseFolds(negative)) fold.name,
+  };
+  final havePositive = tokenizeSet(outputOf(positive));
+  final haveNegative = tokenizeSet(outputOf(negative));
+
+  String newName(String title) {
+    final base = sanitizeFoldName(title);
+    var name = base, number = 2;
+    while (!names.add(name)) {
+      name = '$base ${number++}';
+    }
+    return name;
+  }
+
+  String newBody(String prompt, Set<String> have) {
+    var body = stripFolds(prompt).trim();
+    // Reparse after deletion: the editor's deleteTok repairs shared numeric
+    // and bracket weights, so offsets from the previous parse are not reused.
+    while (true) {
+      final seen = {...have};
+      Tok? duplicate;
+      for (final token in parseToks(body)) {
+        if (token.disabled) continue;
+        final name = cleanPromptToken(token.name);
+        if (name.isNotEmpty && !seen.add(name)) {
+          duplicate = token;
+          break;
+        }
+      }
+      if (duplicate == null) break;
+      final next = deleteTok(body, duplicate).$1.trim();
+      if (next == body) break;
+      body = next;
+    }
+    have.addAll(tokenizeSet(outputOf(body)));
+    return body;
+  }
+
+  for (final entry in entries) {
+    final posBody = newBody(entry.positive, havePositive);
+    final negBody = newBody(entry.negative, haveNegative);
+    final posName = posBody.isEmpty ? null : newName(entry.name);
+    final negName = negBody.isEmpty ? null : newName('${entry.name}·排除');
+    if (posName != null) {
+      final piece = '<#$posName: $posBody$kFoldClose';
+      positive = positive.isEmpty ? piece : '$positive, $piece';
+    }
+    if (negName != null) {
+      final piece = '<#$negName: $negBody$kFoldClose';
+      negative = negative.isEmpty ? piece : '$negative, $piece';
+    }
+    if (posName != null && negName != null) {
+      paired.add(
+        PromptFoldLink(
+          id: List.generate(
+            16,
+            (_) => _foldImportRandom
+                .nextInt(256)
+                .toRadixString(16)
+                .padLeft(2, '0'),
+          ).join(),
+          positiveName: posName,
+          positiveBody: posBody,
+          negativeName: negName,
+          negativeBody: negBody,
+        ),
+      );
+    }
+  }
+  return (positiveDraft: positive, negativeDraft: negative, links: paired);
+}
+
+final _foldImportRandom = Random.secure();
 
 /// 编号自然序(A1 < A2 < A10,画风列表用):文本段不分大小写比较,
 /// 数字段按数值比较。

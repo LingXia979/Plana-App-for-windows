@@ -5,18 +5,285 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/platform/desktop.dart';
 import '../../../core/theme/app_theme.dart';
+import '../../../core/ui/desktop_popover.dart';
 import '../../generate/widgets/common.dart' show confirmDialog, dropFocusSoon;
 import '../assistant_models.dart';
 import '../assistant_state.dart';
 
 Future<void> showHistorySheet(BuildContext context) async {
+  if (ProviderScope.containerOf(
+    context,
+    listen: false,
+  ).read(desktopModeProvider)) {
+    await showDesktopPopover(
+      context,
+      width: 380,
+      maxHeight: 460,
+      builder: (_) => const AssistantHistoryPanel(),
+    );
+    return;
+  }
   await showModalBottomSheet(
     context: context,
     isScrollControlled: true,
     builder: (_) => const _HistorySheet(),
   );
   dropFocusSoon();
+}
+
+/// Shared by the desktop history popover and the main assistant's left rail.
+class AssistantHistoryPanel extends ConsumerStatefulWidget {
+  const AssistantHistoryPanel({
+    super.key,
+    this.sidebar = false,
+    this.onNewChat,
+  });
+  final bool sidebar;
+  final VoidCallback? onNewChat;
+
+  @override
+  ConsumerState<AssistantHistoryPanel> createState() =>
+      _AssistantHistoryPanelState();
+}
+
+class _AssistantHistoryPanelState extends ConsumerState<AssistantHistoryPanel> {
+  String _query = '';
+
+  Future<void> _clear(int count) async {
+    final ok = await confirmDialog(
+      context,
+      title: '清空历史会话?',
+      message: '$count 段对话都会删掉,当前对话和创作页不受影响。',
+      confirmLabel: '清空',
+    );
+    if (ok && mounted) ref.read(assistantProvider.notifier).clearSessions();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    final state = ref.watch(assistantProvider);
+    final notifier = ref.read(assistantProvider.notifier);
+    final query = _query.trim().toLowerCase();
+    bool matches(ArchivedSession s) =>
+        query.isEmpty ||
+        '${s.title}\n${s.preview}'.toLowerCase().contains(query);
+    final sessions = state.sessions.where(matches).toList();
+    final current = ArchivedSession(
+      id: 0,
+      msgs: state.msgs,
+      at: state.msgs.isEmpty ? 0 : state.msgs.last.at,
+    );
+    final list = ListView(
+      shrinkWrap: !widget.sidebar,
+      padding: const EdgeInsets.fromLTRB(10, 0, 10, 12),
+      children: [
+        if (widget.sidebar && (state.isEmpty || matches(current))) ...[
+          _DesktopSessionRow(
+            session: current,
+            current: true,
+            empty: state.isEmpty,
+          ),
+          const SizedBox(height: 12),
+        ],
+        if (widget.sidebar && sessions.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(10, 6, 10, 8),
+            child: Text(
+              '历史会话',
+              style: context.texts.labelSmall!.copyWith(color: scheme.outline),
+            ),
+          ),
+        for (final session in sessions)
+          _DesktopSessionRow(
+            key: ValueKey('assistant-session-${session.id}'),
+            session: session,
+            onOpen: state.running
+                ? null
+                : () {
+                    notifier.openSession(session.id);
+                    if (!widget.sidebar) Navigator.pop(context);
+                  },
+            onDelete: () => notifier.deleteSession(session.id),
+          ),
+        if (sessions.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 24),
+            child: Text(
+              query.isNotEmpty ? '没有匹配的会话' : '还没有历史会话\n新建对话后,这段聊天会保存在这里。',
+              style: context.texts.bodySmall!.copyWith(
+                color: scheme.onSurfaceVariant,
+                height: 1.7,
+              ),
+            ),
+          ),
+      ],
+    );
+    return ColoredBox(
+      color: scheme.surfaceContainerLow,
+      child: Column(
+        mainAxisSize: widget.sidebar ? MainAxisSize.max : MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(18, 10, 8, 6),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    widget.sidebar ? '会话' : '历史会话',
+                    style: context.texts.titleSmall!.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                if (state.sessions.isNotEmpty)
+                  IconButton(
+                    tooltip: '清空历史会话',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => _clear(state.sessions.length),
+                    icon: const Icon(Icons.delete_sweep_outlined, size: 18),
+                  ),
+                if (!widget.sidebar)
+                  IconButton(
+                    tooltip: '关闭',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.close, size: 18),
+                  ),
+              ],
+            ),
+          ),
+          if (widget.sidebar)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
+              child: FilledButton.tonalIcon(
+                onPressed: state.running ? null : widget.onNewChat,
+                icon: const Icon(Icons.edit_square, size: 18),
+                label: const Text('新对话'),
+              ),
+            ),
+          if (widget.sidebar || state.sessions.length >= 6 || _query.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+              child: TextField(
+                key: const ValueKey('assistant-history-search'),
+                onChanged: (value) => setState(() => _query = value),
+                style: context.texts.bodySmall,
+                decoration: InputDecoration(
+                  hintText: '搜索会话',
+                  prefixIcon: const Icon(Icons.search, size: 18),
+                  isDense: true,
+                  filled: true,
+                  fillColor: scheme.surface,
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 12,
+                  ),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none,
+                  ),
+                ),
+              ),
+            ),
+          if (widget.sidebar) Expanded(child: list) else Flexible(child: list),
+        ],
+      ),
+    );
+  }
+}
+
+class _DesktopSessionRow extends StatelessWidget {
+  const _DesktopSessionRow({
+    super.key,
+    required this.session,
+    this.current = false,
+    this.empty = false,
+    this.onOpen,
+    this.onDelete,
+  });
+  final ArchivedSession session;
+  final bool current;
+  final bool empty;
+  final VoidCallback? onOpen;
+  final VoidCallback? onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = context.scheme;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Semantics(
+        selected: current,
+        child: Material(
+          color: current ? scheme.secondaryContainer : Colors.transparent,
+          borderRadius: BorderRadius.circular(12),
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: onOpen,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 4, 10),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          empty ? '新对话' : session.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: context.texts.bodySmall!.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          current
+                              ? '当前对话'
+                              : '${_when(session.at)} · ${session.turns} 轮',
+                          style: context.texts.labelSmall!.copyWith(
+                            color: scheme.onSurfaceVariant,
+                          ),
+                        ),
+                        if (!current && session.preview.isNotEmpty) ...[
+                          const SizedBox(height: 3),
+                          Text(
+                            session.preview,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: context.texts.labelSmall!.copyWith(
+                              color: scheme.outline,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  if (onDelete != null)
+                    IconButton(
+                      tooltip: '删除会话',
+                      visualDensity: VisualDensity.compact,
+                      onPressed: onDelete,
+                      icon: Icon(
+                        Icons.delete_outline,
+                        size: 16,
+                        color: scheme.outline,
+                      ),
+                    )
+                  else
+                    const SizedBox(width: 8),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _HistorySheet extends ConsumerWidget {

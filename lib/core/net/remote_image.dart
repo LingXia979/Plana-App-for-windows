@@ -443,11 +443,14 @@ Future<Uint8List> fetchRemoteImageBytes(
   }
 }
 
+typedef RemoteImageProviderDecorator =
+    ImageProvider<Object> Function(ImageProvider<Object> provider);
+
 /// `Image.network` 的替代:磁盘缓存 + 按布局宽限制解码尺寸。
 ///
 /// **解码尺寸为什么要限**:`imageCache` 存的是解码后位图,一张 1216×1824 就是
 /// 8.9 MB,100 MiB 的默认上限只装得下 11 张 —— 网格一滚就雪崩式互相驱逐、
-/// 反复重下。默认取布局约束宽 × dpr 作为解码宽(约束无界时不限,交给调用方给
+/// 反复重新解码。默认取布局约束宽 × dpr 作为解码宽(约束无界时不限,交给调用方给
 /// [decodeWidth]),缩略图按格子大小解码,同样的内存能多装一个数量级。
 class RemoteImage extends StatelessWidget {
   const RemoteImage(
@@ -457,10 +460,12 @@ class RemoteImage extends StatelessWidget {
     this.width,
     this.height,
     this.decodeWidth,
+    this.decodeHeight,
     this.gaplessPlayback = false,
     this.frameBuilder,
     this.loadingBuilder,
     this.errorBuilder,
+    this.providerDecorator,
   });
 
   final String url;
@@ -471,20 +476,35 @@ class RemoteImage extends StatelessWidget {
   /// 解码宽度上限(**逻辑像素**,内部乘 dpr);null = 取布局约束宽。
   final double? decodeWidth;
 
+  /// Optional height cap for contained thumbnails. Limiting width alone can
+  /// decode tall images far beyond the height actually displayed in a card.
+  final double? decodeHeight;
+
   final bool gaplessPlayback;
   final ImageFrameBuilder? frameBuilder;
   final ImageLoadingBuilder? loadingBuilder;
   final ImageErrorWidgetBuilder? errorBuilder;
 
-  Widget _image(int? cacheWidth) {
+  /// Optional, scoped scheduling around the final resized provider. A decorator
+  /// should preserve its cache key, so other views can share decoded images.
+  final RemoteImageProviderDecorator? providerDecorator;
+
+  Widget _image(int? cacheWidth, int? cacheHeight) {
     final base = RemoteImageProvider(
       url,
       version: RemoteImageStore.versionOf(url),
     );
+    final ImageProvider<Object> provider =
+        cacheWidth == null && cacheHeight == null
+        ? base
+        : ResizeImage(
+            base,
+            width: cacheWidth,
+            height: cacheHeight,
+            policy: ResizeImagePolicy.fit,
+          );
     return Image(
-      image: cacheWidth == null
-          ? base
-          : ResizeImage(base, width: cacheWidth, policy: ResizeImagePolicy.fit),
+      image: providerDecorator?.call(provider) ?? provider,
       fit: fit,
       width: width,
       height: height,
@@ -511,10 +531,16 @@ class RemoteImage extends StatelessWidget {
       valueListenable: RemoteImageStore.revision,
       builder: (context, _, _) {
         final explicit = decodeWidth ?? width;
-        if (explicit != null && explicit.isFinite) return _image(px(explicit));
+        final capHeight = decodeHeight;
+        final heightPx = capHeight != null && capHeight.isFinite
+            ? px(capHeight)
+            : null;
+        if (explicit != null && explicit.isFinite) {
+          return _image(px(explicit), heightPx);
+        }
         return LayoutBuilder(
           builder: (context, c) =>
-              _image(c.hasBoundedWidth ? px(c.maxWidth) : null),
+              _image(c.hasBoundedWidth ? px(c.maxWidth) : null, heightPx),
         );
       },
     );

@@ -6,6 +6,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/app_theme.dart';
+import '../../../core/platform/desktop.dart';
+import '../../../core/ui/image_drop.dart';
 import '../../../core/util/image_pick.dart';
 import '../../char_library/char_library.dart';
 import '../../char_library/char_library_page.dart';
@@ -13,6 +15,7 @@ import '../generate_state.dart';
 import '../models.dart';
 import 'common.dart';
 import 'section_card.dart';
+import 'reference_strip.dart';
 
 /// 后台 isolate 算图片内容哈希(sha256 hex)。
 String _sha256Hex(Uint8List bytes) => sha256.convert(bytes).toString();
@@ -34,6 +37,10 @@ class _CharRefCardState extends ConsumerState<CharRefCard> {
   Future<void> _onAdd() async {
     final files = await pickImageFiles(context);
     if (files.isEmpty || !mounted) return;
+    await _addImages(files);
+  }
+
+  Future<void> _addImages(List<PickedImage> files) async {
     // 互斥态在加图前取一次:加角色参考会顺手停掉 Vibe
     final hadVibes = ref.read(generateProvider).enabledVibes > 0;
     String? lastId;
@@ -104,7 +111,7 @@ class _CharRefCardState extends ConsumerState<CharRefCard> {
     }
     selected ??= refs.isNotEmpty ? refs.first : null;
 
-    return SectionCard(
+    final card = SectionCard(
       icon: Icons.face_retouching_natural,
       title: '角色参考',
       reorderIndex: widget.reorderIndex,
@@ -138,30 +145,15 @@ class _CharRefCardState extends ConsumerState<CharRefCard> {
             ),
             const SizedBox(height: 12),
           ],
-          SizedBox(
-            height: 72,
-            // 长按缩略图拖动排序(参考顺序即下发顺序)
-            child: ReorderableListView(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(vertical: 2),
-              proxyDecorator: dragProxy,
-              onReorderStart: dragStartHaptic,
-              onReorderEnd: dragEndHaptic,
-              onReorderItem: notifier.reorderCharRefs,
-              children: [
-                for (final r in refs)
-                  Padding(
-                    key: ValueKey(r.id),
-                    padding: const EdgeInsets.only(right: 10),
-                    child: RefThumb(
-                      selected: r.id == selected?.id,
-                      enabled: r.enabled,
-                      image: r.image,
-                      onTap: () => setState(() => _selectedId = r.id),
-                    ),
-                  ),
-              ],
-            ),
+          ReferenceStrip(
+            previewTitle: '角色参考图',
+            items: [
+              for (final r in refs)
+                (id: r.id, image: r.image, enabled: r.enabled),
+            ],
+            selectedId: selected?.id,
+            onSelect: (id) => setState(() => _selectedId = id),
+            onReorder: notifier.reorderCharRefs,
           ),
           if (selected != null) ...[
             const SizedBox(height: 14),
@@ -175,6 +167,14 @@ class _CharRefCardState extends ConsumerState<CharRefCard> {
         ],
       ),
     );
+    return ref.watch(desktopModeProvider)
+        ? ImageDropRegion(
+            label: '加入角色参考',
+            multiple: true,
+            onDrop: (images, _) => _addImages(images),
+            child: card,
+          )
+        : card;
   }
 }
 
@@ -202,13 +202,25 @@ class _CharRefDetail extends ConsumerWidget {
           name: item.name,
           onRemove: onRemove,
           enableToggle: RefEnableToggle(enabled: item.enabled, onTap: onToggle),
-          leadingAction: _ModeToggle(
-            mode: item.mode,
-            onTap: () {
-              const modes = CharRefMode.values;
-              final next = modes[(item.mode.index + 1) % modes.length];
-              notifier.updateCharRef(item.id, mode: next);
-            },
+          leadingAction: DropdownButtonHideUnderline(
+            child: DropdownButton<CharRefMode>(
+              value: item.mode,
+              isDense: true,
+              borderRadius: BorderRadius.circular(10),
+              items: [
+                for (final mode in CharRefMode.values)
+                  DropdownMenuItem(
+                    value: mode,
+                    child: Text(
+                      mode.label,
+                      style: const TextStyle(fontSize: 13),
+                    ),
+                  ),
+              ],
+              onChanged: (mode) {
+                if (mode != null) notifier.updateCharRef(item.id, mode: mode);
+              },
+            ),
           ),
         ),
         const SizedBox(height: 14),
@@ -229,44 +241,6 @@ class _CharRefDetail extends ConsumerWidget {
           onCommit: (v) => notifier.updateCharRef(item.id, infoExtracted: v),
         ),
       ],
-    );
-  }
-}
-
-/// 迁移模式:点击循环切换 角色 → 风格 → 角色&风格
-class _ModeToggle extends StatelessWidget {
-  const _ModeToggle({required this.mode, required this.onTap});
-
-  final CharRefMode mode;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = context.scheme;
-    return Material(
-      color: scheme.surfaceContainerHighest,
-      borderRadius: BorderRadius.circular(20),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.cached, size: 15, color: scheme.primary),
-              const SizedBox(width: 5),
-              Text(
-                mode.label,
-                style: context.texts.bodyMedium!.copyWith(
-                  color: scheme.primary,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
     );
   }
 }

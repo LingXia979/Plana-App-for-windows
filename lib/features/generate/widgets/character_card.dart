@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/app_theme.dart';
+import '../../../core/platform/desktop.dart';
 import '../../../core/util/nai_tokenizer.dart';
 import '../../editor/editor_page.dart';
 import '../char_position.dart';
@@ -10,6 +11,7 @@ import '../models.dart';
 import 'common.dart';
 import 'position_grid_dialog.dart';
 import 'section_card.dart';
+import 'desktop_prompt_card.dart';
 
 /// 角色面板(定稿版):每个角色一张内嵌圆角小卡。
 /// 行 1:电源开关 · 名称(点名字改名,+状态说明)· 站位徽章 · 删除
@@ -34,7 +36,7 @@ class CharacterCard extends ConsumerWidget {
 
     return SectionCard(
       icon: Icons.group_outlined,
-      title: '角色',
+      title: ref.watch(desktopModeProvider) ? '角色提示词' : '角色',
       reorderIndex: reorderIndex,
       badge: CountBadge('$active / $cap', error: active > cap),
       actions: [
@@ -64,6 +66,7 @@ class CharacterCard extends ConsumerWidget {
           // 长按卡片拖动排序。删除只走行内那枚按钮 —— 横滑抹掉的是整份角色配置
           // (提示词/站位/开关),而这里没有撤销可给。
           : ReorderableListView(
+              buildDefaultDragHandles: !ref.watch(desktopModeProvider),
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
               proxyDecorator: dragProxy,
@@ -163,6 +166,7 @@ class _CharacterTile extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final notifier = ref.read(generateProvider.notifier);
+    final desktop = ref.watch(desktopModeProvider);
     final scheme = context.scheme;
     final enabled = char.enabled;
     // 只有站位徽章的写法跟模型走(见下),select 一下别让整张卡跟着全局状态重建。
@@ -183,17 +187,26 @@ class _CharacterTile extends ConsumerWidget {
       duration: Motion.fast,
       opacity: enabled ? 1 : .5,
       child: Material(
-        color: scheme.surfaceContainerHigh,
-        borderRadius: BorderRadius.circular(12),
+        color: desktop ? scheme.surface : scheme.surfaceContainerHigh,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: desktop
+              ? BorderSide(color: scheme.outlineVariant)
+              : BorderSide.none,
+        ),
         clipBehavior: Clip.antiAlias,
         child: InkWell(
-          onTap: () => Navigator.of(
-            context,
-          ).push(sharedAxisRoute(EditorPage(positive: true, charId: char.id))),
+          onTap: desktop
+              ? null
+              : () => Navigator.of(context).push(
+                  sharedAxisRoute(EditorPage(positive: true, charId: char.id)),
+                ),
           child: Padding(
             // 上边距保持 10:行 1 高度由那枚删除按钮(40)定死,加了也只是把
             // 开关和名字整体往下推。加高的是下边距,见行 2 那里。
-            padding: const EdgeInsets.fromLTRB(12, 10, 8, 14),
+            padding: desktop
+                ? const EdgeInsets.all(12)
+                : const EdgeInsets.fromLTRB(12, 10, 8, 14),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
@@ -246,6 +259,7 @@ class _CharacterTile extends ConsumerWidget {
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: context.texts.bodyLarge!.copyWith(
+                                    fontSize: desktop ? 13 : null,
                                     fontWeight: FontWeight.w700,
                                     color: enabled
                                         ? scheme.onSurface
@@ -279,8 +293,8 @@ class _CharacterTile extends ConsumerWidget {
                       child: InkWell(
                         onTap: () => showPositionGridDialog(context, char.id),
                         child: Padding(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 12,
+                          padding: EdgeInsets.symmetric(
+                            horizontal: desktop ? 8 : 12,
                             vertical: 7,
                           ),
                           child: Row(
@@ -295,7 +309,7 @@ class _CharacterTile extends ConsumerWidget {
                               ),
                               const SizedBox(width: 5),
                               SizedBox(
-                                width: 48,
+                                width: desktop ? 36 : 48,
                                 child: Text(
                                   // AUTO 是整张图的档(use_coords=false):这时
                                   // 坐标还在,只是模型不理会,徽章统一写 AUTO。
@@ -328,7 +342,7 @@ class _CharacterTile extends ConsumerWidget {
                     ),
                     const SizedBox(width: 2),
                     SizedBox(
-                      width: 40,
+                      width: desktop ? 30 : 40,
                       height: 40,
                       child: IconButton(
                         onPressed: () => notifier.removeCharacter(char.id),
@@ -342,41 +356,60 @@ class _CharacterTile extends ConsumerWidget {
                         visualDensity: VisualDensity.compact,
                       ),
                     ),
+                    if (desktop)
+                      ReorderableDragStartListener(
+                        index: index,
+                        child: Tooltip(
+                          message: '拖动角色排序',
+                          child: Icon(
+                            Icons.drag_indicator,
+                            size: 18,
+                            color: scheme.outline,
+                          ),
+                        ),
+                      ),
                   ],
                 ),
                 // 行 2 是点进编辑器的主要落点(行 1 那排全是各管各的按钮),
                 // 所以空当只往它上下加:4 → 8、下边距 10 → 14,这条带子 42 → 50。
                 const SizedBox(height: 8),
-                Padding(
-                  padding: const EdgeInsets.only(left: 4, right: 6),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          char.positive.isEmpty ? '点击编辑提示词…' : char.positive,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: context.texts.bodyMedium!.copyWith(
-                            color: char.positive.isEmpty
-                                ? scheme.outline
-                                : (enabled
-                                      ? scheme.onSurfaceVariant
-                                      : scheme.outline),
+                if (desktop) ...[
+                  Divider(
+                    height: 16,
+                    color: scheme.outlineVariant.withValues(alpha: .6),
+                  ),
+                  DesktopPromptCard(key: ValueKey(char.id), charId: char.id),
+                ] else
+                  Padding(
+                    padding: const EdgeInsets.only(left: 4, right: 6),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            char.positive.isEmpty ? '点击编辑提示词…' : char.positive,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: context.texts.bodyMedium!.copyWith(
+                              color: char.positive.isEmpty
+                                  ? scheme.outline
+                                  : (enabled
+                                        ? scheme.onSurfaceVariant
+                                        : scheme.outline),
+                            ),
                           ),
                         ),
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        '$tokens',
-                        style: mono(
-                          context,
-                          size: 11,
-                          weight: FontWeight.w500,
-                        ).copyWith(color: scheme.outline),
-                      ),
-                    ],
+                        const SizedBox(width: 8),
+                        Text(
+                          '$tokens',
+                          style: mono(
+                            context,
+                            size: 11,
+                            weight: FontWeight.w500,
+                          ).copyWith(color: scheme.outline),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
               ],
             ),
           ),

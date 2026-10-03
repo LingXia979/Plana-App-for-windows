@@ -9,12 +9,14 @@ import '../../core/theme/app_theme.dart' show FixedSemantic;
 import '../generate/models.dart' show GenerateState;
 
 /// 结果图的处理标记 —— 决定缩略图角标与画布顶部标签。
-enum ResultBadge { none, upscaled, inpaint, censored }
+// Keep `upscaled` for older 4× records; new fixed 2× results use their own tag.
+enum ResultBadge { none, upscaled, inpaint, censored, upscaled2x }
 
 extension ResultBadgeX on ResultBadge {
   /// 角标短文案;none 无角标。
   String? get label => switch (this) {
     ResultBadge.upscaled => '4x',
+    ResultBadge.upscaled2x => '2x',
     ResultBadge.inpaint => '重绘',
     ResultBadge.censored => '打码',
     ResultBadge.none => null,
@@ -23,7 +25,7 @@ extension ResultBadgeX on ResultBadge {
   /// 角标底色 —— 压在缩略图上,用固定语义色(见 [FixedSemantic]),
   /// 不跟种子色走,也与全局主色区隔。
   Color get color => switch (this) {
-    ResultBadge.upscaled => FixedSemantic.ok,
+    ResultBadge.upscaled || ResultBadge.upscaled2x => FixedSemantic.ok,
     ResultBadge.inpaint => FixedSemantic.inpaint,
     ResultBadge.censored => FixedSemantic.censor,
     ResultBadge.none => const Color(0x00000000),
@@ -45,6 +47,8 @@ class ResultImage {
     this.bytes,
     this.input,
     this.inpaintFrom,
+    this.inpaintHistoryCleared = false,
+    this.favorite = false,
     bool? hasInput,
   }) : hasInput = hasInput ?? input != null;
 
@@ -56,9 +60,17 @@ class ResultImage {
 
   /// 重绘产物的**源图**在图库里的 id;非重绘产物为 null。
   ///
-  /// 只存 id 不存字节:源图本来就在库里,复制一份等于把每张重绘图的占用翻倍。
-  /// 源图被删了就取不到 —— 那时「按住对比」自己消失,不报错。
+  /// 新版比较优先读本图参数快照里的底图与蒙版；此 id 兼容较早的结果。
   final String? inpaintFrom;
+  final bool inpaintHistoryCleared;
+  final bool favorite;
+
+  /// 旧索引没有 inpaintFrom，仍可根据标记懒读已保存的重绘快照。
+  bool get hasInpaintComparison =>
+      !inpaintHistoryCleared &&
+      (input?.inpaint != null ||
+          (badge == ResultBadge.inpaint && hasInput) ||
+          inpaintFrom != null);
 
   /// 生成时刻(ms epoch)。0 = 未知(升级前的老索引由文件 mtime 回填,
   /// 回填也失败才会留 0,展开页归入「更早」段)。
@@ -97,6 +109,8 @@ class ResultImage {
           createdAt: createdAt,
           batchIndex: batchIndex,
           inpaintFrom: inpaintFrom,
+          inpaintHistoryCleared: inpaintHistoryCleared,
+          favorite: favorite,
           hasInput: hasInput,
         );
 
@@ -110,8 +124,41 @@ class ResultImage {
     createdAt: t,
     batchIndex: batchIndex,
     inpaintFrom: inpaintFrom,
+    inpaintHistoryCleared: inpaintHistoryCleared,
+    favorite: favorite,
     bytes: bytes,
     input: input,
     hasInput: hasInput,
+  );
+
+  ResultImage withoutInpaintHistory() => ResultImage(
+    id: id,
+    width: width,
+    height: height,
+    seed: seed,
+    badge: badge,
+    createdAt: createdAt,
+    batchIndex: batchIndex,
+    bytes: bytes,
+    input: input?.copyWith(inpaint: null),
+    hasInput: hasInput,
+    inpaintHistoryCleared: true,
+    favorite: favorite,
+  );
+
+  ResultImage withFavorite(bool value) => ResultImage(
+    id: id,
+    width: width,
+    height: height,
+    seed: seed,
+    badge: badge,
+    createdAt: createdAt,
+    batchIndex: batchIndex,
+    bytes: bytes,
+    input: input,
+    hasInput: hasInput,
+    inpaintFrom: inpaintFrom,
+    inpaintHistoryCleared: inpaintHistoryCleared,
+    favorite: value,
   );
 }

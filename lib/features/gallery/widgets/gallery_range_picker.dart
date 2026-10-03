@@ -15,11 +15,14 @@ class GalleryRangePicker extends StatefulWidget {
     required this.firstDate,
     required this.lastDate,
     this.currentDate,
+    this.desktop = false,
+    this.singleDay = false,
   });
 
   final DateTimeRange initialRange;
   final DateTime firstDate, lastDate;
   final DateTime? currentDate;
+  final bool desktop, singleDay;
 
   @override
   State<GalleryRangePicker> createState() => _GalleryRangePickerState();
@@ -28,7 +31,9 @@ class GalleryRangePicker extends StatefulWidget {
 class _GalleryRangePickerState extends State<GalleryRangePicker>
     with SingleTickerProviderStateMixin {
   late DateTime _start = DateUtils.dateOnly(widget.initialRange.start);
-  late DateTime? _end = DateUtils.dateOnly(widget.initialRange.end);
+  late DateTime? _end = DateUtils.dateOnly(
+    widget.singleDay ? widget.initialRange.start : widget.initialRange.end,
+  );
   late final DateTime _today = DateUtils.dateOnly(
     widget.currentDate ?? DateTime.now(),
   );
@@ -77,7 +82,7 @@ class _GalleryRangePickerState extends State<GalleryRangePicker>
   }
 
   bool _canDrag(Offset position) {
-    if (_dragging) return false;
+    if (_dragging || widget.singleDay) return false;
     final day = _dayAt(position);
     return day != null && (day == _start || day == _end);
   }
@@ -163,7 +168,10 @@ class _GalleryRangePickerState extends State<GalleryRangePicker>
     if (_dragging) return;
     Haptics.selection();
     setState(() {
-      if (_end == null && !day.isBefore(_start)) {
+      if (widget.singleDay) {
+        _start = day;
+        _end = day;
+      } else if (_end == null && !day.isBefore(_start)) {
         _end = day;
       } else {
         _start = day;
@@ -174,10 +182,43 @@ class _GalleryRangePickerState extends State<GalleryRangePicker>
 
   Future<void> _input() async {
     final pickerContext = context;
+    if (widget.singleDay) {
+      final day = await showDatePicker(
+        context: context,
+        builder: (_, child) =>
+            Localizations.override(context: pickerContext, child: child),
+        firstDate: widget.firstDate,
+        lastDate: widget.lastDate,
+        initialDate: _start,
+        initialEntryMode: DatePickerEntryMode.inputOnly,
+        helpText: '输入日期',
+        cancelText: '返回日历',
+        confirmText: '应用',
+      );
+      if (day != null && mounted) {
+        Navigator.pop(context, DateTimeRange(start: day, end: day));
+      }
+      return;
+    }
     final range = await showDateRangePicker(
       context: context,
-      builder: (_, child) =>
-          Localizations.override(context: pickerContext, child: child),
+      builder: (_, child) {
+        final localized = Localizations.override(
+          context: pickerContext,
+          child: child,
+        );
+        return widget.desktop
+            ? Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(
+                    maxWidth: 520,
+                    maxHeight: 480,
+                  ),
+                  child: localized,
+                ),
+              )
+            : localized;
+      },
       firstDate: widget.firstDate,
       lastDate: widget.lastDate,
       currentDate: _today,
@@ -194,7 +235,6 @@ class _GalleryRangePickerState extends State<GalleryRangePicker>
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     final colors = DatePickerTheme.of(context);
     final defaults = DatePickerTheme.defaults(context);
     final localizations = MaterialLocalizations.of(context);
@@ -215,9 +255,8 @@ class _GalleryRangePickerState extends State<GalleryRangePicker>
       onPressed: _dragging ? null : _input,
       icon: const Icon(Icons.edit_outlined),
     );
-    final monthCount =
-        DateUtils.monthDelta(widget.firstDate, widget.lastDate) + 1;
     final calendarWidth = landscape ? 384.0 : 480.0;
+    if (widget.desktop) return _desktop(input);
     return Dialog.fullscreen(
       child: Scaffold(
         backgroundColor:
@@ -295,76 +334,211 @@ class _GalleryRangePickerState extends State<GalleryRangePicker>
             ),
           ),
         ),
-        body: SafeArea(
-          top: false,
-          child: Column(
-            children: [
-              Center(
-                child: ConstrainedBox(
-                  constraints: BoxConstraints(maxWidth: calendarWidth),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                    child: SizedBox(
-                      height: 42,
-                      child: Row(
-                        children: [
-                          for (var i = 0; i < 7; i++)
-                            Expanded(
-                              child: ExcludeSemantics(
-                                child: Center(
-                                  child: Text(
-                                    localizations.narrowWeekdays[(i +
-                                            localizations.firstDayOfWeekIndex) %
-                                        7],
-                                    style: theme.textTheme.titleSmall,
-                                  ),
-                                ),
-                              ),
-                            ),
-                        ],
-                      ),
+        body: _calendar(calendarWidth),
+      ),
+    );
+  }
+
+  Widget _desktop(Widget input) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    String date(DateTime value) => '${value.year}/${value.month}/${value.day}';
+    final summary = Padding(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            widget.singleDay ? '已选日期' : '开始日期',
+            style: theme.textTheme.labelLarge,
+          ),
+          const SizedBox(height: 8),
+          Text(date(_start), style: theme.textTheme.titleLarge),
+          if (!widget.singleDay) ...[
+            const SizedBox(height: 20),
+            Text('结束日期', style: theme.textTheme.labelLarge),
+            const SizedBox(height: 8),
+            Text(
+              _end == null ? '请选择' : date(_end!),
+              style: theme.textTheme.titleLarge,
+            ),
+          ],
+        ],
+      ),
+    );
+    return Dialog(
+      insetPadding: const EdgeInsets.all(24),
+      clipBehavior: Clip.antiAlias,
+      child: SizedBox(
+        key: const ValueKey('desktop-gallery-calendar'),
+        width: 660,
+        height: 540,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 8, 8, 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      widget.singleDay ? '选择日期' : '选择日期范围',
+                      style: theme.textTheme.titleLarge,
                     ),
                   ),
-                ),
+                  input,
+                  IconButton(
+                    tooltip: '关闭日历',
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
               ),
-              const Divider(height: 1),
-              Expanded(
-                child: RawGestureDetector(
-                  gestures: {
-                    _EndpointDrag:
-                        GestureRecognizerFactoryWithHandlers<_EndpointDrag>(
-                          _EndpointDrag.new,
-                          (gesture) => gesture
-                            ..canStart = _canDrag
-                            ..onStart = _startDrag
-                            ..onMove = _moveDrag
-                            ..onEnd = _endDrag
-                            ..onCancel = _cancelDrag,
-                        ),
-                  },
-                  child: CustomScrollView(
-                    key: _viewport,
+            ),
+            const Divider(height: 1),
+            Expanded(
+              child: LayoutBuilder(
+                builder: (_, bounds) {
+                  final calendar = Scrollbar(
                     controller: _scroll,
-                    center: _after,
-                    slivers: [
-                      SliverList.builder(
-                        itemCount: _initialMonth,
-                        itemBuilder: (_, index) =>
-                            _month(_initialMonth - index - 1, calendarWidth),
+                    thumbVisibility: true,
+                    child: ScrollConfiguration(
+                      behavior: ScrollConfiguration.of(
+                        context,
+                      ).copyWith(scrollbars: false),
+                      child: _calendar(480),
+                    ),
+                  );
+                  if (bounds.maxWidth < 580) return calendar;
+                  return Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      SizedBox(
+                        width: 180,
+                        child: ColoredBox(
+                          color: scheme.surfaceContainerHigh,
+                          child: SingleChildScrollView(child: summary),
+                        ),
                       ),
-                      SliverList.builder(
-                        key: _after,
-                        itemCount: monthCount - _initialMonth,
-                        itemBuilder: (_, index) =>
-                            _month(_initialMonth + index, calendarWidth),
-                      ),
+                      const VerticalDivider(width: 1),
+                      Expanded(child: calendar),
+                    ],
+                  );
+                },
+              ),
+            ),
+            const Divider(height: 1),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      widget.singleDay
+                          ? date(_start)
+                          : '${date(_start)} – ${_end == null ? '结束日期' : date(_end!)}',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('取消'),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton(
+                    onPressed: _end == null || _dragging
+                        ? null
+                        : () => Navigator.pop(
+                            context,
+                            DateTimeRange(start: _start, end: _end!),
+                          ),
+                    child: const Text('应用'),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _calendar(double calendarWidth) {
+    final theme = Theme.of(context);
+    final localizations = MaterialLocalizations.of(context);
+    final monthCount =
+        DateUtils.monthDelta(widget.firstDate, widget.lastDate) + 1;
+    return SafeArea(
+      top: false,
+      child: Column(
+        children: [
+          Center(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(maxWidth: calendarWidth),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: SizedBox(
+                  height: 42,
+                  child: Row(
+                    children: [
+                      for (var i = 0; i < 7; i++)
+                        Expanded(
+                          child: ExcludeSemantics(
+                            child: Center(
+                              child: Text(
+                                localizations.narrowWeekdays[(i +
+                                        localizations.firstDayOfWeekIndex) %
+                                    7],
+                                style: theme.textTheme.titleSmall,
+                              ),
+                            ),
+                          ),
+                        ),
                     ],
                   ),
                 ),
               ),
-            ],
+            ),
           ),
-        ),
+          const Divider(height: 1),
+          Expanded(
+            child: RawGestureDetector(
+              gestures: {
+                _EndpointDrag:
+                    GestureRecognizerFactoryWithHandlers<_EndpointDrag>(
+                      _EndpointDrag.new,
+                      (gesture) => gesture
+                        ..canStart = _canDrag
+                        ..onStart = _startDrag
+                        ..onMove = _moveDrag
+                        ..onEnd = _endDrag
+                        ..onCancel = _cancelDrag,
+                    ),
+              },
+              child: CustomScrollView(
+                key: _viewport,
+                controller: _scroll,
+                center: _after,
+                slivers: [
+                  SliverList.builder(
+                    itemCount: _initialMonth,
+                    itemBuilder: (_, index) =>
+                        _month(_initialMonth - index - 1, calendarWidth),
+                  ),
+                  SliverList.builder(
+                    key: _after,
+                    itemCount: monthCount - _initialMonth,
+                    itemBuilder: (_, index) =>
+                        _month(_initialMonth + index, calendarWidth),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -467,8 +641,10 @@ class _GalleryRangePickerState extends State<GalleryRangePicker>
     final dayText = labels.formatDecimal(day.day);
     var semantics = '$dayText, ${labels.formatFullDate(day)}';
     if (today) semantics += ', ${labels.currentDateLabel}';
-    if (start) semantics = labels.dateRangeStartDateSemanticLabel(semantics);
-    if (end) semantics = labels.dateRangeEndDateSemanticLabel(semantics);
+    if (!widget.singleDay) {
+      if (start) semantics = labels.dateRangeStartDateSemanticLabel(semantics);
+      if (end) semantics = labels.dateRangeEndDateSemanticLabel(semantics);
+    }
     return MetaData(
       key: ValueKey<DateTime>(day),
       metaData: _RangeDay(day),
@@ -495,7 +671,7 @@ class _GalleryRangePickerState extends State<GalleryRangePicker>
                     : null,
                 child: Semantics(
                   label: semantics,
-                  hint: selected ? '可直接拖动调整日期' : null,
+                  hint: selected && !widget.singleDay ? '可直接拖动调整日期' : null,
                   selected: selected,
                   child: ExcludeSemantics(
                     child: Text(

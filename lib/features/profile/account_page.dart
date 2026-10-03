@@ -1,3 +1,4 @@
+import '../../core/ui/settings_scaffold.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -67,11 +68,12 @@ class _AccountPageState extends ConsumerState<AccountPage> {
     final backendUrl = ref.watch(backendBaseProvider).value ?? '';
     final compSource = ref.watch(effectiveCompletionSourceProvider);
 
-    return Scaffold(
+    return SettingsScaffold(
       appBar: AppBar(title: const Text('账号与接入')),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(14, 8, 14, 24),
         children: [
+          const SettingsPageHeader(),
           // 两者不是二选一:Token 与 Bot 授权各自独立配置,都可以同时存在。
           // 顶部这张只决定「付费操作走哪条路」,不再决定下面显示哪张卡。
           _RouteCard(

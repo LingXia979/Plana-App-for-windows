@@ -20,11 +20,21 @@
 ## 项目状态
 
 本项目基于 [Plana App](https://github.com/mc5024/Plana-App) 开发 Windows 桌面适配。
-下方展示本地 Windows 测试版 **windows.43**；该版本的桌面源码与下载包目前尚未同步到本分支。
+当前版本为 **1.1.1-windows.43（构建 62）**。本分支提供对应的 Windows 桌面源码，安装包与便携版见 [Releases](https://github.com/LingXia979/Plana-App-for-windows/releases/tag/v1.1.1-windows.43)。
 
 - `Plana-app-for-windows`：Windows 桌面适配分支。
 - [`plana-app-gallery-optimization`](https://github.com/LingXia979/Plana-App-for-windows/tree/plana-app-gallery-optimization)：图库优化分支。
 - Android 原版介绍与下载请前往[上游仓库](https://github.com/mc5024/Plana-App)。
+
+## 下载与安装
+
+- [中文安装包（Windows x64）](https://github.com/LingXia979/Plana-App-for-windows/releases/download/v1.1.1-windows.43/Plana-Windows-1.1.1-windows.43-x64-setup.exe)：按中文向导选择安装目录，支持开始菜单、可选桌面快捷方式及卸载。
+- [便携版 ZIP](https://github.com/LingXia979/Plana-App-for-windows/releases/download/v1.1.1-windows.43/Plana-Windows-1.1.1-windows.43-x64.zip)：完整解压后运行 `plana_app_for_windows.exe`。
+- [SHA-256 校验清单](https://github.com/LingXia979/Plana-App-for-windows/releases/download/v1.1.1-windows.43/Plana-Windows-1.1.1-windows.43-x64-SHA256.txt)。
+
+升级前请关闭旧版。作品自动保存到程序旁的 `output` 文件夹，卸载保留个人数据。发布包不附带个人账号、API/Bot/Web 授权、提示词草稿或私人 tag 库，首次使用请自行配置。当前安装包未进行代码签名。
+
+开发与打包说明见 [Windows 使用说明](WINDOWS-README.md)。
 
 ## 界面预览
 

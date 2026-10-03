@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../core/theme/app_theme.dart';
+import '../../../core/ui/desktop_popover.dart';
 import '../artist_models.dart';
 import '../tag_models.dart';
 
@@ -66,24 +67,42 @@ Future<TagFilters?> showTagFilterSheet(
   required List<TagAuthor> authors,
   required TagFilters current,
   required bool hasModels,
-}) => showModalBottomSheet<TagFilters>(
-  context: context,
-  isScrollControlled: true,
-  useSafeArea: true,
-  builder: (_) =>
-      _FilterSheet(authors: authors, current: current, hasModels: hasModels),
-);
+  bool desktop = false,
+}) {
+  Widget panel(BuildContext context) => _FilterSheet(
+    authors: authors,
+    current: current,
+    hasModels: hasModels,
+    desktop: desktop,
+  );
+  if (desktop) {
+    return showDesktopPopover<TagFilters>(
+      context,
+      width: 380,
+      maxHeight: 460,
+      builder: panel,
+    );
+  }
+  return showModalBottomSheet<TagFilters>(
+    context: context,
+    isScrollControlled: true,
+    useSafeArea: true,
+    builder: panel,
+  );
+}
 
 class _FilterSheet extends StatefulWidget {
   const _FilterSheet({
     required this.authors,
     required this.current,
     required this.hasModels,
+    required this.desktop,
   });
 
   final List<TagAuthor> authors;
   final TagFilters current;
   final bool hasModels;
+  final bool desktop;
 
   @override
   State<_FilterSheet> createState() => _FilterSheetState();
@@ -166,6 +185,12 @@ class _FilterSheetState extends State<_FilterSheet> {
                       : null,
                   child: const Text('重置'),
                 ),
+                if (widget.desktop)
+                  IconButton(
+                    tooltip: '关闭筛选',
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.close, size: 18),
+                  ),
               ],
             ),
           ),

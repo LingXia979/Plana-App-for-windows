@@ -3,6 +3,8 @@ library;
 
 import 'dart:typed_data';
 
+import '../editor/editor_models.dart'
+    show PromptFoldLink, pickEditorText, validPromptFoldLinks;
 import 'res_rules.dart' show kFreePixelThreshold;
 
 const Object _unset = Object();
@@ -27,6 +29,7 @@ class CharacterPrompt {
     this.negative = '',
     this.positiveRaw = '',
     this.negativeRaw = '',
+    this.foldLinks = const [],
     this.enabled = true,
     this.position, // 'A1'..'E5';null = AUTO
     this.activeTab = CharTab.positive,
@@ -41,6 +44,7 @@ class CharacterPrompt {
   /// 空 = 与定稿无差别,不必单独存。有效性由读取侧判定,见 [pickEditorText]。
   final String positiveRaw;
   final String negativeRaw;
+  final List<PromptFoldLink> foldLinks;
 
   final bool enabled;
   final String? position;
@@ -52,6 +56,7 @@ class CharacterPrompt {
     String? negative,
     String? positiveRaw,
     String? negativeRaw,
+    List<PromptFoldLink>? foldLinks,
     bool? enabled,
     Object? position = _unset,
     CharTab? activeTab,
@@ -63,6 +68,24 @@ class CharacterPrompt {
       negative: negative ?? this.negative,
       positiveRaw: positiveRaw ?? this.positiveRaw,
       negativeRaw: negativeRaw ?? this.negativeRaw,
+      foldLinks:
+          positive == null &&
+              negative == null &&
+              positiveRaw == null &&
+              negativeRaw == null &&
+              foldLinks == null
+          ? this.foldLinks
+          : validPromptFoldLinks(
+              pickEditorText(
+                positiveRaw ?? this.positiveRaw,
+                positive ?? this.positive,
+              ),
+              pickEditorText(
+                negativeRaw ?? this.negativeRaw,
+                negative ?? this.negative,
+              ),
+              foldLinks ?? this.foldLinks,
+            ),
       enabled: enabled ?? this.enabled,
       position: position == _unset ? this.position : position as String?,
       activeTab: activeTab ?? this.activeTab,
@@ -207,7 +230,20 @@ class InpaintJob {
   final Uint8List? grid;
 }
 
-/// 局部重绘贴回:结果(发送框尺寸)中 tight 区域贴回原图对应位置。
+/// 框选外框包含上下文边距，坐标始终属于未缩放的原图。
+class InpaintFocus {
+  const InpaintFocus({
+    required this.x,
+    required this.y,
+    required this.width,
+    required this.height,
+    this.context = 32,
+  });
+
+  final int x, y, width, height, context;
+}
+
+/// 局部重绘贴回:旧任务沿用 tight；新框选任务记录原外框和有效蒙版。
 class InpaintPaste {
   const InpaintPaste({
     required this.original,
@@ -219,6 +255,8 @@ class InpaintPaste {
     required this.tightH,
     required this.outW,
     required this.outH,
+    this.focus,
+    this.focusMask,
   });
 
   /// 原完整图 PNG(贴回底)。
@@ -232,6 +270,14 @@ class InpaintPaste {
 
   /// 入库尺寸(=原图尺寸)。
   final int outW, outH;
+
+  /// null 表示旧版按原尺寸发送的局部重绘；非空表示先放大再贴回。
+  final InpaintFocus? focus;
+
+  /// 新框选任务的有效内区蒙版，MaskGrid.encode()，尺寸为 outW × outH。
+  /// 与 InpaintJob.grid（未经裁切的可编辑笔迹）分别保存，避免自动填满内区
+  /// 或请求端缩放量化改变恢复时的用户笔迹。
+  final Uint8List? focusMask;
 }
 
 class Img2ImgConfig {
@@ -1111,6 +1157,7 @@ class GenerateState {
     required this.negativePrompt,
     this.promptRaw = '',
     this.negativePromptRaw = '',
+    this.promptFoldLinks = const [],
     required this.characters,
     required this.vibes,
     required this.charRefs,
@@ -1144,6 +1191,7 @@ class GenerateState {
   /// 草稿不参与生成链路的任何一环。有效性判定见 [pickEditorText]。
   final String promptRaw;
   final String negativePromptRaw;
+  final List<PromptFoldLink> promptFoldLinks;
 
   final List<CharacterPrompt> characters;
   final List<VibeItem> vibes;
@@ -1190,6 +1238,7 @@ class GenerateState {
     String? negativePrompt,
     String? promptRaw,
     String? negativePromptRaw,
+    List<PromptFoldLink>? promptFoldLinks,
     List<CharacterPrompt>? characters,
     List<VibeItem>? vibes,
     List<CharRefItem>? charRefs,
@@ -1207,6 +1256,24 @@ class GenerateState {
       negativePrompt: negativePrompt ?? this.negativePrompt,
       promptRaw: promptRaw ?? this.promptRaw,
       negativePromptRaw: negativePromptRaw ?? this.negativePromptRaw,
+      promptFoldLinks:
+          prompt == null &&
+              negativePrompt == null &&
+              promptRaw == null &&
+              negativePromptRaw == null &&
+              promptFoldLinks == null
+          ? this.promptFoldLinks
+          : validPromptFoldLinks(
+              pickEditorText(
+                promptRaw ?? this.promptRaw,
+                prompt ?? this.prompt,
+              ),
+              pickEditorText(
+                negativePromptRaw ?? this.negativePromptRaw,
+                negativePrompt ?? this.negativePrompt,
+              ),
+              promptFoldLinks ?? this.promptFoldLinks,
+            ),
       characters: characters ?? this.characters,
       vibes: vibes ?? this.vibes,
       charRefs: charRefs ?? this.charRefs,

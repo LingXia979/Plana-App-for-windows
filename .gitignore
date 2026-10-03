@@ -32,6 +32,7 @@ migrate_working_dir/
 .pub/
 /build/
 /coverage/
+/output/
 
 # Symbolication related
 app.*.symbols
@@ -50,6 +51,31 @@ app.*.map.json
 *.jks
 *.keystore
 
-# 内部工作文档(审计/设计/测试清单):过程产物,对使用者与贡献者都没有价值,
-# 且含大量本地环境路径。整个目录不纳入版本控制,文件保留在本地磁盘。
-docs/
+# 内部工作文档保留在本地；分发所需的运行库许可证公开。
+docs/*
+!docs/runtime-licenses/
+recovery-backup-*/
+
+# Local user data and publication work must never be committed.
+/dist/
+/logs/
+/validation/
+/作品/
+/backups/
+/HANDOFF.md
+/NEXT-SESSION.md
+/WINDOWS-PLAN.md
+/WINDOWS-SOURCE.json
+/WINDOWS-VALIDATION.md
+.env
+.env.*
+!.env.example
+**/flutter_secure_storage*.dat
+**/*.secure
+**/bot_session*.json
+**/my_public_tags.json
+**/tag_library*.json
+**/prompt_presets.json
+**/desktop_output_roots.json
+**/settings.json
+**/prefs.json

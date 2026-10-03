@@ -11,6 +11,28 @@ import '../../core/net/nai_gate.dart';
 import '../../core/store/app_stores.dart';
 import 'upscale_model.dart';
 
+typedef NaiUpscaleResult = ({Uint8List png, int width, int height});
+typedef NaiUpscaleRunner =
+    Future<NaiUpscaleResult> Function(
+      Uint8List srcPng, {
+      required int width,
+      required int height,
+      void Function(String stage)? onStage,
+    });
+
+/// Keep the request tied to the app's providers, not a preview widget which may
+/// be replaced while a paid request is waiting for its NAI slot.
+final naiUpscaleRunnerProvider = Provider<NaiUpscaleRunner>(
+  (ref) =>
+      (srcPng, {required width, required height, onStage}) => _upscaleNai(
+        ref,
+        srcPng,
+        width: width,
+        height: height,
+        onStage: onStage,
+      ),
+);
+
 /// NAI 官方超分。按当前授权模式分发:
 ///  - bot:走后端 `/api/upscale`(Bearer 会话)。
 ///  - 直连:app 直打 NAI(Bearer 用户 token),解 zip。
@@ -21,8 +43,8 @@ import 'upscale_model.dart';
 ///
 /// 输入原图 PNG + 尺寸;返回 (超分 PNG, 结果宽高)。
 /// 远程一次性调用无逐步进度 —— 只经 [onStage] 报阶段。
-Future<({Uint8List png, int width, int height})> upscaleNai(
-  WidgetRef ref,
+Future<NaiUpscaleResult> _upscaleNai(
+  Ref ref,
   Uint8List srcPng, {
   required int width,
   required int height,
@@ -30,7 +52,7 @@ Future<({Uint8List png, int width, int height})> upscaleNai(
 }) async {
   onStage?.call('编码图片…');
   final b64 = base64Encode(srcPng);
-  final mode = ref.read(authModeProvider).value;
+  final mode = await ref.read(authModeProvider.future);
 
   Uint8List out;
   if (mode == AuthMode.bot) {

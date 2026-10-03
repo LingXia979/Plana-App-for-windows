@@ -25,8 +25,7 @@ CustomEndpoint _ep(AgentApiFormat f) => CustomEndpoint(
 );
 
 /// 一段 SSE 响应体。
-String _sse(List<String> frames) =>
-    frames.map((f) => 'data: $f\n\n').join();
+String _sse(List<String> frames) => frames.map((f) => 'data: $f\n\n').join();
 
 MockClient _streamingClient(
   String body, {
@@ -52,7 +51,7 @@ Future<({String raw, List<AgentDelta> deltas})> _run(
     c,
     e,
     system: 'sys',
-    msgs: const [(role: 'user', content: '画一张', image: null)],
+    msgs: const [(role: 'user', content: '画一张', images: [])],
     think: ThinkLevel.auto,
     timeout: const Duration(seconds: 5),
     out: out,
@@ -242,9 +241,7 @@ void main() {
     test('Gemini:换成 streamGenerateContent 并带 alt=sse', () async {
       late Uri uri;
       final c = _streamingClient(
-        _sse([
-          '{"candidates":[{"content":{"parts":[{"text":"好的"}]}}]}',
-        ]),
+        _sse(['{"candidates":[{"content":{"parts":[{"text":"好的"}]}}]}']),
         onRequest: (req, _) => uri = req.url,
       );
       final r = await _run(c, _ep(AgentApiFormat.google));

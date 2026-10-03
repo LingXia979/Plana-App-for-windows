@@ -11,8 +11,12 @@ import '../../core/net/anlas_provider.dart';
 import '../../core/net/backend_client.dart';
 import '../../core/net/remote_image.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/platform/desktop.dart';
+import '../../core/util/preview_cache.dart';
+import '../desktop/library_samples.dart';
 import '../../core/ui/scroll_memory.dart';
 import '../../core/ui/selection_bar.dart';
+import '../../core/ui/image_drop.dart';
 import '../../core/util/image_pick.dart';
 import '../generate/generate_state.dart';
 import '../generate/models.dart' show CharRefItem, VibeItem;
@@ -21,12 +25,14 @@ import '../generate/vibe_cache.dart' show vibeCacheProvider;
 import '../generate/vibe_encoder.dart';
 import '../generate/widgets/common.dart'
     show ParamSlider, confirmDialog, hintSnack;
-import 'naiv4vibe_codec.dart' show buildBundleText, kModelToEncodingKey;
+import 'naiv4vibe_codec.dart'
+    show buildBundleText, canonicalVibeExport, kModelToEncodingKey;
 import 'vibe_backup_sheet.dart';
 import 'public_vibes.dart';
 import 'vibe_detail_sheet.dart';
 import 'vibe_import.dart' show ingestVibeFiles;
 import 'vibe_library.dart';
+import 'local_vibe_folder_panel.dart';
 import '../../core/util/haptics.dart';
 
 // 状态圆点:压在缩略图上,不能跟种子色走 —— 单一来源见 [FixedSemantic]
@@ -83,6 +89,7 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
       }
       setState(() {});
     });
+  int _desktopSource = 0;
   String _search = '';
   String? _tagFilter; // null = 全部
   bool _busy = false;
@@ -180,7 +187,7 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
 
   /// 库条目 → 生成面板(本地/公共收藏后共用)。
   Future<void> _addEntryToGenerate(VibeEntry e) async {
-    final data = await _lib.loadForGenerate(e);
+    final data = await _lib.loadForGenerate(e, modelKey: _modelKey);
     if (!mounted) return;
     if (data == null) {
       hintSnack(context, '无法读取该 Vibe 文件', icon: Icons.error_outline);
@@ -267,7 +274,7 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
           continue;
         }
         if (_activeItemId(entry) == null) {
-          final data = await _lib.loadForGenerate(entry);
+          final data = await _lib.loadForGenerate(entry, modelKey: _modelKey);
           if (data == null) {
             fail++;
             continue;
@@ -306,11 +313,18 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
     if (picked.isEmpty || !mounted) return;
     // 图库里改走「从文件选」的,一律按文件分流(vibe 文件也放行)
     if (picked.files.isNotEmpty) return _ingest(picked.files);
+    await _importPickedImages(picked.images);
+  }
+
+  Future<void> _importPickedImages(List<PickedImage> images) async {
+    if (_busy || !mounted || images.isEmpty) return;
     setState(() => _busy = true);
     var n = 0;
-    for (final f in picked.images) {
+    final library = _lib;
+    for (final f in images) {
+      if (!mounted) break;
       try {
-        await _lib.importImageBytes(f.bytes, f.baseName);
+        await library.importImageBytes(f.bytes, f.baseName);
         n++;
       } catch (_) {}
     }
@@ -627,7 +641,7 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
           .read(backendClientProvider)
           .uploadPublicVibe(
             sessionId: session.sessionId,
-            vibeData: raw,
+            vibeData: canonicalVibeExport(raw),
             name: res.name,
           );
       if (!mounted) return;
@@ -876,6 +890,19 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
     List<VibeItem> vibes,
     List<VibeEntry> checked,
   ) {
+    if (ref.watch(desktopModeProvider)) {
+      return ImageDropRegion(
+        key: const ValueKey('vibe-library-image-drop'),
+        label: '导入 Vibe 素材库',
+        enabled: !_busy,
+        multiple: true,
+        onDrop: (images, _) async {
+          await _importPickedImages(images);
+          if (mounted) setState(() => _desktopSource = 0);
+        },
+        child: _desktopScaffold(scheme, all, vibes, checked),
+      );
+    }
     return Scaffold(
       appBar: AppBar(
         title: const Text('Vibe 管理器'),
@@ -977,6 +1004,113 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
       bottomNavigationBar: _bottomBar(scheme, checked, vibes),
     );
   }
+
+  Widget _desktopScaffold(
+    ColorScheme scheme,
+    List<VibeEntry>? all,
+    List<VibeItem> vibes,
+    List<VibeEntry> checked,
+  ) => Scaffold(
+    appBar: AppBar(
+      toolbarHeight: 56,
+      title: const Text(
+        'Vibe 素材库',
+        style: TextStyle(fontSize: 19, fontWeight: FontWeight.w700),
+      ),
+      actions: [
+        IconButton(
+          tooltip: '云备份',
+          onPressed: () => showVibeBackupSheet(context),
+          icon: const Icon(Icons.cloud_outlined, size: 20),
+        ),
+        OutlinedButton.icon(
+          onPressed: _busy ? null : _importFiles,
+          icon: const Icon(Icons.file_open_outlined, size: 18),
+          label: const Text('导入文件'),
+        ),
+        const SizedBox(width: 10),
+        FilledButton.icon(
+          onPressed: _busy ? null : _importImages,
+          icon: const Icon(Icons.add_photo_alternate_outlined, size: 18),
+          label: const Text('导入图片'),
+        ),
+        const SizedBox(width: 20),
+      ],
+    ),
+    body: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 12, 14, 2),
+            child: Row(
+              children: [
+                for (final item in [
+                  (0, '已导入 · ${all?.length ?? 0}'),
+                  (1, '本地文件夹'),
+                  (2, '公共库'),
+                  (3, '示例预览'),
+                ]) ...[
+                  TextButton(
+                    onPressed: () => setState(() {
+                      _desktopSource = item.$1;
+                      _tab.index = item.$1 == 2 ? 1 : 0;
+                    }),
+                    style: TextButton.styleFrom(
+                      backgroundColor: _desktopSource == item.$1
+                          ? scheme.primaryContainer
+                          : null,
+                    ),
+                    child: Text(item.$2),
+                  ),
+                  const SizedBox(width: 6),
+                ],
+                const Spacer(),
+                SizedBox(
+                  width: 280,
+                  child: TextField(
+                    onChanged: (v) => setState(() => _search = v),
+                    style: const TextStyle(fontSize: 12),
+                    decoration: InputDecoration(
+                      hintText: '搜索名称或标签…',
+                      prefixIcon: const Icon(Icons.search, size: 18),
+                      isDense: true,
+                      filled: true,
+                      fillColor: scheme.surface,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: BorderSide.none,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (_busy) const LinearProgressIndicator(minHeight: 2),
+          Expanded(
+            child: switch (_desktopSource) {
+              1 => LocalVibeFolderPanel(
+                search: _search,
+                onConfirmed: () => Navigator.of(context).pop(),
+              ),
+              2 => _publicTab(),
+              3 => const LibrarySamples(),
+              _ =>
+                all == null
+                    ? const Center(child: CircularProgressIndicator())
+                    : all.isEmpty && _search.isEmpty
+                    ? const LibrarySamples()
+                    : _localTab(all),
+            },
+          ),
+        ],
+      ),
+    ),
+    bottomNavigationBar: _desktopSource == 1 || _desktopSource == 3
+        ? null
+        : _bottomBar(scheme, checked, vibes),
+  );
 
   Widget _segTabs(ColorScheme scheme, int localCount) {
     return SizedBox(
@@ -1240,12 +1374,19 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
     return GridView.builder(
       controller: _localScroll,
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 96),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 2,
-        mainAxisSpacing: 10,
-        crossAxisSpacing: 10,
-        childAspectRatio: 0.82,
-      ),
+      gridDelegate: ref.watch(desktopModeProvider)
+          ? const SliverGridDelegateWithMaxCrossAxisExtent(
+              maxCrossAxisExtent: 220,
+              mainAxisExtent: 246,
+              mainAxisSpacing: 14,
+              crossAxisSpacing: 14,
+            )
+          : const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 2,
+              mainAxisSpacing: 10,
+              crossAxisSpacing: 10,
+              childAspectRatio: 0.82,
+            ),
       itemCount: list.length,
       itemBuilder: (context, i) {
         final e = list[i];
@@ -1254,7 +1395,9 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
           checked: _activeItemId(e) != null,
           compatible: _compatible(e),
           encodedModels: _encModelsOf(e),
-          thumb: _lib.thumbOf(e),
+          thumb: ref.watch(desktopModeProvider)
+              ? _lib.fileOf(e)
+              : _lib.thumbOf(e),
           onTap: () => _toggle(e), // 点卡 = 加入/移出生成
           onDelete: () => _deleteOne(e),
           onDetail: () => _openDetail(e),
@@ -1350,12 +1493,19 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
                   // 顶距 8:另外 8 由本页外层那圈 Padding 出,两段合起来仍是
                   // 一档间距,只是外面那半留在了滚动区之外(滚动时不跟着走)。
                   padding: const EdgeInsets.fromLTRB(12, 8, 12, 96),
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 2,
-                    mainAxisSpacing: 10,
-                    crossAxisSpacing: 10,
-                    childAspectRatio: 0.82,
-                  ),
+                  gridDelegate: ref.watch(desktopModeProvider)
+                      ? const SliverGridDelegateWithMaxCrossAxisExtent(
+                          maxCrossAxisExtent: 220,
+                          mainAxisExtent: 246,
+                          mainAxisSpacing: 14,
+                          crossAxisSpacing: 14,
+                        )
+                      : const SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: 2,
+                          mainAxisSpacing: 10,
+                          crossAxisSpacing: 10,
+                          childAspectRatio: 0.82,
+                        ),
                   itemCount: list.length,
                   itemBuilder: (context, i) {
                     final m = list[i];
@@ -1773,7 +1923,7 @@ class _CardMenuButton extends StatelessWidget {
 }
 
 /// 本地卡片:点卡 = 加入/移出;右上菜单 = 详情/编辑标签/发布/导出/删除。
-class _VibeCard extends StatelessWidget {
+class _VibeCard extends ConsumerWidget {
   const _VibeCard({
     required this.entry,
     required this.checked,
@@ -1806,7 +1956,7 @@ class _VibeCard extends StatelessWidget {
   final VoidCallback? onPublish;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final scheme = context.scheme;
     return _VibeCardShell(
       checked: checked,
@@ -1816,7 +1966,9 @@ class _VibeCard extends StatelessWidget {
       busy: false,
       onTap: onTap,
       tagLabel: entry.tags.isEmpty ? null : entry.tags.first,
-      thumbnail: entry.hasImage
+      thumbnail: ref.watch(desktopModeProvider)
+          ? FittedFilePreview(thumb)
+          : entry.hasImage
           ? Image.file(
               thumb,
               fit: BoxFit.cover,

@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
+import '../../core/util/canonical_number.dart';
 
 /// .naiv4vibe / .naiv4vibebundle 编解码与 NAI 官方哈希口径。
 /// 纯函数无 IO;字段结构对齐 web `utils/storage.ts` 的 Naiv4VibeFile。
@@ -196,15 +197,67 @@ void mergeEncodingIntoRaw(
       : <String, dynamic>{};
   group[vibeEncodingHashKey(infoExtracted)] = {
     'encoding': encoding,
-    'params': {'information_extracted': infoExtracted},
+    'params': {'information_extracted': canonicalNumber(infoExtracted)},
   };
   encs[modelKey] = group;
   raw['encodings'] = encs;
 }
 
+/// Repair known numeric/hash fields at the export boundary, preserving encoded
+/// bytes and unknown metadata. Imported files may contain hashes of "1.00";
+/// the website looks up the hash of "1" after JSON has parsed that number.
+Map<String, dynamic> canonicalVibeExport(Map<String, dynamic> raw) {
+  final result = Map<String, dynamic>.of(raw);
+  if (raw['importInfo'] case final Map info) {
+    final normalized = Map<String, dynamic>.from(info);
+    for (final key in ['strength', 'information_extracted']) {
+      if (normalized[key] case final num value) {
+        normalized[key] = canonicalNumber(value);
+      }
+    }
+    result['importInfo'] = normalized;
+  }
+  if (raw['encodings'] case final Map encodings) {
+    final output = <String, dynamic>{};
+    for (final model in encodings.entries) {
+      if (model.key is! String) continue;
+      if (model.value is! Map) {
+        output[model.key as String] = model.value;
+        continue;
+      }
+      final group = <String, dynamic>{};
+      for (final item in (model.value as Map).entries) {
+        final key = item.key;
+        final value = item.value;
+        if (key is! String) continue;
+        if (value is Map &&
+            value['params'] is Map &&
+            (value['params'] as Map)['information_extracted'] is num) {
+          final params = Map<String, dynamic>.from(value['params'] as Map);
+          final ie = (params['information_extracted'] as num).toDouble();
+          params['information_extracted'] = canonicalNumber(ie);
+          final canonicalKey = vibeEncodingHashKey(ie);
+          // Prefer an already canonical record over a legacy duplicate.
+          if (!group.containsKey(canonicalKey) || key == canonicalKey) {
+            group[canonicalKey] = {...value, 'params': params};
+          }
+        } else {
+          group[key] = value; // No reliable IE: preserve, never guess.
+        }
+      }
+      output[model.key as String] = group;
+    }
+    result['encodings'] = output;
+  }
+  return result;
+}
+
+String buildVibeText(Map<String, dynamic> raw) =>
+    jsonEncode(canonicalVibeExport(raw));
+
 /// 组装 .naiv4vibebundle 文本。
 String buildBundleText(List<Map<String, dynamic>> vibeRaws) => jsonEncode({
   'identifier': 'novelai-vibe-transfer-bundle',
   'version': 1,
-  'vibes': vibeRaws,
+  'vibes': vibeRaws.map(canonicalVibeExport).toList(),
 });

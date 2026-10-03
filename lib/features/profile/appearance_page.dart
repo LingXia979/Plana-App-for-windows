@@ -1,7 +1,9 @@
+import '../../core/ui/settings_scaffold.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/theme/app_theme.dart';
+import '../../core/platform/desktop.dart';
 import '../../core/theme/theme_settings.dart';
 import 'widgets/settings_ui.dart';
 
@@ -11,12 +13,14 @@ class AppearancePage extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final ts = ref.watch(themeSettingsProvider);
+    final desktop = ref.watch(desktopModeProvider);
     final notifier = ref.read(themeSettingsProvider.notifier);
-    return Scaffold(
-      appBar: AppBar(title: const Text('外观与触感')),
+    return SettingsScaffold(
+      appBar: AppBar(title: Text(desktop ? '外观与体验' : '外观与触感')),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(14, 8, 14, 24),
         children: [
+          const SettingsPageHeader(),
           const SettingsLabel('深浅模式'),
           SettingsCard(
             children: [
@@ -65,13 +69,13 @@ class AppearancePage extends ConsumerWidget {
             ],
           ),
           const SizedBox(height: 16),
-          const SettingsLabel('底部导航'),
+          SettingsLabel(desktop ? '导航栏' : '底部导航'),
           SettingsCard(
             children: [
               _SwitchRow(
                 icon: Icons.auto_awesome,
                 title: '显示 AI 助手',
-                subtitle: '关掉后底栏不再显示 AI 入口',
+                subtitle: desktop ? '关掉后顶部导航不再显示 AI 入口' : '关掉后底栏不再显示 AI 入口',
                 value: ts.showAssistant,
                 onChanged: (v) =>
                     notifier.patch((x) => x.copyWith(showAssistant: v)),

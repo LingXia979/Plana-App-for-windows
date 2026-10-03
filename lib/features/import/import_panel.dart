@@ -15,6 +15,7 @@ import '../../core/auth/auth_mode.dart';
 import '../../core/auth/bot_session_store.dart';
 import '../../core/net/backend_client.dart';
 import '../../core/net/remote_image.dart';
+import '../../core/platform/desktop.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/util/image_ops.dart';
 import '../../core/util/image_pick.dart';
@@ -36,6 +37,7 @@ import 'image_metadata.dart';
 import 'import_category.dart';
 import 'import_prefs.dart';
 import 'metadata_detail_page.dart';
+import 'desktop_import_layout.dart';
 import '../../core/util/haptics.dart';
 
 /// 后台 isolate 算图片内容哈希。
@@ -1107,6 +1109,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
+    if (ref.watch(desktopModeProvider)) return _desktop(scheme);
     final Widget body;
     if (_loading) {
       body = const Center(child: CircularProgressIndicator());
@@ -1135,13 +1138,119 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     );
   }
 
+  Widget _desktop(ColorScheme scheme) {
+    final m = _meta;
+    final reverse = _reverseTags != null;
+    final body = _loading
+        ? const Center(child: CircularProgressIndicator())
+        : reverse
+        ? _reverseBody(scheme, desktop: true)
+        : m != null
+        ? _mainBody(scheme, desktop: true)
+        : ListView(
+            padding: const EdgeInsets.all(20),
+            children: [
+              ImportAlbumOptions(
+                origin: widget.origin,
+                choice: _albumChoice,
+                onChanged: (v) => setState(() => _albumChoice = v),
+              ),
+              const SizedBox(height: 24),
+              const InfoNote('未在这张图里找到生成参数，可使用左侧按钮将图片用作参考，或反推提示词。'),
+            ],
+          );
+    return DesktopImportLayout(
+      bytes: widget.bytes,
+      fileName: widget.fileName,
+      title: reverse ? 'AI 反推结果' : '导入图片',
+      source: _loading ? '正在读取图片…' : m?.source ?? '参考图片',
+      summary: m == null ? _sizeText : '${m.width} × ${m.height} · $_sizeText',
+      details: KeyedSubtree(
+        key: const ValueKey('desktop-import-details'),
+        child: body,
+      ),
+      referenceActions: _desktopReferences(scheme, reverse: reverse),
+      onClose: () => Navigator.of(context).pop(),
+      onMetadata: m == null
+          ? null
+          : () => Navigator.of(context).push(
+              sharedAxisRoute(
+                MetadataDetailPage(
+                  meta: m,
+                  bytes: widget.bytes,
+                  fileName: widget.fileName,
+                ),
+              ),
+            ),
+      confirm: _loading || (!reverse && m == null)
+          ? null
+          : FilledButton.icon(
+              key: const ValueKey('desktop-import-confirm'),
+              onPressed: reverse
+                  ? (_useReverse ? _importReverse : null)
+                  : (_hasAnySelection ? _import : null),
+              icon: const Icon(Icons.input, size: 18),
+              label: const Text('导入所选内容'),
+            ),
+    );
+  }
+
+  Widget _desktopReferences(ColorScheme scheme, {required bool reverse}) {
+    final actions = [
+      (
+        label: '图生图',
+        icon: Icons.image_outlined,
+        action: _useAsImg2img,
+        blocked: _moduleBlocked(GenModule.img2img),
+      ),
+      (
+        label: '风格参考',
+        icon: Icons.palette_outlined,
+        action: _useAsVibe,
+        blocked: _moduleBlocked(GenModule.vibe),
+      ),
+      (
+        label: '角色参考',
+        icon: Icons.face_retouching_natural,
+        action: _useAsCharRef,
+        blocked: _moduleBlocked(GenModule.charRef),
+      ),
+      if (!reverse)
+        (
+          label: '反推提示词',
+          icon: Icons.auto_awesome,
+          action: _reverse,
+          blocked: null,
+        ),
+    ];
+    return Wrap(
+      spacing: 6,
+      runSpacing: 6,
+      children: [
+        for (final item in actions)
+          Tooltip(
+            message: item.blocked ?? item.label,
+            child: OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                visualDensity: VisualDensity.compact,
+              ),
+              onPressed: _loading || item.blocked != null ? null : item.action,
+              icon: Icon(item.icon, size: 16),
+              label: Text(item.label),
+            ),
+          ),
+      ],
+    );
+  }
+
   // ---- 反推结果:只有一条正向提示词 ----
-  Widget _reverseBody(ColorScheme scheme) {
+  Widget _reverseBody(ColorScheme scheme, {bool desktop = false}) {
     final tags = _reverseTags!;
     return ListView(
       padding: const EdgeInsets.fromLTRB(14, 10, 14, 8),
       children: [
-        _infoCard(scheme, reverse: true),
+        if (!desktop) _infoCard(scheme, reverse: true),
         ImportAlbumOptions(
           origin: widget.origin,
           choice: _albumChoice,
@@ -1220,12 +1329,12 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   }
 
   // ---- 主体 ----
-  Widget _mainBody(ColorScheme scheme) {
+  Widget _mainBody(ColorScheme scheme, {bool desktop = false}) {
     final m = _meta!;
     return ListView(
       padding: const EdgeInsets.fromLTRB(14, 10, 14, 8),
       children: [
-        _infoCard(scheme),
+        if (!desktop) _infoCard(scheme),
         ImportAlbumOptions(
           origin: widget.origin,
           choice: _albumChoice,
@@ -2011,6 +2120,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
                   const SizedBox(width: 10),
                   // 勾选:自带点击域,不连带展开
                   InkResponse(
+                    key: ValueKey('import-select-$title'),
                     onTap: onTap,
                     radius: 22,
                     child: Padding(
@@ -2282,9 +2392,11 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
                     for (final e in items)
                       SizedBox(
                         width:
-                            (e.label == 'Seed' ||
-                                e.label == '模型' ||
-                                e.label == '分辨率')
+                            (!ref.read(desktopModeProvider) ||
+                                    c.maxWidth < 440) &&
+                                (e.label == 'Seed' ||
+                                    e.label == '模型' ||
+                                    e.label == '分辨率')
                             ? c.maxWidth
                             : w,
                         child: _settingTile(scheme, e),

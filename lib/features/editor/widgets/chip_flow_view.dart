@@ -1,9 +1,16 @@
+import 'dart:async';
+import 'dart:math' as math;
+
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/editor_theme.dart';
+import '../../../core/widgets/primary_mouse_drag.dart';
 import '../editor_models.dart';
 import 'rich_tag_controller.dart';
+import 'editor_body.dart';
 import '../../../core/util/haptics.dart';
 
 /// 尾部输入框的定宽(有词条时)。约五个汉字宽,够看清正在打的词,
@@ -80,7 +87,8 @@ double _transRowHeight(double fontSize) =>
 /// 带权重角标/禁用删除线),折叠段是一颗 `#名字` chip(和普通标签同款外观,
 /// 只多个折叠符号与主色边)。
 ///
-/// 交互分两个阶段:
+/// 桌面:鼠标按住 200ms 后拖动，落点显示虚线预览，松手提交；多选按原顺序移动。
+/// 移动端交互分两个阶段:
 ///  1. 选:点 chip 加选/取消(可多选)。这个阶段点什么都不会移动东西。
 ///     **长按**则一步到位 —— 直接把它(或已选那一批)拿起来进落位阶段。
 ///  2. 放:在底部面板点「移动」进入([placing])。⊕ 只在这个阶段出现,点它落位。
@@ -110,9 +118,19 @@ class ChipFlowView extends StatefulWidget {
     this.placing = false,
     this.showTrans = true,
     this.fontSize = 16,
+    this.scrollable = true,
+    this.onChipTap,
+    this.desktopDrag = false,
+    this.onDragChanged,
+    this.padding = const EdgeInsets.fromLTRB(16, 6, 16, 24),
   });
 
   final RichTagController controller;
+  final bool scrollable;
+  final EdgeInsets padding;
+  final ValueChanged<int>? onChipTap;
+  final bool desktopDrag;
+  final ValueChanged<bool>? onDragChanged;
 
   /// 折叠表(名字 -> 折叠体):识别占位符 + 数成员。
   final Map<String, String> foldBodies;
@@ -159,13 +177,271 @@ class ChipFlowView extends StatefulWidget {
   final double fontSize;
 
   @override
-  State<ChipFlowView> createState() => _ChipFlowViewState();
+  State<ChipFlowView> createState() => ChipFlowViewState();
 }
 
-class _ChipFlowViewState extends State<ChipFlowView>
+class ChipFlowViewState extends State<ChipFlowView>
     with TickerProviderStateMixin {
   final GlobalKey _stackKey = GlobalKey();
   final List<GlobalKey> _chipKeys = [];
+  final _dragPortal = OverlayPortalController();
+  List<int>? _dragIndices;
+  Offset? _dragPoint;
+  Offset? _dragOrigin;
+  String? _dragText;
+  int? _dropGap;
+  bool _dragMoved = false;
+  Timer? _dragScroll;
+  int? _mousePointer;
+  bool _mouseInterrupted = false;
+
+  void _watchMouse(PointerDownEvent event) {
+    if (!widget.desktopDrag ||
+        event.kind != PointerDeviceKind.mouse ||
+        event.buttons != kPrimaryButton) {
+      return;
+    }
+    if (_mousePointer != null) {
+      _interruptMouse();
+      return;
+    }
+    _mousePointer = event.pointer;
+    _mouseInterrupted = false;
+    GestureBinding.instance.pointerRouter.addGlobalRoute(_mouseEvent);
+    HardwareKeyboard.instance.addHandler(_mouseKey);
+  }
+
+  void _mouseEvent(PointerEvent event) {
+    if (event is PointerSignalEvent ||
+        event is PointerPanZoomStartEvent ||
+        (event is PointerDownEvent && event.pointer != _mousePointer)) {
+      _interruptMouse();
+    }
+  }
+
+  bool _mouseKey(KeyEvent event) {
+    if (event is KeyDownEvent &&
+        event.logicalKey == LogicalKeyboardKey.escape) {
+      _interruptMouse();
+    }
+    return false;
+  }
+
+  void _interruptMouse() {
+    _mouseInterrupted = true;
+    cancelDrag();
+  }
+
+  void _releaseMouse(PointerEvent event) {
+    if (event.pointer != _mousePointer) return;
+    if (event is PointerCancelEvent) _interruptMouse();
+    _stopWatchingMouse();
+  }
+
+  void _stopWatchingMouse() {
+    if (_mousePointer == null) return;
+    GestureBinding.instance.pointerRouter.removeGlobalRoute(_mouseEvent);
+    HardwareKeyboard.instance.removeHandler(_mouseKey);
+    _mousePointer = null;
+  }
+
+  void _startDrag(int index, Offset point) {
+    if (_mouseInterrupted) return;
+    final units = topLevelUnits(widget.controller.text, widget.foldBodies);
+    final selected = _sel.contains(index) ? {..._sel} : {index};
+    if (chipValidGaps(selected, units.length).isEmpty) return;
+    widget.onChipTap?.call(index);
+    widget.onDragChanged?.call(true);
+    widget.onSelectionChanged(selected);
+    _moveAnim.value = 1;
+    setState(() {
+      _startOffsets = const {};
+      _dragIndices = selected.toList()..sort();
+      _dragText = widget.controller.text;
+      _dragPoint = _dragOrigin = point;
+      _dragMoved = false;
+      _dropGap = index;
+    });
+    _dragPortal.show();
+    _dragScroll = Timer.periodic(
+      const Duration(milliseconds: 16),
+      (_) => _scrollAtEdge(),
+    );
+  }
+
+  Rect? _dragViewport() {
+    final scroll = Scrollable.maybeOf(context);
+    final box = scroll?.context.findRenderObject();
+    if (box is! RenderBox || !box.hasSize) return null;
+    return box.localToGlobal(Offset.zero) & box.size;
+  }
+
+  int? _gapAt(Offset point) {
+    final stack = _stackKey.currentContext?.findRenderObject() as RenderBox?;
+    if (stack == null || !stack.hasSize) return null;
+    final bounds = stack.localToGlobal(Offset.zero) & stack.size;
+    final viewport = _dragViewport();
+    if (!bounds.contains(point) ||
+        (viewport != null && !viewport.contains(point))) {
+      return null;
+    }
+    // Keep the current slot while the pointer is over its placeholder. This
+    // prevents the reflowed neighbours from pushing the target back and forth.
+    for (final i in _dragIndices!) {
+      if (chipAnchor(i)?.contains(point) ?? false) return _dropGap;
+    }
+    final count = topLevelUnits(
+      widget.controller.text,
+      widget.foldBodies,
+    ).length;
+    double nearest = double.infinity;
+    int? gap;
+    for (var i = 0; i < count; i++) {
+      if (_dragIndices!.contains(i)) continue;
+      final rect = chipAnchor(i);
+      if (rect == null) continue;
+      final before = point.dx < rect.center.dx;
+      final dx = point.dx - (before ? rect.left : rect.right);
+      final dy = point.dy - point.dy.clamp(rect.top, rect.bottom);
+      final distance = dx * dx + dy * dy * 4;
+      if (distance < nearest) {
+        nearest = distance;
+        gap = before ? i : i + 1;
+      }
+    }
+    return gap;
+  }
+
+  void _updateDrag(Offset point) {
+    if (_dragIndices == null) return;
+    if (widget.controller.text != _dragText) {
+      cancelDrag();
+      return;
+    }
+    final gap = _gapAt(point);
+    setState(() {
+      _dragMoved |= (point - _dragOrigin!).distance > 3;
+      _dragPoint = point;
+      _dropGap = gap;
+    });
+  }
+
+  void _scrollAtEdge() {
+    final point = _dragPoint;
+    final viewport = _dragViewport();
+    final scroll = Scrollable.maybeOf(context);
+    if (point == null ||
+        viewport == null ||
+        scroll == null ||
+        point.dx < viewport.left ||
+        point.dx > viewport.right) {
+      return;
+    }
+    const edge = 40.0;
+    final amount = point.dy < viewport.top + edge
+        ? -(1 - (point.dy - viewport.top) / edge).clamp(0.0, 1.0) * 12
+        : point.dy > viewport.bottom - edge
+        ? (1 - (viewport.bottom - point.dy) / edge).clamp(0.0, 1.0) * 12
+        : 0.0;
+    final position = scroll.position;
+    final target = (position.pixels + amount).clamp(
+      position.minScrollExtent,
+      position.maxScrollExtent,
+    );
+    if (target == position.pixels) return;
+    position.jumpTo(target);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _dragPoint != null) _updateDrag(_dragPoint!);
+    });
+  }
+
+  void _finishDrag({bool commit = false}) {
+    if (_dragIndices == null) return;
+    final gap = _dropGap;
+    final canMove =
+        commit &&
+        _dragMoved &&
+        gap != null &&
+        _dragText == widget.controller.text;
+    _dragScroll?.cancel();
+    _dragScroll = null;
+    _dragPortal.hide();
+    setState(() {
+      _dragIndices = null;
+      _dragPoint = _dragOrigin = null;
+      _dropGap = null;
+      _dragText = null;
+    });
+    if (canMove) _insert(gap);
+    widget.onDragChanged?.call(false);
+  }
+
+  void cancelDrag() => _finishDrag();
+
+  Widget _dragOverlay(BuildContext context, OverlayChildLayoutInfo info) {
+    if (_dragIndices == null ||
+        _dragPoint == null ||
+        _dragText != widget.controller.text) {
+      return const SizedBox.shrink();
+    }
+    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+    final units = topLevelUnits(widget.controller.text, widget.foldBodies);
+    return IgnorePointer(
+      child: CustomSingleChildLayout(
+        delegate: _ChipFeedbackLayout(overlay.globalToLocal(_dragPoint!)),
+        child: Material(
+          key: const ValueKey('desktop-chip-drag-feedback'),
+          elevation: 6,
+          borderRadius: BorderRadius.circular(10),
+          color: context.scheme.surfaceContainerLow,
+          clipBehavior: Clip.antiAlias,
+          child: Padding(
+            padding: const EdgeInsets.all(8),
+            child: Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (final i in _dragIndices!.take(8))
+                  if (i < units.length)
+                    DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: context.scheme.primaryContainer,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 9,
+                          vertical: 6,
+                        ),
+                        child: Text(
+                          units[i].isFold
+                              ? '#${units[i].fold!.name}'
+                              : units[i].tok!.name,
+                          style: TextStyle(
+                            fontSize: widget.fontSize,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ),
+                if (_dragIndices!.length > 8)
+                  Text('共 ${_dragIndices!.length} 项'),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Rect? chipAnchor(int index) {
+    if (index < 0 || index >= _chipKeys.length) return null;
+    final box =
+        _chipKeys[index].currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || !box.attached || !box.hasSize) return null;
+    return box.localToGlobal(Offset.zero) & box.size;
+  }
+
   List<(int, Offset)> _anchors = const []; // (gap, 加号中心) 内容坐标
 
   // FLIP 插入动画:每颗 chip 从旧槽位滑到新槽位(不闪跳)。
@@ -190,6 +466,8 @@ class _ChipFlowViewState extends State<ChipFlowView>
 
   @override
   void dispose() {
+    _dragScroll?.cancel();
+    _stopWatchingMouse();
     _moveAnim.dispose();
     _pulse.dispose();
     super.dispose();
@@ -213,6 +491,7 @@ class _ChipFlowViewState extends State<ChipFlowView>
   Set<int> get _sel => widget.selection;
 
   void _tapChip(int i) {
+    widget.onChipTap?.call(i);
     Haptics.selection();
     // 在途滑动先归位并清位移,保证下次插入量到干净布局
     if (_startOffsets.isNotEmpty) {
@@ -325,68 +604,88 @@ class _ChipFlowViewState extends State<ChipFlowView>
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: Listenable.merge([widget.controller, _moveAnim]),
-      builder: (context, _) {
-        final text = widget.controller.text;
-        final units = topLevelUnits(text, widget.foldBodies);
-        final sel = {
-          for (final i in _sel)
-            if (i < units.length) i,
-        };
-        while (_chipKeys.length < units.length) {
-          _chipKeys.add(GlobalKey());
-        }
-        _scheduleAnchors(units.length);
-        bool pendingOf(TopUnit u) =>
-            widget.showTrans &&
-            !u.isFold &&
-            u.tok!.trans == null &&
-            widget.translating(u.tok!.name);
-        _syncPulse(units.any(pendingOf));
-        final t = Curves.easeOutCubic.transform(_moveAnim.value);
-        return GestureDetector(
-          // 没选中时点空白 = 聚焦输入框:芯片之间的缝隙本来什么也不是,
-          // 让它接管「我要接着打字」这个最高频的意图。
-          // 选中着东西时它什么也不做 —— 理由见 [_tapBlank]。
-          behavior: HitTestBehavior.opaque,
-          onTap: _tapBlank,
-          child: SingleChildScrollView(
-            // 一屏放得下也照样接拖动:编辑页滚动收起顶栏后,靠「顶上往下拽」
-            // 放出来(见 ChromeScrollTracker)
-            physics: const AlwaysScrollableScrollPhysics(),
-            padding: const EdgeInsets.fromLTRB(16, 6, 16, 24),
-            child: Stack(
-              key: _stackKey,
-              clipBehavior: Clip.none,
-              children: [
-                Align(
-                  alignment: Alignment.topLeft,
-                  child: Wrap(
-                    // 缝只要够把两颗分开就行:chip 自带底色和边框,靠不上
-                    // 留白来断句。横向比纵向再紧一档 —— 一行里缝出现的次数
-                    // 多得多,同样的数看着就更松。
-                    spacing: 6,
-                    runSpacing: 8,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    children: [
-                      ..._rows(text, units, sel, pendingOf, t),
-                      _inputBox(units.isEmpty),
-                    ],
-                  ),
-                ),
-                if (sel.isNotEmpty)
-                  for (final (g, pos) in _anchors)
-                    Positioned(
-                      left: pos.dx - 15,
-                      top: pos.dy - 15,
-                      child: _PlusDot(onTap: () => _insert(g)),
+    return OverlayPortal.overlayChildLayoutBuilder(
+      controller: _dragPortal,
+      overlayChildBuilder: _dragOverlay,
+      child: Listener(
+        onPointerDown: _watchMouse,
+        onPointerMove: (event) {
+          if (event.pointer == _mousePointer &&
+              event.buttons != kPrimaryButton) {
+            _interruptMouse();
+          }
+        },
+        onPointerUp: _releaseMouse,
+        onPointerCancel: _releaseMouse,
+        child: AnimatedBuilder(
+          animation: Listenable.merge([widget.controller, _moveAnim]),
+          builder: (context, _) {
+            final text = widget.controller.text;
+            if (_dragIndices != null && _dragText != text) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted) cancelDrag();
+              });
+            }
+            final units = topLevelUnits(text, widget.foldBodies);
+            final sel = {
+              for (final i in _sel)
+                if (i < units.length) i,
+            };
+            while (_chipKeys.length < units.length) {
+              _chipKeys.add(GlobalKey());
+            }
+            _scheduleAnchors(units.length);
+            bool pendingOf(TopUnit u) =>
+                widget.showTrans &&
+                !u.isFold &&
+                u.tok!.trans == null &&
+                widget.translating(u.tok!.name);
+            _syncPulse(units.any(pendingOf));
+            final t = Curves.easeOutCubic.transform(_moveAnim.value);
+            return GestureDetector(
+              // 没选中时点空白 = 聚焦输入框:芯片之间的缝隙本来什么也不是,
+              // 让它接管「我要接着打字」这个最高频的意图。
+              // 选中着东西时它什么也不做 —— 理由见 [_tapBlank]。
+              behavior: HitTestBehavior.opaque,
+              onTap: _tapBlank,
+              child: EditorBody(
+                // 一屏放得下也照样接拖动:编辑页滚动收起顶栏后,靠「顶上往下拽」
+                // 放出来(见 ChromeScrollTracker)
+                scrollable: widget.scrollable,
+                padding: widget.padding,
+                child: Stack(
+                  key: _stackKey,
+                  clipBehavior: Clip.none,
+                  children: [
+                    Align(
+                      alignment: Alignment.topLeft,
+                      child: Wrap(
+                        // 缝只要够把两颗分开就行:chip 自带底色和边框,靠不上
+                        // 留白来断句。横向比纵向再紧一档 —— 一行里缝出现的次数
+                        // 多得多,同样的数看着就更松。
+                        spacing: 6,
+                        runSpacing: 8,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          ..._rows(text, units, sel, pendingOf, t),
+                          _inputBox(units.isEmpty),
+                        ],
+                      ),
                     ),
-              ],
-            ),
-          ),
-        );
-      },
+                    if (sel.isNotEmpty)
+                      for (final (g, pos) in _anchors)
+                        Positioned(
+                          left: pos.dx - 15,
+                          top: pos.dy - 15,
+                          child: _PlusDot(onTap: () => _insert(g)),
+                        ),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      ),
     );
   }
 
@@ -407,6 +706,40 @@ class _ChipFlowViewState extends State<ChipFlowView>
   /// 尾部输入框。Wrap 里的孩子拿不到「本行剩余宽度」,所以给定宽:空正文时
   /// 占满一行(那时它就是整个编辑区),有词条时 [_kInputWidth] 跟在最后一颗
   /// chip 后面,放不下自动换行。文本超出宽度由 TextField 自己横向滚。
+  Future<void> _pasteInput() async {
+    final input = widget.input;
+    final before = input.value;
+    final promptBefore = widget.controller.value;
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    // A tab/focus change while the clipboard is being read must not submit into
+    // another prompt. Ordinary typing and IME composition keep their old behavior.
+    if (!mounted ||
+        widget.input != input ||
+        input.value != before ||
+        widget.controller.value != promptBefore ||
+        !widget.inputFocus.hasFocus ||
+        data?.text == null ||
+        data!.text!.isEmpty) {
+      return;
+    }
+    final selection = before.selection;
+    final start = selection.isValid ? selection.start : before.text.length;
+    final end = selection.isValid ? selection.end : before.text.length;
+    final body = chipInputBody(
+      before.text.replaceRange(start, end, data.text!),
+    );
+    input.value = TextEditingValue(
+      text: '$kChipInputPad$body',
+      selection: TextSelection.collapsed(
+        offset: body.length + kChipInputPad.length,
+      ),
+    );
+    // Submit the whole batch once, so commas inside weighted groups stay intact
+    // and the paste can be undone in one step.
+    widget.onInputSubmitted(body);
+    widget.inputFocus.requestFocus();
+  }
+
   Widget _inputBox(bool empty) {
     final scheme = context.scheme;
     final fs = widget.fontSize;
@@ -433,21 +766,47 @@ class _ChipFlowViewState extends State<ChipFlowView>
                   )
                 : const SizedBox.shrink(),
           ),
-          TextField(
-            controller: widget.input,
-            focusNode: widget.inputFocus,
-            onChanged: widget.onInputChanged,
-            onSubmitted: (v) {
-              widget.onInputSubmitted(chipInputBody(v));
-              widget.inputFocus.requestFocus(); // 落一枚接着打下一枚
+          Actions(
+            actions: {
+              PasteTextIntent: CallbackAction<PasteTextIntent>(
+                onInvoke: (_) {
+                  unawaited(_pasteInput());
+                  return null;
+                },
+              ),
             },
-            textInputAction: TextInputAction.done,
-            style: TextStyle(fontSize: fs, color: scheme.onSurface),
-            cursorColor: scheme.primary,
-            decoration: const InputDecoration(
-              isDense: true,
-              border: InputBorder.none,
-              contentPadding: pad,
+            child: TextField(
+              controller: widget.input,
+              focusNode: widget.inputFocus,
+              onChanged: widget.onInputChanged,
+              onSubmitted: (v) {
+                widget.onInputSubmitted(chipInputBody(v));
+                widget.inputFocus.requestFocus(); // 落一枚接着打下一枚
+              },
+              textInputAction: TextInputAction.done,
+              contextMenuBuilder: (context, state) =>
+                  AdaptiveTextSelectionToolbar.buttonItems(
+                    anchors: state.contextMenuAnchors,
+                    buttonItems: [
+                      for (final item in state.contextMenuButtonItems)
+                        item.type == ContextMenuButtonType.paste
+                            ? ContextMenuButtonItem(
+                                type: item.type,
+                                onPressed: () {
+                                  state.hideToolbar();
+                                  unawaited(_pasteInput());
+                                },
+                              )
+                            : item,
+                    ],
+                  ),
+              style: TextStyle(fontSize: fs, color: scheme.onSurface),
+              cursorColor: scheme.primary,
+              decoration: const InputDecoration(
+                isDense: true,
+                border: InputBorder.none,
+                contentPadding: pad,
+              ),
             ),
           ),
         ],
@@ -463,30 +822,67 @@ class _ChipFlowViewState extends State<ChipFlowView>
     bool translating,
     double band,
   ) {
+    final Key? chipKey = widget.desktopDrag ? null : _chipKeys[i];
+    final VoidCallback? longPress = widget.desktopDrag
+        ? null
+        : () {
+            widget.onChipTap?.call(i);
+            widget.onLongPressChip(i);
+          };
+    final Widget chip;
     if (u.isFold) {
-      return _FoldChip(
-        key: _chipKeys[i],
+      chip = _FoldChip(
+        key: chipKey,
         name: u.fold!.name,
         count: _memberCount(u.fold!),
         fontSize: widget.fontSize,
         selected: sel.contains(i),
         onTap: () => _tapChip(i),
-        onLongPress: () => widget.onLongPressChip(i),
+        onLongPress: longPress,
+      );
+    } else {
+      final tok = u.tok!;
+      chip = _TagChip(
+        key: chipKey,
+        tok: tok,
+        sd: isSdWeightSeg(text.substring(tok.segStart, tok.segEnd)),
+        showTrans: widget.showTrans,
+        translating: translating,
+        pulse: _pulse,
+        fontSize: widget.fontSize,
+        band: band,
+        selected: sel.contains(i),
+        onTap: () => _tapChip(i),
+        onLongPress: longPress,
       );
     }
-    final tok = u.tok!;
-    return _TagChip(
+    if (!widget.desktopDrag) return chip;
+    final moving = _dragIndices?.contains(i) ?? false;
+    return RawGestureDetector(
       key: _chipKeys[i],
-      tok: tok,
-      sd: isSdWeightSeg(text.substring(tok.segStart, tok.segEnd)),
-      showTrans: widget.showTrans,
-      translating: translating,
-      pulse: _pulse,
-      fontSize: widget.fontSize,
-      band: band,
-      selected: sel.contains(i),
-      onTap: () => _tapChip(i),
-      onLongPress: () => widget.onLongPressChip(i),
+      gestures: {
+        PrimaryMouseDragGestureRecognizer:
+            GestureRecognizerFactoryWithHandlers<
+              PrimaryMouseDragGestureRecognizer
+            >(PrimaryMouseDragGestureRecognizer.new, (gesture) {
+              gesture.onStart = (details) =>
+                  _startDrag(i, details.globalPosition);
+              gesture.onUpdate = (details) =>
+                  _updateDrag(details.globalPosition);
+              gesture.onEnd = (_) => _finishDrag(commit: true);
+              gesture.onCancel = cancelDrag;
+            }),
+      },
+      child: MouseRegion(
+        cursor: moving ? SystemMouseCursors.grabbing : SystemMouseCursors.click,
+        child: CustomPaint(
+          key: moving ? ValueKey('desktop-chip-drop-preview-$i') : null,
+          foregroundPainter: moving
+              ? _ChipDropOutline(context.scheme.primary)
+              : null,
+          child: Opacity(opacity: moving ? .35 : 1, child: chip),
+        ),
+      ),
     );
   }
 
@@ -505,6 +901,20 @@ class _ChipFlowViewState extends State<ChipFlowView>
     bool Function(TopUnit u) pendingOf,
     double t,
   ) {
+    if (_dragIndices != null && _dragText == text) {
+      final moving = _dragIndices!.where((i) => i < units.length).toList();
+      final order = [
+        for (var i = 0; i < units.length; i++)
+          if (!moving.contains(i)) i,
+      ];
+      final gap = _dropGap ?? moving.first;
+      final at = order.where((i) => i < gap).length;
+      order.insertAll(at, moving);
+      return [
+        for (final i in order)
+          _chipFor(text, units[i], i, const {}, pendingOf(units[i]), 1),
+      ];
+    }
     final groups = unitGroups(text, units);
     // own=false:这颗的选中态归外面那只框管,高亮和落位半透明都别再来一遍。
     Widget one(int i, double band, {bool own = true}) {
@@ -583,13 +993,68 @@ class _ChipFlowViewState extends State<ChipFlowView>
   }
 }
 
-/// Wrap 里的强制断行:宽度撑满就把后面的孩子挤到下一行去。
-///
-/// [blank] = 原文那儿是**空行**(两个及以上换行),多留一截高度把段落隔开 ——
-/// 不然连着两次断行看着和一次没区别,用户分的段就白分了。
-///
-/// 高度不能给 0:Wrap 的 runSpacing 只作用在行与行之间,零高的行会被上下两条
-/// 缝夹成一道莫名其妙的宽缝。给个小正数,它自己就是那道缝。
+/// Keep the mouse feedback inside the window without intercepting input.
+class _ChipFeedbackLayout extends SingleChildLayoutDelegate {
+  _ChipFeedbackLayout(this.pointer);
+  final Offset pointer;
+
+  @override
+  BoxConstraints getConstraintsForChild(BoxConstraints constraints) =>
+      BoxConstraints(
+        maxWidth: math.min(360, math.max(0, constraints.maxWidth - 16)),
+        maxHeight: math.min(220, math.max(0, constraints.maxHeight - 16)),
+      );
+
+  @override
+  Offset getPositionForChild(Size size, Size childSize) => Offset(
+    (pointer.dx + 14).clamp(
+      8.0,
+      math.max(8.0, size.width - childSize.width - 8),
+    ),
+    (pointer.dy + 14).clamp(
+      8.0,
+      math.max(8.0, size.height - childSize.height - 8),
+    ),
+  );
+
+  @override
+  bool shouldRelayout(_ChipFeedbackLayout oldDelegate) =>
+      oldDelegate.pointer != pointer;
+}
+
+class _ChipDropOutline extends CustomPainter {
+  _ChipDropOutline(this.color);
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final path = Path()
+      ..addRRect(
+        RRect.fromRectAndRadius(
+          (Offset.zero & size).deflate(1),
+          const Radius.circular(8),
+        ),
+      );
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2;
+    for (final metric in path.computeMetrics()) {
+      for (var offset = 0.0; offset < metric.length; offset += 9) {
+        canvas.drawPath(
+          metric.extractPath(offset, math.min(offset + 5, metric.length)),
+          paint,
+        );
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(_ChipDropOutline oldDelegate) =>
+      oldDelegate.color != color;
+}
+
+/// Wrap 里的强制断行，blank 为段间空行。
 class _LineBreak extends StatelessWidget {
   const _LineBreak({this.blank = false});
 
@@ -628,12 +1093,9 @@ class _GroupBand extends StatelessWidget {
     final pal = context.editor;
     final scheme = context.scheme;
     final up = mult > 1;
-    final i = up
-        ? ((mult - 1) / 1.5).clamp(0.0, 1.0)
-        : ((1 - mult) / 0.7).clamp(0.0, 1.0);
+    final i = pal.weightIntensity(mult);
     final line = up ? pal.weightUpBorder : pal.weightDownBorder;
-    // 框比芯片淡:它是底,芯片才是要读的东西。压不下去就成了一块色斑,
-    // 里面那几颗反而看不清。
+    // 组与单标签使用相同强度，不能把组额外淡化。
     final wash = pal.weightWash(mult);
     final pad = fontSize * 0.3;
 
@@ -643,10 +1105,7 @@ class _GroupBand extends StatelessWidget {
             ? scheme.primaryContainer
             : wash == null
             ? null
-            : Color.alphaBlend(
-                wash.withValues(alpha: wash.a * .38),
-                scheme.surface,
-              ),
+            : Color.alphaBlend(wash, scheme.surfaceContainerHigh),
         border: Border.all(
           color: selected
               ? scheme.primary
@@ -672,9 +1131,7 @@ class _GroupBand extends StatelessWidget {
                   fontWeight: FontWeight.w700,
                   color: selected
                       ? scheme.onPrimaryContainer
-                      : up
-                      ? pal.weightUp
-                      : pal.weightDown,
+                      : scheme.onSurface,
                 ),
               ),
             ),
@@ -704,7 +1161,7 @@ class _FoldChip extends StatelessWidget {
   final double fontSize;
   final bool selected;
   final VoidCallback onTap;
-  final VoidCallback onLongPress;
+  final VoidCallback? onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -800,11 +1257,10 @@ class _TagChip extends StatelessWidget {
   final double fontSize;
   final bool selected;
   final VoidCallback onTap;
-  final VoidCallback onLongPress;
+  final VoidCallback? onLongPress;
 
   /// 外面那只 [_GroupBand] 已经替本颗报掉的组倍率(不在组里=1)。
-  /// 底色与读数都按**扣掉它之后**剩下的那点权重算 —— 框说过一遍的事,
-  /// 每颗再说一遍就成了刷屏,而且看不出这几枚是一起被加权的。
+  /// 角标只报告扣掉组倍率后的本标签权重，底色仍按最终有效权重绘制。
   final double band;
 
   /// SD 权重语法 `(tag:1.2)`:tertiary 底提示可转换。
@@ -820,7 +1276,8 @@ class _TagChip extends StatelessWidget {
         : mult < 0.9999
         ? pal.weightDown
         : null;
-    // 权重底色/边框(web getWeightStyle 同款):越偏离 1 越深,禁用不铺色。
+    final effectiveWash = pal.weightWash(tok.effMult);
+    // 标签底色包含所在组的权重，角标仍只报告本标签独有的倍率。
     var chipBg = scheme.surfaceContainerHigh;
     var chipBorder = scheme.outlineVariant;
     if (tok.disabled) {
@@ -835,16 +1292,11 @@ class _TagChip extends StatelessWidget {
         scheme.surfaceContainerHigh,
       );
       chipBorder = scheme.tertiary.withValues(alpha: .55);
-    } else if (weightColor != null && !tok.disabled) {
+    } else if (effectiveWash != null && !tok.disabled) {
       // 与正文色带同源:EditorPalette.weightWash 统一色相与强度曲线
-      final up = mult > 1;
-      final i = up
-          ? ((mult - 1) / 1.5).clamp(0.0, 1.0)
-          : ((1 - mult) / 0.7).clamp(0.0, 1.0);
-      chipBg = Color.alphaBlend(
-        pal.weightWash(mult)!,
-        scheme.surfaceContainerHigh,
-      );
+      final up = tok.effMult > 1;
+      final i = pal.weightIntensity(tok.effMult);
+      chipBg = Color.alphaBlend(effectiveWash, scheme.surfaceContainerHigh);
       chipBorder = (up ? pal.weightUpBorder : pal.weightDownBorder).withValues(
         alpha: .45 + i * .35,
       );

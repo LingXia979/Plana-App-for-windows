@@ -1,6 +1,10 @@
 import 'dart:io';
 
+import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+
+import 'cache_sweep.dart';
+import 'desktop_output_location.dart';
 
 /// 存储管理的目录扫描:各功能位置的占用与条目数。
 /// 纯文件系统视角,不碰业务 provider——扫描不加载任何库。
@@ -21,7 +25,7 @@ class StorageReport {
     required this.otherBytes,
   });
 
-  /// 应用数据总占用(支持目录 + 缓存 + 文档;不含安装包本体)。
+  /// 应用数据总占用(支持目录 + 应用缓存 + 应用作品;不含安装包本体)。
   final int totalBytes;
   final List<StorageCategory> categories;
 
@@ -36,128 +40,193 @@ class StorageReport {
   }
 }
 
-Future<int> _sizeOf(FileSystemEntity ent) async {
-  try {
-    if (ent is File) {
-      return await ent.exists() ? await ent.length() : 0;
-    }
-    if (ent is Directory) {
-      if (!await ent.exists()) return 0;
-      var sum = 0;
-      await for (final e in ent.list(recursive: true, followLinks: false)) {
-        if (e is File) {
-          try {
-            sum += await e.length();
-          } catch (_) {}
-        }
-      }
-      return sum;
-    }
-  } catch (_) {}
-  return 0;
+String _pathKey(String path) {
+  final normalized = p.normalize(p.absolute(path));
+  return Platform.isWindows ? normalized.toLowerCase() : normalized;
 }
 
-Future<int?> _countIn(Directory d, {String? suffix}) async {
-  try {
-    if (!await d.exists()) return 0;
-    var n = 0;
-    await for (final e in d.list(followLinks: false)) {
-      if (suffix == null || e.path.endsWith(suffix)) n++;
+bool _within(String root, String path) =>
+    root == path || p.isWithin(root, path);
+
+/// One snapshot keeps overlapping roots and categories from counting a file
+/// twice. Per-directory traversal retains readable siblings if one child fails.
+class _StorageSnapshot {
+  final files = <String, int>{};
+  final _visited = <String>{};
+  final _entries = <String>{};
+  final _categorized = <String>{};
+
+  Future<void> read(FileSystemEntity root) async {
+    final key = _pathKey(root.path);
+    if (!_visited.add(key)) return;
+    try {
+      // list(followLinks: false) alone does not protect a root that is a link.
+      final type = await FileSystemEntity.type(root.path, followLinks: false);
+      if (type == FileSystemEntityType.file) {
+        files[key] = await File(root.path).length();
+        _entries.add(key);
+      } else if (type == FileSystemEntityType.directory) {
+        _entries.add(key);
+        await for (final child in Directory(
+          root.path,
+        ).list(followLinks: false)) {
+          await read(child);
+        }
+      }
+    } on FileSystemException {
+      // Missing, locked or removed during the scan: keep the rest of the scan.
     }
-    return n;
-  } catch (_) {
-    return null;
+  }
+
+  int count(Directory directory, {String? suffix}) {
+    final root = _pathKey(directory.path);
+    return _entries.where((entry) {
+      if (entry == root) return false;
+      if (p.dirname(entry) != root) {
+        return false;
+      }
+      return suffix == null ||
+          (files.containsKey(entry) && entry.endsWith(suffix));
+    }).length;
+  }
+
+  int countFiles(Iterable<Directory> directories, {required String suffix}) {
+    final roots = directories.map((directory) => _pathKey(directory.path));
+    return files.keys
+        .where(
+          (file) =>
+              file.endsWith(suffix) && roots.any((root) => _within(root, file)),
+        )
+        .length;
+  }
+
+  StorageCategory category(
+    String key,
+    Iterable<FileSystemEntity> roots, {
+    int? count,
+  }) {
+    final paths = roots.map((root) => _pathKey(root.path)).toList();
+    var bytes = 0;
+    for (final file in files.entries) {
+      if (!_categorized.contains(file.key) &&
+          paths.any((root) => _within(root, file.key))) {
+        _categorized.add(file.key);
+        bytes += file.value;
+      }
+    }
+    return StorageCategory(key: key, bytes: bytes, count: count);
   }
 }
 
 /// 全量扫描。key 清单:gallery / blobs / vibeLib / vibeEnc / charLib /
-/// imgCache / codexCache / tagPrev / models / temp。
+/// imgCache / codexCache / tagPrev / models / temp / outputs (Windows)。
 ///
 /// 分类要跟着新目录一起加 —— 漏一个,那块占用就只能沉进 [StorageReport.otherBytes]
 /// 里,用户看着「其他」莫名涨几十 MB 又找不到清理入口(法典缓存单部最大 ~11 MB,
 /// 就这么隐身过一阵)。
-Future<StorageReport> scanStorage() async {
+Future<StorageReport> scanStorage({
+  bool? windows,
+  String? executablePath,
+}) async {
+  final isWindows = windows ?? Platform.isWindows;
   final sup = await getApplicationSupportDirectory();
   final tmp = await getTemporaryDirectory();
+  final tempRoots = await temporaryStorageRoots(tmp, windows: isWindows);
   Directory? docs;
   try {
     docs = await getApplicationDocumentsDirectory();
   } catch (_) {}
 
-  Directory sub(String p) => Directory('${sup.path}/$p');
+  Directory sub(String name) => Directory(p.join(sup.path, name));
+
+  final outputs = <Directory>[];
+  final documentRoots = <Directory>[];
+  if (isWindows) {
+    // Only the works leaf is ours: never scan the executable's installation
+    // directory. Legacy leaves remain counted until migration succeeds.
+    for (final directory in [
+      desktopWorksDirectory(executablePath: executablePath),
+      legacyExecutableWorksDirectory(executablePath: executablePath),
+      ...await readDesktopWorksRoots(sup),
+      sub('outputs'),
+      if (docs != null) legacyDesktopWorksDirectory(docs),
+    ]) {
+      if (!isPlainOutputDirectory(directory)) continue;
+      outputs.add(directory);
+      documentRoots.add(directory);
+    }
+  } else if (docs != null) {
+    // Mobile path_provider documents and temporary roots are app-private.
+    documentRoots.add(docs);
+  }
+
+  final snapshot = _StorageSnapshot();
+  for (final root in <FileSystemEntity>[sup, ...tempRoots, ...documentRoots]) {
+    await snapshot.read(root);
+  }
 
   // 超分模型:支持目录顶层的 .bin/.param。
   // 本地超分已于 2026-08-24 整条下线,这些文件现在是**纯遗留垃圾** —— 但仍然
   // 单独成组、由用户点一下才删:悄悄删掉用户机器上的文件不是我们该做的事。
-  var modelBytes = 0;
-  var modelCount = 0;
-  try {
-    await for (final e in sup.list(followLinks: false)) {
-      if (e is File && (e.path.endsWith('.bin') || e.path.endsWith('.param'))) {
-        try {
-          modelBytes += await e.length();
-          modelCount++;
-        } catch (_) {}
-      }
-    }
-  } catch (_) {}
+  final supportKey = _pathKey(sup.path);
+  final models = snapshot.files.keys
+      .where(
+        (file) =>
+            p.dirname(file) == supportKey &&
+            (file.endsWith('.bin') || file.endsWith('.param')),
+      )
+      .map(File.new)
+      .toList();
+
+  StorageCategory supportCategory(
+    String key,
+    String directory, {
+    String? countDirectory,
+    String? suffix,
+  }) => snapshot.category(key, [
+    sub(directory),
+  ], count: snapshot.count(sub(countDirectory ?? directory), suffix: suffix));
 
   final categories = <StorageCategory>[
-    StorageCategory(
-      key: 'gallery',
-      bytes: await _sizeOf(sub('gallery')),
-      count: await _countIn(
-        Directory('${sup.path}/gallery/images'),
-        suffix: '.png',
+    supportCategory(
+      'gallery',
+      'gallery',
+      countDirectory: 'gallery/images',
+      suffix: '.png',
+    ),
+    supportCategory('blobs', 'blobs'),
+    supportCategory(
+      'vibeLib',
+      'vibe_library',
+      countDirectory: 'vibe_library/files',
+    ),
+    supportCategory('vibeEnc', 'vibe_encodings', suffix: '.enc'),
+    supportCategory(
+      'charLib',
+      'charref_library',
+      countDirectory: 'charref_library/files',
+    ),
+    supportCategory('imgCache', 'img_cache'),
+    supportCategory('codexCache', 'codex_cache', suffix: '.json'),
+    supportCategory('tagPrev', 'tag_previews', suffix: '.jpg'),
+    snapshot.category('models', models, count: models.length),
+    if (isWindows)
+      snapshot.category(
+        'outputs',
+        outputs,
+        count: snapshot.countFiles(outputs, suffix: '.png'),
       ),
-    ),
-    StorageCategory(
-      key: 'blobs',
-      bytes: await _sizeOf(sub('blobs')),
-      count: await _countIn(sub('blobs')),
-    ),
-    StorageCategory(
-      key: 'vibeLib',
-      bytes: await _sizeOf(sub('vibe_library')),
-      count: await _countIn(Directory('${sup.path}/vibe_library/files')),
-    ),
-    StorageCategory(
-      key: 'vibeEnc',
-      bytes: await _sizeOf(sub('vibe_encodings')),
-      count: await _countIn(sub('vibe_encodings'), suffix: '.enc'),
-    ),
-    StorageCategory(
-      key: 'charLib',
-      bytes: await _sizeOf(sub('charref_library')),
-      count: await _countIn(Directory('${sup.path}/charref_library/files')),
-    ),
-    StorageCategory(
-      key: 'imgCache',
-      bytes: await _sizeOf(sub('img_cache')),
-      count: await _countIn(sub('img_cache')),
-    ),
-    StorageCategory(
-      key: 'codexCache',
-      bytes: await _sizeOf(sub('codex_cache')),
-      count: await _countIn(sub('codex_cache'), suffix: '.json'),
-    ),
-    StorageCategory(
-      key: 'tagPrev',
-      bytes: await _sizeOf(sub('tag_previews')),
-      count: await _countIn(sub('tag_previews'), suffix: '.jpg'),
-    ),
-    StorageCategory(key: 'models', bytes: modelBytes, count: modelCount),
-    StorageCategory(
-      key: 'temp',
-      bytes: await _sizeOf(tmp),
-      count: await _countIn(tmp),
+    snapshot.category(
+      'temp',
+      tempRoots,
+      count: tempRoots.fold<int>(
+        0,
+        (sum, root) => sum + (root is Directory ? snapshot.count(root) : 1),
+      ),
     ),
   ];
 
-  final total =
-      await _sizeOf(sup) +
-      await _sizeOf(tmp) +
-      (docs == null ? 0 : await _sizeOf(docs));
+  final total = snapshot.files.values.fold<int>(0, (sum, bytes) => sum + bytes);
   var categorized = 0;
   for (final c in categories) {
     categorized += c.bytes;

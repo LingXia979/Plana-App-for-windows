@@ -63,7 +63,7 @@ class EditorPalette extends ThemeExtension<EditorPalette> {
     artist: Color(0xFFC2569B), // 品红
     weightUp: Color(0xFFC7620E), // 橙
     weightDown: Color(0xFF1B66C9), // 蓝
-    weightUpWash: Color(0xFFC63A10), // 朱红(浅底上显红)
+    weightUpWash: Color(0xFFC62828),
     weightDownWash: Color(0xFF3B82F6), // web 蓝
     weightUpBorder: Color(0xFFFB923C), // web 橙
     weightDownBorder: Color(0xFF60A5FA), // web 浅蓝
@@ -78,7 +78,7 @@ class EditorPalette extends ThemeExtension<EditorPalette> {
     artist: Color(0xFFC2569B),
     weightUp: Color(0xFFFFB74D),
     weightDown: Color(0xFF64B5F6),
-    weightUpWash: Color(0xFFC2410C),
+    weightUpWash: Color(0xFFE14B4B),
     weightDownWash: Color(0xFF3B82F6),
     weightUpBorder: Color(0xFFFB923C),
     weightDownBorder: Color(0xFF60A5FA),
@@ -113,19 +113,22 @@ class EditorPalette extends ThemeExtension<EditorPalette> {
   );
 
   /// 权重底色(强度曲线集中在此,正文色带与排序 chip 共用):
-  /// 加权 (w−1)/1.5、降权 (1−w)/0.7 定强度,越偏离 1 越深;
+  /// 从 1 向两侧渐深:2 为最强红色,-1 为最强蓝色,超出后保持饱和。
   /// 浅色主题下限抬高(加权 .20 起、降权 .12 起),1.05 也看得出色相。
   Color? weightWash(double m) {
     if (m > 1.0001) {
-      final i = ((m - 1) / 1.5).clamp(0.0, 1.0);
+      final i = weightIntensity(m);
       return weightUpWash.withValues(alpha: .20 + i * .50);
     }
     if (m < 0.9999) {
-      final i = ((1 - m) / 0.7).clamp(0.0, 1.0);
+      final i = weightIntensity(m);
       return weightDownWash.withValues(alpha: .12 + i * .45);
     }
     return null;
   }
+
+  double weightIntensity(double m) =>
+      (m >= 1 ? m - 1 : (1 - m) / 2).clamp(0.0, 1.0);
 
   @override
   EditorPalette lerp(EditorPalette? other, double t) {

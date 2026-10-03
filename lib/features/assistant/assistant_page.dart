@@ -15,16 +15,20 @@
 library;
 
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/store/app_stores.dart';
+import '../../core/platform/desktop.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/ui/image_drop.dart';
 import '../../core/util/haptics.dart';
 import '../../core/util/image_pick.dart';
+import '../gallery/gallery_state.dart' show galleryImageProvider;
+import '../gallery/widgets/history_image_picker.dart';
 import '../generate/generate_state.dart' show generateProvider;
 import '../generate/widgets/common.dart'
     show confirmDialog, dropFocusSoon, hintSnack;
@@ -32,6 +36,7 @@ import '../shell/shell_state.dart';
 import 'agent_model.dart';
 import 'assistant_mode.dart';
 import 'assistant_models.dart';
+import 'assistant_images.dart';
 import 'assistant_settings.dart';
 import 'assistant_state.dart';
 import 'preset_rules.dart' show RulesFamily, rulesFamilyOf;
@@ -60,7 +65,8 @@ const _suggests = <({String text, bool canvas})>[
 ];
 
 class AssistantPage extends ConsumerStatefulWidget {
-  const AssistantPage({super.key});
+  const AssistantPage({super.key, this.embedded = false});
+  final bool embedded;
 
   @override
   ConsumerState<AssistantPage> createState() => _AssistantPageState();
@@ -70,7 +76,9 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
   final _input = TextEditingController();
   final _inputFocus = FocusNode();
   final _scroll = ScrollController();
-  PickedImage? _pending;
+  final _pending = <PickedImage>[];
+  bool _sending = false;
+  bool _choosingHistory = false;
 
   /// 这一条要不要把创作页的提示词带上。**纯一次性:每发一次回到关**,和带图一样。
   ///
@@ -79,6 +87,42 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
   /// 和自动导入咬起来 —— 自动写进去的词下一轮又被自动读回来当基底,用户改的和
   /// AI 改的分不清谁覆盖谁。每轮现按一次,AI 看见的就是你此刻想给它看的。
   bool _withCanvas = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _inputFocus.onKeyEvent = (_, event) {
+      if (!ref.read(desktopModeProvider) ||
+          (event.logicalKey != LogicalKeyboardKey.enter &&
+              event.logicalKey != LogicalKeyboardKey.numpadEnter) ||
+          HardwareKeyboard.instance.isAltPressed) {
+        return KeyEventResult.ignored;
+      }
+      // 输入法确认候选的 Enter 不发送，也不插入多余的换行。
+      if (_input.value.composing.isValid &&
+          !_input.value.composing.isCollapsed) {
+        return KeyEventResult.handled;
+      }
+      if (event is KeyDownEvent &&
+          !_sending &&
+          !ref.read(assistantProvider).running) {
+        if (HardwareKeyboard.instance.isShiftPressed) {
+          final value = _input.value;
+          final selection = value.selection;
+          final start = selection.isValid ? selection.start : value.text.length;
+          final end = selection.isValid ? selection.end : value.text.length;
+          _input.value = TextEditingValue(
+            text: value.text.replaceRange(start, end, '\n'),
+            selection: TextSelection.collapsed(offset: start + 1),
+          );
+          setState(() {});
+        } else {
+          _send();
+        }
+      }
+      return KeyEventResult.handled;
+    };
+  }
 
   @override
   void dispose() {
@@ -98,26 +142,86 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
   /// [canvas] 给开场白用:那几句自带「要不要引用创作页」的答案,不必先让用户
   /// 去按一下按钮。其余情况一律看用户勾没勾。
   Future<void> _send({String? preset, bool? canvas}) async {
+    if (_sending || ref.read(assistantProvider).running) return;
     final text = preset ?? _input.text;
-    if (text.trim().isEmpty && _pending == null) return;
-    final img = _pending;
+    if (text.trim().isEmpty && _pending.isEmpty) return;
+    final images = List<PickedImage>.of(_pending);
     final withCanvas = canvas ?? _withCanvas;
-    _input.clear();
-    setState(() {
-      _pending = null;
-      _withCanvas = false; // 一次性:发完就回到关
-    });
-    FocusScope.of(context).unfocus();
+    setState(() => _sending = true);
     _toBottom();
-    await ref
-        .read(assistantProvider.notifier)
-        .send(text, image: img?.bytes, withCanvas: withCanvas);
-    _toBottom();
+    try {
+      await ref
+          .read(assistantProvider.notifier)
+          .send(
+            text,
+            images: [for (final image in images) image.bytes],
+            withCanvas: withCanvas,
+            onAccepted: () {
+              if (!mounted) return;
+              _input.clear();
+              setState(() {
+                _pending.removeWhere(images.contains);
+                _withCanvas = false;
+              });
+              if (!ref.read(desktopModeProvider)) {
+                FocusScope.of(context).unfocus();
+              }
+            },
+          );
+      if (mounted) _toBottom();
+    } finally {
+      if (mounted) setState(() => _sending = false);
+    }
   }
 
   Future<void> _pick() async {
-    final img = await pickImageFile(context);
-    if (img != null && mounted) setState(() => _pending = img);
+    final images = await pickImageFiles(context);
+    _addImages(images);
+  }
+
+  Future<void> _pickHistory() async {
+    if (_choosingHistory || _sending || ref.read(assistantProvider).running) {
+      return;
+    }
+    setState(() => _choosingHistory = true);
+    try {
+      final picked = await showHistoryImagePicker(context, multiple: true);
+      if (!mounted || picked == null || picked.isEmpty) return;
+      if (_pending.length + picked.length > kAssistantMaxAttachments) {
+        hintSnack(context, '每条消息最多添加 $kAssistantMaxAttachments 张图片');
+        return;
+      }
+      final images = <PickedImage>[];
+      for (final item in picked) {
+        final bytes =
+            item.bytes ?? await ref.read(galleryImageProvider(item.id).future);
+        if (!mounted) return;
+        if (bytes == null || bytes.isEmpty) {
+          hintSnack(context, '无法读取选中的历史原图，文件可能已被移动或删除，本次未添加图片');
+          return;
+        }
+        images.add(PickedImage('${item.id}.png', bytes));
+      }
+      // Append only after every original has loaded; keep existing attachments
+      // and let the shared limit check include picks/drops that finished meanwhile.
+      _addImages(images);
+    } catch (_) {
+      if (mounted) hintSnack(context, '读取历史原图失败，本次未添加图片，请重新选择');
+    } finally {
+      if (mounted) setState(() => _choosingHistory = false);
+    }
+  }
+
+  void _addImages(List<PickedImage> images) {
+    // A picker or drop started before Send may finish reading afterwards.
+    // Keep those late attachments for the next message.
+    if (!mounted || images.isEmpty) return;
+    if (_pending.length + images.length > kAssistantMaxAttachments) {
+      hintSnack(context, '每条消息最多添加 $kAssistantMaxAttachments 张图片');
+      return;
+    }
+    setState(() => _pending.addAll(images));
+    if (ref.read(desktopModeProvider)) _inputFocus.requestFocus();
   }
 
   /// 「新对话」。**不弹回执** —— 这个动作本来就没有后果:上一段原样躺在
@@ -155,11 +259,13 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
     );
     _maybeShowIntro();
 
-    return Column(
+    final desktopMain = ref.watch(desktopModeProvider) && !widget.embedded;
+    Widget chat({bool sidebar = false}) => Column(
       children: [
-        _topBar(scheme, st),
+        desktopMain
+            ? _desktopTopBar(scheme, st, sidebar: sidebar)
+            : _topBar(scheme, st),
         Expanded(
-          // 空对话 ↔ 对话列表 ↔ 两种门禁之间淡入淡出,不硬切
           child: AnimatedSwitcher(
             duration: Motion.medium,
             child: !supported
@@ -174,90 +280,219 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
                 : KeyedSubtree(key: const ValueKey('list'), child: _list(st)),
           ),
         ),
-        if (supported && usable) _inputBar(scheme, st),
+        if (desktopMain || (supported && usable))
+          _inputBar(
+            scheme,
+            st,
+            desktopMain: desktopMain,
+            enabled: supported && usable,
+          ),
       ],
     );
-  }
 
-  /// 标题整块可点 = 换模型。
-  ///
-  /// 模型名摆在标题下面而不是收进设置页:同一句话换个渠道结果差得很远,用户得
-  /// **随时看得见**现在是谁在答,不然「今天怎么变笨了」永远查不出来。显示的是
-  /// 完整型号名(`GLM 5.3 Flash`),不是「GLM」—— 简称看不出换没换代。
-  Widget _topBar(ColorScheme scheme, AssistantState st) => Padding(
-    padding: const EdgeInsets.fromLTRB(16, 8, 10, 8),
-    child: Row(
-      children: [
-        Icon(Icons.auto_awesome, size: 21, color: scheme.primary),
-        const SizedBox(width: 10),
-        Expanded(
-          child: InkWell(
-            onTap: () => showModelSheet(context),
-            borderRadius: BorderRadius.circular(10),
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(4, 4, 6, 4),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
+    return ImageDropRegion(
+      key: const ValueKey('assistant-image-drop'),
+      label: '将图片添加到对话框',
+      multiple: true,
+      enabled:
+          ref.watch(desktopModeProvider) &&
+          usable &&
+          supported &&
+          !st.running &&
+          !_sending,
+      onDrop: (images, _) async => _addImages(images),
+      child: CallbackShortcuts(
+        bindings: {
+          const SingleActivator(LogicalKeyboardKey.enter, control: true): () {
+            if (!ref.read(desktopModeProvider) &&
+                usable &&
+                supported &&
+                !st.running) {
+              _send();
+            }
+          },
+        },
+        child: desktopMain
+            ? LayoutBuilder(
+                builder: (context, constraints) {
+                  final sidebar = constraints.maxWidth >= 760;
+                  return Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      Text(
-                        'AI 助手',
-                        style: context.texts.titleLarge!.copyWith(
-                          fontWeight: FontWeight.w700,
+                      if (sidebar) ...[
+                        SizedBox(
+                          key: const ValueKey('assistant-history-sidebar'),
+                          width: constraints.maxWidth >= 1100 ? 248 : 224,
+                          child: AssistantHistoryPanel(
+                            sidebar: true,
+                            onNewChat: _newChat,
+                          ),
                         ),
-                      ),
-                      const SizedBox(width: 6),
-                      const _BetaBadge(),
-                    ],
-                  ),
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Flexible(
-                        child: Text(
-                          // 列表还没到货就先不报名字 —— 报错的名字比不报更糟。
-                          ref.watch(assistantModelProvider)?.name ?? '选择模型',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: context.texts.labelMedium!.copyWith(
-                            color: scheme.onSurfaceVariant,
+                        VerticalDivider(
+                          width: 1,
+                          thickness: 1,
+                          color: scheme.outlineVariant,
+                        ),
+                      ],
+                      Expanded(
+                        child: Center(
+                          child: ConstrainedBox(
+                            constraints: const BoxConstraints(maxWidth: 960),
+                            child: chat(sidebar: sidebar),
                           ),
                         ),
                       ),
-                      const SizedBox(width: 2),
-                      Icon(
-                        Icons.expand_more,
-                        size: 15,
-                        color: scheme.onSurfaceVariant,
-                      ),
                     ],
-                  ),
-                ],
-              ),
+                  );
+                },
+              )
+            : chat(),
+      ),
+    );
+  }
+
+  Widget _historyButton({double size = 20}) => Builder(
+    builder: (anchor) => IconButton(
+      tooltip: '历史会话',
+      onPressed: () => showHistorySheet(anchor),
+      icon: Icon(Icons.history, size: size),
+    ),
+  );
+
+  Widget _desktopTopBar(
+    ColorScheme scheme,
+    AssistantState st, {
+    required bool sidebar,
+  }) => Padding(
+    padding: const EdgeInsets.fromLTRB(18, 8, 10, 8),
+    child: Row(
+      children: [
+        Icon(Icons.auto_awesome, size: 20, color: scheme.primary),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            'AI 助手',
+            style: context.texts.titleMedium!.copyWith(
+              fontWeight: FontWeight.w600,
             ),
           ),
         ),
         IconButton(
           tooltip: '助手设置',
           onPressed: () => showAssistantSettings(context),
-          icon: const Icon(Icons.tune),
+          icon: const Icon(Icons.tune, size: 20),
         ),
-        IconButton(
-          tooltip: '历史会话',
-          onPressed: () => showHistorySheet(context),
-          icon: const Icon(Icons.history),
-        ),
-        IconButton(
-          tooltip: '新对话',
-          onPressed: st.isEmpty ? null : _newChat,
-          icon: const Icon(Icons.edit_square),
-        ),
+        if (!sidebar) ...[
+          _historyButton(),
+          IconButton(
+            tooltip: '新对话',
+            onPressed: st.running ? null : _newChat,
+            icon: const Icon(Icons.edit_square, size: 20),
+          ),
+        ],
       ],
     ),
   );
+
+  /// 标题整块可点 = 换模型。
+  ///
+  /// 模型名摆在标题下面而不是收进设置页:同一句话换个渠道结果差得很远,用户得
+  /// **随时看得见**现在是谁在答,不然「今天怎么变笨了」永远查不出来。显示的是
+  /// 完整型号名(`GLM 5.3 Flash`),不是「GLM」—— 简称看不出换没换代。
+  Widget _topBar(ColorScheme scheme, AssistantState st) => widget.embedded
+      ? Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          child: Row(
+            children: [
+              Expanded(child: const AssistantModelDropdown()),
+              IconButton(
+                tooltip: '助手设置',
+                onPressed: () => showAssistantSettings(context),
+                icon: const Icon(Icons.tune, size: 18),
+              ),
+              _historyButton(size: 18),
+              IconButton(
+                tooltip: '新对话',
+                onPressed: st.running ? null : _newChat,
+                icon: const Icon(Icons.edit_square, size: 18),
+              ),
+            ],
+          ),
+        )
+      : Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 10, 8),
+          child: Row(
+            children: [
+              Icon(Icons.auto_awesome, size: 21, color: scheme.primary),
+              const SizedBox(width: 10),
+              Expanded(
+                child: ref.watch(desktopModeProvider)
+                    ? const AssistantModelDropdown()
+                    : InkWell(
+                        onTap: () => showModelSheet(context),
+                        borderRadius: BorderRadius.circular(10),
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(4, 4, 6, 4),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    'AI 助手',
+                                    style: context.texts.titleLarge!.copyWith(
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  const _BetaBadge(),
+                                ],
+                              ),
+                              Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      // 列表还没到货就先不报名字 —— 报错的名字比不报更糟。
+                                      ref.watch(assistantModelProvider)?.name ??
+                                          '选择模型',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: context.texts.labelMedium!
+                                          .copyWith(
+                                            color: scheme.onSurfaceVariant,
+                                          ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 2),
+                                  Icon(
+                                    Icons.expand_more,
+                                    size: 15,
+                                    color: scheme.onSurfaceVariant,
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+              ),
+              IconButton(
+                tooltip: '助手设置',
+                onPressed: () => showAssistantSettings(context),
+                icon: const Icon(Icons.tune),
+              ),
+              _historyButton(),
+              IconButton(
+                tooltip: '新对话',
+                onPressed: st.isEmpty ? null : _newChat,
+                icon: const Icon(Icons.edit_square),
+              ),
+            ],
+          ),
+        );
 
   /// 空对话:不写产品介绍,四句能点的开场铺在输入框上方,第一句就是最常用的诉求。
   Widget _empty(ColorScheme scheme) => Align(
@@ -388,8 +623,12 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
             msg: m,
             prev: m.draw == null ? null : prevProposal(st.msgs, m.id),
             live: m.id == liveId,
+            inlineDetails: ref.watch(desktopModeProvider) && !widget.embedded,
             fontSize: fontSize,
             onLongPress: () => _menu(m),
+            onMenu: ref.watch(desktopModeProvider)
+                ? (position) => _menu(m, position: position)
+                : null,
             onRetry: retryable ? () => _retryFrom(ask!.id) : null,
             handoffSecs: handoff,
           ),
@@ -398,65 +637,90 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
     );
   }
 
-  /// 长按菜单。原生能力红利:长按是一等公民,不做「先选中再点按钮」那套。
-  ///
-  ///   用户的话:复制内容 / 编辑该消息 / 从这里重新生成
-  ///   AI 回复:复制内容 / 重新生成(重发它回的那一句)
-  Future<void> _menu(AssistantMsg m) async {
+  /// 桌面右键/按钮与手机长按共用同一组消息操作。
+  Future<void> _menu(AssistantMsg m, {Offset? position}) async {
     if (m.role == MsgRole.error) return;
-    Haptics.medium();
+    final desktop = ref.read(desktopModeProvider);
+    if (!desktop) Haptics.medium();
     final n = ref.read(assistantProvider.notifier);
     final isUser = m.role == MsgRole.user;
-    final action = await showModalBottomSheet<String>(
-      context: context,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.copy_outlined),
-              title: const Text('复制内容'),
-              onTap: () => Navigator.pop(context, 'copy'),
+    final running = ref.read(assistantProvider).running;
+    final ask = isUser ? m : n.askOf(m.id);
+    final choices = [
+      ('copy', '复制内容', Icons.copy_outlined, true),
+      ('edit', '编辑该信息', Icons.edit_outlined, !running),
+      ('retry', '从这里重新生成', Icons.refresh, !running && ask != null),
+    ];
+    final overlay =
+        Overlay.of(context).context.findRenderObject()! as RenderBox;
+    final point = position == null
+        ? overlay.size.center(Offset.zero)
+        : overlay.globalToLocal(position);
+    final action = desktop
+        ? await showMenu<String>(
+            context: context,
+            position: RelativeRect.fromSize(
+              Rect.fromLTWH(point.dx, point.dy, 0, 0),
+              overlay.size,
             ),
-            if (isUser)
-              ListTile(
-                leading: const Icon(Icons.edit_outlined),
-                title: const Text('编辑该消息'),
-                onTap: () => Navigator.pop(context, 'edit'),
+            items: [
+              for (final choice in choices)
+                PopupMenuItem(
+                  value: choice.$1,
+                  enabled: choice.$4,
+                  child: Row(
+                    children: [
+                      Icon(choice.$3, size: 20),
+                      const SizedBox(width: 12),
+                      Text(choice.$2),
+                    ],
+                  ),
+                ),
+            ],
+          )
+        : await showModalBottomSheet<String>(
+            context: context,
+            builder: (context) => SafeArea(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (final choice in choices)
+                    ListTile(
+                      leading: Icon(choice.$3),
+                      title: Text(choice.$2),
+                      enabled: choice.$4,
+                      onTap: choice.$4
+                          ? () => Navigator.pop(context, choice.$1)
+                          : null,
+                    ),
+                ],
               ),
-            ListTile(
-              leading: const Icon(Icons.refresh),
-              title: Text(isUser ? '从这里重新生成' : '重新生成'),
-              onTap: () => Navigator.pop(context, 'retry'),
             ),
-          ],
-        ),
-      ),
-    );
+          );
     // 长按之前输入框有过焦点的话,弹层一关 Flutter 会把焦点还给它、把键盘顶出来 ——
     // 用户只是来点个菜单。只有「编辑」是真要打字,那一条下面自己要焦点。
-    if (action != 'edit') dropFocusSoon();
+    if (!desktop && action != 'edit') dropFocusSoon();
     if (action == null || !mounted) return;
-    final ask = isUser ? m : n.askOf(m.id);
+    // 菜单展开期间也可能从另一个入口启动生成。
+    if (action != 'copy' && ref.read(assistantProvider).running) return;
     switch (action) {
       case 'copy':
-        await copyText(context, m.text);
+        await copyText(context, replayText(m));
       case 'edit':
-        if (!await _confirmDropLater(m)) {
-          dropFocusSoon(); // 不改了:同样别让焦点还回输入框
-          return;
+        final edited = await showDialog<String>(
+          context: context,
+          builder: (_) => _MessageEditDialog(
+            message: m,
+            replacesLater: isUser && n.hasLaterAsks(m.id),
+          ),
+        );
+        if (!desktop) dropFocusSoon();
+        if (!mounted || edited == null) return;
+        if (isUser) {
+          await _retryFrom(m.id, text: edited);
+        } else {
+          n.editReply(m.id, edited);
         }
-        final t = n.truncateFrom(m.id);
-        if (t == null) return;
-        _input.text = t;
-        _input.selection = TextSelection.collapsed(offset: t.length);
-        // 长按的那条多半在上面,改完要发的地方在最下面
-        _toBottom();
-        // 放到下一帧再要焦点:菜单关掉的这一帧里,InputFocusGuard 会把「又回到输入框」
-        // 的焦点放掉,当帧要的会被它一起放掉
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) _inputFocus.requestFocus();
-        });
       case 'retry':
         if (ask == null || !await _confirmDropLater(ask)) return;
         await _retryFrom(ask.id);
@@ -465,10 +729,10 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
 
   /// 从某一句提问重来。和 [_send] 一样先回到底部:重来的那一轮出在最下面,
   /// 而长按菜单多半是停在上面某条消息上点的。
-  Future<void> _retryFrom(String askId) async {
+  Future<void> _retryFrom(String askId, {String? text}) async {
     _toBottom();
-    await ref.read(assistantProvider.notifier).retryFrom(askId);
-    _toBottom();
+    await ref.read(assistantProvider.notifier).retryFrom(askId, text: text);
+    if (mounted) _toBottom();
   }
 
   /// 从 [ask] 这一句重来之前:后面还有别的轮就先问一句,那几轮会一起丢掉。
@@ -583,35 +847,40 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
     required bool Function(AssistantMode) usable,
   }) {
     final on = shown != AssistantMode.normal;
-    return FilterChip(
-      // 「无」不算开着:那一档什么都不加
-      selected: on,
-      showCheckmark: false,
-      visualDensity: VisualDensity.compact,
-      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-      avatar: Icon(
-        // 关着用 layers,别用 tune —— 顶栏「助手设置」已经是 tune 了
-        on ? assistantModeIcon(shown, on: true) : Icons.layers_outlined,
-        size: 16,
+    return Builder(
+      builder: (anchor) => FilterChip(
+        // 「无」不算开着:那一档什么都不加
+        selected: on,
+        showCheckmark: false,
+        visualDensity: VisualDensity.compact,
+        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        avatar: Icon(
+          // 关着用 layers,别用 tune —— 顶栏「助手设置」已经是 tune 了
+          on ? assistantModeIcon(shown, on: true) : Icons.layers_outlined,
+          size: 16,
+        ),
+        // 开着就只写模式名;关着写「模式」,「模式 无」读着别扭
+        label: Text(on ? assistantModeLabel(shown) : '模式'),
+        onSelected: running
+            ? null
+            : (_) => _pickMode(anchor, family, shown, usable),
       ),
-      // 开着就只写模式名;关着写「模式」,「模式 无」读着别扭
-      label: Text(on ? assistantModeLabel(shown) : '模式'),
-      onSelected: running ? null : (_) => _pickMode(family, shown, usable),
     );
   }
 
   Future<void> _pickMode(
+    BuildContext anchor,
     RulesFamily family,
     AssistantMode shown,
     bool Function(AssistantMode) usable,
   ) async {
-    final picked = await showModeSheet(context, current: shown);
+    final picked = await showModeSheet(anchor, current: shown);
     if (picked == null || !mounted) return;
     if (!usable(picked)) {
       // 手上那份默认规则可能是旧的:后端改了预设、重启过,app 还拿着之前取的那份。
       // 说「不支持」之前先向服务端要一份最新的,真没有才说
       final latest = await refreshAssistantModes(ref, family);
-      if (!mounted) return;
+      if (!mounted || latest == null) return;
       if (!latest.contains(picked)) {
         hintSnack(
           context,
@@ -649,10 +918,17 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
     );
   }
 
-  Widget _inputBar(ColorScheme scheme, AssistantState st) {
-    final running = st.running;
+  Widget _inputBar(
+    ColorScheme scheme,
+    AssistantState st, {
+    bool desktopMain = false,
+    bool enabled = true,
+  }) {
+    final running = st.running || _sending;
     final canSend =
-        !running && (_input.text.trim().isNotEmpty || _pending != null);
+        enabled &&
+        !running &&
+        (_input.text.trim().isNotEmpty || _pending.isNotEmpty);
     final g = ref.watch(generateProvider);
     final hasCanvas = canvasHasContent(g);
     // 画布清空了(比如去创作页按了重置)就把勾一起撤掉,不留一个带不出东西的勾。
@@ -661,6 +937,77 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
         if (mounted && _withCanvas) setState(() => _withCanvas = false);
       });
     }
+    final attachment = IconButton(
+      tooltip: '添加图片（可多选）',
+      onPressed: !enabled || running ? null : _pick,
+      icon: Icon(
+        Icons.image_outlined,
+        color: _pending.isNotEmpty ? scheme.primary : null,
+      ),
+    );
+    final historyAttachment = IconButton(
+      key: const ValueKey('assistant-history-images'),
+      tooltip: '从历史选择',
+      onPressed: !enabled || running || _choosingHistory ? null : _pickHistory,
+      icon: const Icon(Icons.photo_library_outlined),
+    );
+    final input = TextField(
+      controller: _input,
+      focusNode: _inputFocus,
+      enabled: enabled && !running,
+      minLines: 1,
+      maxLines: 5,
+      textInputAction: TextInputAction.newline,
+      onChanged: (_) => setState(() {}),
+      decoration: InputDecoration(
+        isDense: true,
+        hintText: st.running
+            ? '正在想…'
+            : _sending
+            ? '正在准备图片…'
+            : '想画什么、想改哪里…',
+        filled: !desktopMain,
+        fillColor: running
+            ? scheme.surfaceContainer
+            : scheme.surfaceContainerLowest,
+        contentPadding: EdgeInsets.fromLTRB(16, desktopMain ? 16 : 12, 16, 12),
+        border: desktopMain
+            ? InputBorder.none
+            : OutlineInputBorder(
+                borderRadius: BorderRadius.circular(22),
+                borderSide: BorderSide.none,
+              ),
+        enabledBorder: desktopMain ? InputBorder.none : null,
+        focusedBorder: desktopMain ? InputBorder.none : null,
+        disabledBorder: desktopMain ? InputBorder.none : null,
+      ),
+    );
+    // 跑起来之后发送键换成停止，一轮只发送一条消息。
+    final send = SizedBox(
+      width: 44,
+      height: 44,
+      child: st.running
+          ? IconButton.filledTonal(
+              tooltip: '停止',
+              onPressed: ref.read(assistantProvider.notifier).stop,
+              icon: const Icon(Icons.stop, size: 20),
+            )
+          : _sending
+          ? const Center(
+              child: SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            )
+          : IconButton.filled(
+              tooltip: ref.watch(desktopModeProvider)
+                  ? '发送 (Enter) · Shift + Enter 换行'
+                  : '发送',
+              onPressed: canSend ? () => _send() : null,
+              icon: const Icon(Icons.arrow_upward, size: 20),
+            ),
+    );
     return Padding(
       // 键盘避让交给 Scaffold(resizeToAvoidBottomInset 默认开):它已经把 body
       // 的 viewInsets.bottom 抹成 0 了,这里再加一次等于抬两倍高。
@@ -668,74 +1015,102 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (_pending != null)
+          if (_pending.isNotEmpty)
             Padding(
-              padding: const EdgeInsets.only(left: 53, bottom: 9),
-              child: _Thumb(
-                bytes: _pending!.bytes,
-                onRemove: () => setState(() => _pending = null),
-              ),
-            ),
-          _optionRow(running, hasCanvas),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              IconButton(
-                tooltip: '带一张图',
-                onPressed: running ? null : _pick,
-                icon: Icon(
-                  Icons.image_outlined,
-                  color: _pending != null ? scheme.primary : null,
-                ),
-              ),
-              const SizedBox(width: 1),
-              Expanded(
-                child: TextField(
-                  controller: _input,
-                  focusNode: _inputFocus,
-                  enabled: !running,
-                  minLines: 1,
-                  maxLines: 5,
-                  textInputAction: TextInputAction.newline,
-                  onChanged: (_) => setState(() {}),
-                  decoration: InputDecoration(
-                    isDense: true,
-                    hintText: running ? '正在想…' : '想画什么、想改哪里…',
-                    filled: true,
-                    fillColor: running
-                        ? scheme.surfaceContainer
-                        : scheme.surfaceContainerLowest,
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 12,
-                    ),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(22),
-                      borderSide: BorderSide.none,
+              padding: const EdgeInsets.only(bottom: 9),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '已添加 ${_pending.length} 张图片',
+                    style: context.texts.labelMedium,
+                  ),
+                  SizedBox(
+                    key: const ValueKey('assistant-pending-images'),
+                    height: 86,
+                    child: ListView.separated(
+                      scrollDirection: Axis.horizontal,
+                      padding: const EdgeInsets.only(top: 8, left: 4, right: 8),
+                      itemCount: _pending.length,
+                      separatorBuilder: (_, _) => const SizedBox(width: 8),
+                      itemBuilder: (_, index) {
+                        final image = _pending[index];
+                        return _Thumb(
+                          key: ObjectKey(image),
+                          bytes: image.bytes,
+                          label: '图片 ${index + 1}：${image.name}',
+                          onRemove: running
+                              ? null
+                              : () => setState(() => _pending.remove(image)),
+                        );
+                      },
                     ),
                   ),
+                  if (_pending.length > 1 &&
+                      ref.watch(assistantEndpointProvider) == null)
+                    Text(
+                      '多张图片会合并为参考图发送',
+                      style: context.texts.labelSmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          if (enabled) _optionRow(running, hasCanvas),
+          if (desktopMain)
+            Material(
+              key: const ValueKey('assistant-composer'),
+              color: scheme.surfaceContainerLowest,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(24),
+                side: BorderSide(
+                  color: scheme.outlineVariant.withValues(alpha: .5),
                 ),
               ),
-              const SizedBox(width: 8),
-              // 跑起来之后发送键换成停止 —— 不排队第二句:一轮 20~40 秒,
-              // 攒着发只会让人搞不清哪句对应哪个结果。
-              SizedBox(
-                width: 44,
-                height: 44,
-                child: running
-                    ? IconButton.filledTonal(
-                        tooltip: '停止',
-                        onPressed: ref.read(assistantProvider.notifier).stop,
-                        icon: const Icon(Icons.stop, size: 20),
-                      )
-                    : IconButton.filled(
-                        tooltip: '发送',
-                        onPressed: canSend ? () => _send() : null,
-                        icon: const Icon(Icons.arrow_upward, size: 20),
-                      ),
+              clipBehavior: Clip.antiAlias,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  input,
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+                    child: Row(
+                      children: [
+                        attachment,
+                        historyAttachment,
+                        Expanded(
+                          child: Align(
+                            alignment: Alignment.centerRight,
+                            child: ConstrainedBox(
+                              key: const ValueKey('assistant-composer-model'),
+                              constraints: const BoxConstraints(maxWidth: 240),
+                              child: const AssistantModelDropdown(
+                                compact: true,
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        send,
+                      ],
+                    ),
+                  ),
+                ],
               ),
-            ],
-          ),
+            )
+          else
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                attachment,
+                historyAttachment,
+                const SizedBox(width: 1),
+                Expanded(child: input),
+                const SizedBox(width: 8),
+                send,
+              ],
+            ),
         ],
       ),
     );
@@ -887,6 +1262,84 @@ class _Gate extends ConsumerWidget {
   }
 }
 
+class _MessageEditDialog extends StatefulWidget {
+  const _MessageEditDialog({
+    required this.message,
+    required this.replacesLater,
+  });
+
+  final AssistantMsg message;
+  final bool replacesLater;
+
+  @override
+  State<_MessageEditDialog> createState() => _MessageEditDialogState();
+}
+
+class _MessageEditDialogState extends State<_MessageEditDialog> {
+  late final _text = TextEditingController(text: widget.message.text);
+
+  @override
+  void dispose() {
+    _text.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isUser = widget.message.role == MsgRole.user;
+    return AlertDialog(
+      title: const Text('编辑该信息'),
+      content: SizedBox(
+        width: 560,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                isUser
+                    ? widget.replacesLater
+                          ? '保存后会从这条提问重新回答，并替换之后的对话。已导入创作页的内容保留。'
+                          : '保存后会从这条提问重新回答。'
+                    : '保存回复正文，之后续聊会使用修改后的内容。',
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                key: const ValueKey('assistant-message-editor'),
+                controller: _text,
+                autofocus: true,
+                minLines: 3,
+                maxLines: 10,
+                decoration: InputDecoration(
+                  labelText: isUser ? '提问内容' : '回复正文',
+                  border: const OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
+        ValueListenableBuilder<TextEditingValue>(
+          valueListenable: _text,
+          builder: (context, value, _) => FilledButton(
+            onPressed:
+                value.text.trim().isEmpty &&
+                    (!isUser || widget.message.imageHashes.isEmpty)
+                ? null
+                : () => Navigator.pop(context, _text.text),
+            child: Text(isUser ? '保存并重新回答' : '保存'),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 class _MsgTile extends ConsumerWidget {
   const _MsgTile({
     required this.msg,
@@ -894,7 +1347,9 @@ class _MsgTile extends ConsumerWidget {
     required this.fontSize,
     this.prev,
     this.live = false,
+    this.inlineDetails = false,
     this.onRetry,
+    this.onMenu,
     this.handoffSecs,
   });
 
@@ -903,12 +1358,14 @@ class _MsgTile extends ConsumerWidget {
   /// 上一份提议 —— 结果条拿它当差异基线。
   final DrawProposal? prev;
   final VoidCallback onLongPress;
+  final ValueChanged<Offset>? onMenu;
 
   /// 报错上那颗「重试」。null = 不给(见 `_list` 里的条件)。
   final VoidCallback? onRetry;
 
   /// 这是不是**最后一份提议**。是就在气泡里、结果条下面带一排处置按钮。
   final bool live;
+  final bool inlineDetails;
 
   /// 消息正文的字号(助手设置里调)。
   final double fontSize;
@@ -922,88 +1379,131 @@ class _MsgTile extends ConsumerWidget {
     final scheme = context.scheme;
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
-      child: switch (msg.role) {
-        MsgRole.user => _user(context, ref, scheme),
-        MsgRole.ai => _ai(context, scheme),
-        MsgRole.error => _error(context, scheme),
-      },
+      child: Column(
+        crossAxisAlignment: msg.role == MsgRole.user
+            ? CrossAxisAlignment.end
+            : CrossAxisAlignment.start,
+        children: [
+          GestureDetector(
+            key: ValueKey('assistant-message-${msg.id}'),
+            behavior: HitTestBehavior.translucent,
+            onSecondaryTapDown: onMenu == null || msg.role == MsgRole.error
+                ? null
+                : (details) => onMenu!(details.globalPosition),
+            child: switch (msg.role) {
+              MsgRole.user => _user(context, ref, scheme),
+              MsgRole.ai => _ai(context, scheme),
+              MsgRole.error => _error(context, scheme),
+            },
+          ),
+          if (onMenu != null && msg.role != MsgRole.error)
+            Builder(
+              builder: (buttonContext) => IconButton(
+                key: ValueKey('assistant-message-menu-${msg.id}'),
+                tooltip: '消息操作',
+                visualDensity: VisualDensity.compact,
+                constraints: const BoxConstraints(minWidth: 32, minHeight: 28),
+                padding: const EdgeInsets.symmetric(horizontal: 6),
+                icon: const Icon(Icons.more_horiz, size: 18),
+                onPressed: () {
+                  final box = buttonContext.findRenderObject()! as RenderBox;
+                  onMenu!(box.localToGlobal(Offset(0, box.size.height)));
+                },
+              ),
+            ),
+        ],
+      ),
     );
   }
 
-  Widget _user(
-    BuildContext context,
-    WidgetRef ref,
-    ColorScheme scheme,
-  ) => Column(
-    crossAxisAlignment: CrossAxisAlignment.end,
-    children: [
-      if (msg.imageHash != null)
-        Padding(
-          padding: const EdgeInsets.only(bottom: 6),
-          child: FutureBuilder(
-            future: ref.read(appStoresProvider).assistant.image(msg.imageHash),
-            builder: (context, snap) => snap.data == null
-                ? const SizedBox.shrink()
-                : ClipRRect(
-                    borderRadius: BorderRadius.circular(12),
-                    child: Image.memory(
-                      snap.data!,
-                      width: 96,
-                      height: 96,
-                      fit: BoxFit.cover,
+  Widget _user(BuildContext context, WidgetRef ref, ColorScheme scheme) =>
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          if (msg.imageHashes.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Wrap(
+                alignment: WrapAlignment.end,
+                spacing: 6,
+                runSpacing: 6,
+                children: [
+                  for (var index = 0; index < msg.imageHashes.length; index++)
+                    FutureBuilder(
+                      key: ValueKey('assistant-message-image-${msg.id}-$index'),
+                      future: ref
+                          .read(appStoresProvider)
+                          .assistant
+                          .image(msg.imageHashes[index]),
+                      builder: (context, snap) => snap.data == null
+                          ? const SizedBox(width: 96, height: 96)
+                          : ClipRRect(
+                              borderRadius: BorderRadius.circular(12),
+                              child: Image.memory(
+                                snap.data!,
+                                width: 96,
+                                height: 96,
+                                cacheWidth: 192,
+                                fit: BoxFit.cover,
+                              ),
+                            ),
+                    ),
+                ],
+              ),
+            ),
+          if (msg.text.isNotEmpty)
+            GestureDetector(
+              onLongPress: onLongPress,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxWidth: MediaQuery.sizeOf(context).width * .8,
+                ),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 10,
+                  ),
+                  decoration: BoxDecoration(
+                    color: scheme.secondaryContainer,
+                    borderRadius: const BorderRadius.only(
+                      topLeft: Radius.circular(16),
+                      topRight: Radius.circular(16),
+                      bottomLeft: Radius.circular(16),
+                      bottomRight: Radius.circular(4),
                     ),
                   ),
-          ),
-        ),
-      GestureDetector(
-        onLongPress: onLongPress,
-        child: ConstrainedBox(
-          constraints: BoxConstraints(
-            maxWidth: MediaQuery.sizeOf(context).width * .8,
-          ),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            decoration: BoxDecoration(
-              color: scheme.secondaryContainer,
-              borderRadius: const BorderRadius.only(
-                topLeft: Radius.circular(16),
-                topRight: Radius.circular(16),
-                bottomLeft: Radius.circular(16),
-                bottomRight: Radius.circular(4),
-              ),
-            ),
-            child: Text(
-              msg.text,
-              style: context.texts.bodyMedium!.copyWith(
-                color: scheme.onSecondaryContainer,
-                fontSize: fontSize,
-                height: 1.5,
-              ),
-            ),
-          ),
-        ),
-      ),
-      // 这一轮 AI 看没看见画布,事后光读回复分不出来 —— 留个记号,
-      // 「它怎么没按我的词改」才有答案。
-      if (msg.withCanvas)
-        Padding(
-          padding: const EdgeInsets.only(top: 4, right: 2),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.draw_outlined, size: 12, color: scheme.outline),
-              const SizedBox(width: 4),
-              Text(
-                '引用了创作页',
-                style: context.texts.labelSmall!.copyWith(
-                  color: scheme.outline,
+                  child: Text(
+                    msg.text,
+                    style: context.texts.bodyMedium!.copyWith(
+                      color: scheme.onSecondaryContainer,
+                      fontSize: fontSize,
+                      height: 1.5,
+                    ),
+                  ),
                 ),
               ),
-            ],
-          ),
-        ),
-    ],
-  );
+            ),
+          // 这一轮 AI 看没看见画布,事后光读回复分不出来 —— 留个记号,
+          // 「它怎么没按我的词改」才有答案。
+          if (msg.withCanvas)
+            Padding(
+              padding: const EdgeInsets.only(top: 4, right: 2),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.draw_outlined, size: 12, color: scheme.outline),
+                  const SizedBox(width: 4),
+                  Text(
+                    '引用了创作页',
+                    style: context.texts.labelSmall!.copyWith(
+                      color: scheme.outline,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      );
 
   /// AI 那一轮。给了画面的,回复和结果合成一个气泡,底部压一条 [ResultStrip] ——
   /// 每一份都长这样,不给最后一份单独摊一张卡:新一轮一来它就得收起来,同一个东西
@@ -1065,10 +1565,20 @@ class _MsgTile extends ConsumerWidget {
                     if (handoffSecs != null)
                       _Handoff(
                         open: true,
-                        child: ResultStrip(msg: msg, prev: prev),
+                        child: ResultStrip(
+                          msg: msg,
+                          prev: prev,
+                          inlineDetails: inlineDetails,
+                          showInlineActions: !live,
+                        ),
                       )
                     else
-                      ResultStrip(msg: msg, prev: prev),
+                      ResultStrip(
+                        msg: msg,
+                        prev: prev,
+                        inlineDetails: inlineDetails,
+                        showInlineActions: !live,
+                      ),
                     // 不再是最后一份时这一排收起来,不一下子抽掉。没按钮时也留着这层
                     // (零高),否则收起来没有动画可播。
                     AnimatedSize(
@@ -1526,10 +2036,16 @@ class _HandoffState extends State<_Handoff> {
 }
 
 class _Thumb extends StatelessWidget {
-  const _Thumb({required this.bytes, required this.onRemove});
+  const _Thumb({
+    super.key,
+    required this.bytes,
+    required this.onRemove,
+    required this.label,
+  });
 
   final Uint8List bytes;
-  final VoidCallback onRemove;
+  final VoidCallback? onRemove;
+  final String label;
 
   @override
   Widget build(BuildContext context) => SizedBox(
@@ -1540,23 +2056,33 @@ class _Thumb extends StatelessWidget {
       children: [
         ClipRRect(
           borderRadius: BorderRadius.circular(12),
-          child: Image.memory(bytes, width: 64, height: 64, fit: BoxFit.cover),
+          child: Image.memory(
+            bytes,
+            width: 64,
+            height: 64,
+            cacheWidth: 128,
+            fit: BoxFit.cover,
+            semanticLabel: label,
+          ),
         ),
         Positioned(
           right: 0,
           top: -4,
-          child: Material(
-            color: context.scheme.inverseSurface,
-            shape: const CircleBorder(),
-            clipBehavior: Clip.antiAlias,
-            child: InkWell(
-              onTap: onRemove,
-              child: Padding(
-                padding: const EdgeInsets.all(4),
-                child: Icon(
-                  Icons.close,
-                  size: 14,
-                  color: context.scheme.onInverseSurface,
+          child: Tooltip(
+            message: '移除$label',
+            child: Material(
+              color: context.scheme.inverseSurface,
+              shape: const CircleBorder(),
+              clipBehavior: Clip.antiAlias,
+              child: InkWell(
+                onTap: onRemove,
+                child: Padding(
+                  padding: const EdgeInsets.all(4),
+                  child: Icon(
+                    Icons.close,
+                    size: 14,
+                    color: context.scheme.onInverseSurface,
+                  ),
                 ),
               ),
             ),

@@ -12,6 +12,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/platform/desktop.dart';
 import '../../../core/ui/setting_row.dart';
 import '../../generate/widgets/common.dart' show dropFocusSoon, hintSnack;
 import '../agent_model.dart' show assistantBotAuthorizedProvider;
@@ -21,6 +22,31 @@ import '../preset_rules.dart';
 import '../rules_page.dart';
 
 Future<void> showAssistantSettings(BuildContext context) async {
+  if (ProviderScope.containerOf(
+    context,
+    listen: false,
+  ).read(desktopModeProvider)) {
+    await showGeneralDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: '关闭助手设置',
+      barrierColor: Colors.black.withValues(alpha: .12),
+      transitionDuration: const Duration(milliseconds: 180),
+      pageBuilder: (_, _, _) => const _DesktopSettingsPanel(),
+      transitionBuilder: (_, animation, _, child) => FadeTransition(
+        opacity: animation,
+        child: SlideTransition(
+          position: Tween(begin: const Offset(.08, 0), end: Offset.zero)
+              .animate(
+                CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
+              ),
+          child: child,
+        ),
+      ),
+    );
+    dropFocusSoon();
+    return;
+  }
   await showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
@@ -32,6 +58,391 @@ Future<void> showAssistantSettings(BuildContext context) async {
     builder: (_) => const _SettingsSheet(),
   );
   dropFocusSoon();
+}
+
+class _DesktopSettingsPanel extends ConsumerWidget {
+  const _DesktopSettingsPanel();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final s = ref.watch(assistantSettingsProvider).value;
+    final n = ref.read(assistantSettingsProvider.notifier);
+    final authorized = ref.watch(assistantBotAuthorizedProvider);
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    Widget section(String title, List<Widget> rows) => Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(4, 0, 4, 8),
+            child: Text(
+              title,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+          Material(
+            color: scheme.surfaceContainerLow,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+              side: BorderSide(
+                color: scheme.outlineVariant.withValues(alpha: .65),
+              ),
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: Column(
+              children: [
+                for (var i = 0; i < rows.length; i++) ...[
+                  if (i > 0)
+                    Divider(
+                      height: 1,
+                      indent: 16,
+                      endIndent: 16,
+                      color: scheme.outlineVariant.withValues(alpha: .45),
+                    ),
+                  rows[i],
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+    Widget page(List<Widget> children) => SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(16, 20, 16, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: children,
+      ),
+    );
+
+    return SafeArea(
+      child: Align(
+        alignment: Alignment.centerRight,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: SizedBox(
+            key: const ValueKey('desktop-assistant-settings'),
+            width: 440,
+            height: 620,
+            child: Theme(
+              data: theme.copyWith(
+                textTheme: theme.textTheme.copyWith(
+                  bodyLarge: theme.textTheme.bodyLarge?.copyWith(fontSize: 13),
+                  labelLarge: theme.textTheme.labelLarge?.copyWith(
+                    fontSize: 12,
+                  ),
+                  labelSmall: theme.textTheme.labelSmall?.copyWith(
+                    fontSize: 11,
+                    height: 1.5,
+                  ),
+                ),
+                visualDensity: VisualDensity.compact,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              child: Material(
+                color: scheme.surface,
+                elevation: 10,
+                shadowColor: Colors.black26,
+                borderRadius: BorderRadius.circular(20),
+                clipBehavior: Clip.antiAlias,
+                child: DefaultTabController(
+                  length: 3,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(20, 16, 12, 12),
+                        child: Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(9),
+                              decoration: BoxDecoration(
+                                color: scheme.primaryContainer,
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Icon(
+                                Icons.tune,
+                                color: scheme.onPrimaryContainer,
+                                size: 20,
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            const Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    '助手设置',
+                                    style: TextStyle(
+                                      fontSize: 17,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  SizedBox(height: 3),
+                                  Text(
+                                    '调整对话与创作习惯',
+                                    style: TextStyle(fontSize: 12),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            IconButton(
+                              tooltip: '关闭助手设置',
+                              onPressed: () => Navigator.pop(context),
+                              icon: const Icon(Icons.close, size: 20),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const TabBar(
+                        labelStyle: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                        tabs: [
+                          Tab(text: '对话'),
+                          Tab(text: '生成'),
+                          Tab(text: '资料与规则'),
+                        ],
+                      ),
+                      Expanded(
+                        child: s == null
+                            ? const Center(child: CircularProgressIndicator())
+                            : TabBarView(
+                                children: [
+                                  page([
+                                    section('阅读与回复', [
+                                      SettingStepperRow(
+                                        icon: Icons.format_size,
+                                        title: '消息字号',
+                                        desc: '对话消息的文字大小',
+                                        value: s.fontSize,
+                                        min: AssistantSettings.fontSizeMin,
+                                        max: AssistantSettings.fontSizeMax,
+                                        step: AssistantSettings.fontSizeStep,
+                                        format: (v) => v.toStringAsFixed(0),
+                                        onChanged: (v) => n.patch(
+                                          (o) => o.copyWith(fontSize: v),
+                                        ),
+                                      ),
+                                      SettingRow(
+                                        icon: Icons.keyboard_outlined,
+                                        title: '流式输出',
+                                        desc: '逐字显示回复',
+                                        value: s.stream,
+                                        onChanged: (v) => n.patch(
+                                          (o) => o.copyWith(stream: v),
+                                        ),
+                                      ),
+                                      SettingRow(
+                                        icon: Icons.image_outlined,
+                                        title: '在对话内显示图片',
+                                        desc: '生成图片仍会保存至图库',
+                                        value: s.inlineImage,
+                                        onChanged: (v) => n.patch(
+                                          (o) => o.copyWith(inlineImage: v),
+                                        ),
+                                      ),
+                                    ]),
+                                    section('对话记忆', [
+                                      SettingStepperRow(
+                                        icon: Icons.history,
+                                        title: '上下文轮数',
+                                        desc: '每次发送带上最近几轮对话',
+                                        value: s.historyTurns.toDouble(),
+                                        min: AssistantSettings.historyTurnsMin
+                                            .toDouble(),
+                                        max: AssistantSettings.historyTurnsMax
+                                            .toDouble(),
+                                        step: 1,
+                                        format: (v) => v.toStringAsFixed(0),
+                                        onChanged: (v) => n.patch(
+                                          (o) => o.copyWith(
+                                            historyTurns: v.round(),
+                                          ),
+                                        ),
+                                      ),
+                                    ]),
+                                  ]),
+                                  page([
+                                    section('提示词结果', [
+                                      SettingRow(
+                                        icon: Icons.notes,
+                                        title: '纯文本格式',
+                                        desc: '提示词只显示为文本，不导入也不出图',
+                                        value: s.noDraw,
+                                        onChanged: (v) => n.patch(
+                                          (o) => o.copyWith(noDraw: v),
+                                        ),
+                                      ),
+                                    ]),
+                                    section('自动操作', [
+                                      SettingRow(
+                                        icon: Icons.draw_outlined,
+                                        title: '自动写入创作页',
+                                        desc: '生成的提示词自动写回创作页',
+                                        enabled: !s.noDraw,
+                                        value: s.autoImport,
+                                        onChanged: (v) => n.patch(
+                                          (o) => o.copyWith(autoImport: v),
+                                        ),
+                                      ),
+                                      SettingRow(
+                                        icon: Icons.bolt_outlined,
+                                        title: '生成提示词后自动出图',
+                                        desc: '提示词完成后立即生成图片',
+                                        enabled: !s.noDraw,
+                                        value: s.autoGenerate,
+                                        onChanged: (v) => n.patch(
+                                          (o) => o.copyWith(autoGenerate: v),
+                                        ),
+                                      ),
+                                    ]),
+                                    if (s.noDraw)
+                                      Text(
+                                        '纯文本格式已开启，自动写入与自动出图暂不生效。',
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          height: 1.6,
+                                          color: scheme.onSurfaceVariant,
+                                        ),
+                                      ),
+                                  ]),
+                                  page([
+                                    section('参考资料', [
+                                      Padding(
+                                        padding: const EdgeInsets.all(16),
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            const Text(
+                                              '资料库范围',
+                                              style: TextStyle(
+                                                fontSize: 13,
+                                                fontWeight: FontWeight.w600,
+                                              ),
+                                            ),
+                                            const SizedBox(height: 6),
+                                            Text(
+                                              '查询画师串与角色时使用的资料来源',
+                                              style: TextStyle(
+                                                fontSize: 11,
+                                                color: scheme.onSurfaceVariant,
+                                              ),
+                                            ),
+                                            const SizedBox(height: 12),
+                                            DropdownButtonFormField<
+                                              LibraryScope
+                                            >(
+                                              key: ValueKey(
+                                                'assistant-library-${s.libraryScope}-$authorized',
+                                              ),
+                                              initialValue:
+                                                  effectiveLibraryScope(
+                                                    s.libraryScope,
+                                                    botAuthorized: authorized,
+                                                  ),
+                                              isExpanded: true,
+                                              style: theme.textTheme.bodyMedium!
+                                                  .copyWith(
+                                                    fontSize: 13,
+                                                    color: scheme.onSurface,
+                                                  ),
+                                              decoration: const InputDecoration(
+                                                isDense: true,
+                                                border: OutlineInputBorder(),
+                                              ),
+                                              items: [
+                                                for (final scope
+                                                    in LibraryScope.values)
+                                                  DropdownMenuItem(
+                                                    value: scope,
+                                                    enabled:
+                                                        libraryScopeAllowed(
+                                                          scope,
+                                                          botAuthorized:
+                                                              authorized,
+                                                        ),
+                                                    child: Text(
+                                                      '${libraryScopeLabel(scope)}${libraryScopeAllowed(scope, botAuthorized: authorized) ? '' : '（需要 Bot 授权）'}',
+                                                      overflow:
+                                                          TextOverflow.ellipsis,
+                                                    ),
+                                                  ),
+                                              ],
+                                              onChanged: (v) {
+                                                if (v != null) {
+                                                  n.patch(
+                                                    (o) => o.copyWith(
+                                                      libraryScope: v,
+                                                    ),
+                                                  );
+                                                }
+                                              },
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ]),
+                                    section('创作规则', [
+                                      SettingNavRow(
+                                        icon: Icons.rule_outlined,
+                                        title: '规则预设',
+                                        desc: '生成提示词时遵循的规则',
+                                        value: _rulesValue(ref),
+                                        onTap: () => Navigator.of(context).push(
+                                          MaterialPageRoute<void>(
+                                            builder: (_) =>
+                                                const RulesPresetPage(),
+                                          ),
+                                        ),
+                                      ),
+                                    ]),
+                                    section('记录', [
+                                      SettingNavRow(
+                                        icon: Icons.file_download_outlined,
+                                        title: '导出对话记录',
+                                        desc: '保存当前对话的请求与回复',
+                                        value: '',
+                                        onTap: () => _exportTrace(context, ref),
+                                      ),
+                                    ]),
+                                  ]),
+                                ],
+                              ),
+                      ),
+                      Divider(
+                        height: 1,
+                        color: scheme.outlineVariant.withValues(alpha: .5),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Text(
+                          '修改后自动保存',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: scheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _SettingsSheet extends ConsumerWidget {

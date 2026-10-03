@@ -20,6 +20,7 @@ class WorkspaceStore {
 
   /// 启动读出的工作台状态;null = 首启/无存档。
   GenerateState? initial;
+  GenerateState? _latest;
 
   /// GenerateNotifier 的 id 发号器续点(防重启后 id 撞车)。
   int idSeq = 100;
@@ -61,9 +62,12 @@ class WorkspaceStore {
   int _pendingSeq = 100;
   Timer? _timer;
   Future<void> _chain = Future.value();
+  Future<void> get idle => _chain;
 
   /// 状态一变就来这里排队;真正写盘在防抖窗口后。
   void schedule(GenerateState s, {required int idSeq}) {
+    _blobs.referencesChanged();
+    _latest = s;
     _pending = s;
     _pendingSeq = idSeq;
     _timer?.cancel();
@@ -97,17 +101,21 @@ class WorkspaceStore {
   }
 
   /// 盘上存档引用的 blob 哈希(启动 GC 的引用清单)。
-  Future<Set<String>> liveRefs() async {
+  Future<Set<String>> liveRefs({bool strict = false}) async {
+    final live = <String>{};
     try {
-      if (!await _file.exists()) return {};
-      final j = jsonDecode(await _file.readAsString());
-      if (j is Map && j['refs'] is List) {
-        return {
-          for (final r in j['refs'] as List)
-            if (r is String) r,
-        };
+      if (await _file.exists()) {
+        final j = jsonDecode(await _file.readAsString());
+        if (j is! Map) throw const FormatException('工作台引用记录无法读取');
+        live.addAll(BlobStore.referencedHashes(j));
       }
-    } catch (_) {}
-    return {};
+      final current = _latest ?? initial;
+      if (current != null) {
+        live.addAll(await generateStateBlobRefs(current, _blobs));
+      }
+    } catch (_) {
+      if (strict) rethrow;
+    }
+    return live;
   }
 }

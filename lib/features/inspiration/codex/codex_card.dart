@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../../core/net/remote_image.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/ui/fade_in_once.dart';
+import 'codex_image_loading.dart';
 import 'codex_models.dart';
 
 /// 法典的共用卡片与图片渐显。
@@ -38,12 +39,19 @@ class CodexCard extends StatelessWidget {
     required this.onTap,
     this.fixedAspect,
     this.decodeWidth,
+    this.desktop = false,
+    this.favorite = false,
+    this.onFavorite,
+    this.imageLoading,
   });
 
   final CodexMeta codex;
   final CodexEntry entry;
   final CodexMedia media;
   final VoidCallback onTap;
+  final bool desktop, favorite;
+  final VoidCallback? onFavorite;
+  final CodexImageLoadController? imageLoading;
 
   /// 覆盖词条自身比例(等比网格用);null = 按词条比例(瀑布流)。
   final double? fixedAspect;
@@ -56,8 +64,169 @@ class CodexCard extends StatelessWidget {
   Widget build(BuildContext context) => LayoutBuilder(
     // 捏到三四列以后卡片很窄:标题收成一行、小一号,不然两行字的渐变条能把
     // 横图整张盖住。按宽度判,同一屏卡片的字号一致。
-    builder: (context, c) => _card(context, compact: c.maxWidth < 130),
+    builder: (context, c) => desktop
+        ? _desktopCard(context)
+        : _card(context, compact: c.maxWidth < 130),
   );
+
+  Widget _desktopCard(BuildContext context) {
+    final scheme = context.scheme;
+    final url = codexImageUrl(codex, entry, media);
+    return Material(
+      color: scheme.surfaceContainerLowest,
+      clipBehavior: Clip.antiAlias,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(color: scheme.outlineVariant),
+      ),
+      child: InkWell(
+        onTap: onTap,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Expanded(
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  ColoredBox(
+                    color: scheme.surfaceContainerLow,
+                    child: url == null
+                        ? _placeholder(context)
+                        : LayoutBuilder(
+                            builder: (context, bounds) =>
+                                _desktopPreview(context, url, bounds.maxHeight),
+                          ),
+                  ),
+                  if (entry.path.isNotEmpty || entry.isNew)
+                    Positioned(
+                      left: 10,
+                      top: 10,
+                      right: 54,
+                      child: Align(
+                        alignment: Alignment.topLeft,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 4,
+                          ),
+                          decoration: BoxDecoration(
+                            color: scheme.surface.withValues(alpha: .94),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            entry.isNew ? 'NEW' : entry.path.last,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: context.texts.labelSmall,
+                          ),
+                        ),
+                      ),
+                    ),
+                  Positioned(
+                    right: 8,
+                    top: 8,
+                    child: IconButton.filledTonal(
+                      tooltip: favorite ? '取消收藏' : '收藏',
+                      onPressed: onFavorite,
+                      icon: Icon(
+                        favorite ? Icons.star_rounded : Icons.star_outline,
+                        size: 20,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    entry.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: context.texts.titleSmall!.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 5),
+                  Text(
+                    entry.fullText.replaceAll(RegExp(r'\s+'), ' '),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: context.texts.bodySmall!.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                  const SizedBox(height: 9),
+                  Row(
+                    children: [
+                      Text(
+                        '查看提示词',
+                        style: context.texts.labelLarge!.copyWith(
+                          color: scheme.primary,
+                        ),
+                      ),
+                      const Spacer(),
+                      Icon(
+                        Icons.arrow_forward,
+                        color: scheme.primary,
+                        size: 18,
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _desktopPreview(BuildContext context, String url, double height) {
+    final scheme = context.scheme;
+    Widget preview(RemoteImageProviderDecorator? decorator) => RemoteImage(
+      url,
+      fit: BoxFit.contain,
+      decodeWidth: decodeWidth,
+      decodeHeight: height,
+      providerDecorator: decorator,
+      gaplessPlayback: imageLoading != null,
+      frameBuilder: (context, child, frame, wasSync) => wasSync || frame != null
+          ? child
+          : Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.image_outlined,
+                    color: scheme.outlineVariant,
+                    size: 32,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    '预览加载中…',
+                    style: context.texts.bodySmall?.copyWith(
+                      color: scheme.outline,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+      errorBuilder: (_, _, _) => _placeholder(context),
+    );
+
+    final controller = imageLoading;
+    return controller == null
+        ? preview(null)
+        : CodexDeferredImage(
+            key: ValueKey(url),
+            controller: controller,
+            builder: preview,
+          );
+  }
 
   Widget _card(BuildContext context, {required bool compact}) {
     final scheme = context.scheme;

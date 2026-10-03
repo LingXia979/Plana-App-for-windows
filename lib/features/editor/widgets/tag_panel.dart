@@ -297,62 +297,75 @@ class _TagPanelState extends State<TagPanel> {
                 ),
               ),
             const SizedBox(height: 8),
-            // 权重:括号快捷键(左)· 数值加减(右,支持长按持续步进,读数居中)
-            Row(
+            // The two control groups wrap in a desktop sidebar or narrow window.
+            OverflowBar(
+              alignment: MainAxisAlignment.spaceBetween,
+              overflowAlignment: OverflowBarAlignment.end,
+              spacing: 12,
+              overflowSpacing: 6,
               children: [
-                Text(
-                  '权重',
-                  style: context.texts.bodyMedium!.copyWith(
-                    color: scheme.onSurfaceVariant,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                _weightBtn(
-                  context,
-                  '[ ]',
-                  pal.weightDown,
-                  scheme.onError,
-                  enabled: on,
-                  onTap: () => widget.onWrap(false),
-                ),
-                const SizedBox(width: 6),
-                _weightBtn(
-                  context,
-                  '{ }',
-                  pal.weightUp,
-                  scheme.onError,
-                  enabled: on,
-                  onTap: () => widget.onWrap(true),
-                ),
-                const Spacer(),
-                RepeatBtn(
-                  icon: Icons.remove,
-                  enabled: on,
-                  size: _kPanelBtnH,
-                  step: () =>
-                      widget.onSetMult(tok.numWeight - widget.weightStep),
-                ),
-                SizedBox(
-                  width: 60,
-                  child: Text(
-                    '×${fmtMult(tok.tagMult)}',
-                    textAlign: TextAlign.center,
-                    // 读数只报数,不跟着权重变红蓝 —— 高低看名字色与正文色带
-                    style: mono(
-                      context,
-                      size: 16,
-                      color: tok.disabled
-                          ? scheme.onSurfaceVariant
-                          : scheme.onSurface,
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      '权重',
+                      style: context.texts.bodyMedium!.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
                     ),
-                  ),
+                    const SizedBox(width: 12),
+                    _weightBtn(
+                      context,
+                      '[ ]',
+                      pal.weightDown,
+                      scheme.onError,
+                      enabled: on,
+                      onTap: () => widget.onWrap(false),
+                    ),
+                    const SizedBox(width: 6),
+                    _weightBtn(
+                      context,
+                      '{ }',
+                      pal.weightUp,
+                      scheme.onError,
+                      enabled: on,
+                      onTap: () => widget.onWrap(true),
+                    ),
+                  ],
                 ),
-                RepeatBtn(
-                  icon: Icons.add,
-                  enabled: on,
-                  size: _kPanelBtnH,
-                  step: () =>
-                      widget.onSetMult(tok.numWeight + widget.weightStep),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    RepeatBtn(
+                      icon: Icons.remove,
+                      enabled: on,
+                      size: _kPanelBtnH,
+                      step: () =>
+                          widget.onSetMult(tok.numWeight - widget.weightStep),
+                    ),
+                    SizedBox(
+                      width: 60,
+                      child: Text(
+                        '×${fmtMult(tok.tagMult)}',
+                        textAlign: TextAlign.center,
+                        // 读数只报数,不跟着权重变红蓝 —— 高低看名字色与正文色带
+                        style: mono(
+                          context,
+                          size: 16,
+                          color: tok.disabled
+                              ? scheme.onSurfaceVariant
+                              : scheme.onSurface,
+                        ),
+                      ),
+                    ),
+                    RepeatBtn(
+                      icon: Icons.add,
+                      enabled: on,
+                      size: _kPanelBtnH,
+                      step: () =>
+                          widget.onSetMult(tok.numWeight + widget.weightStep),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -1089,6 +1102,7 @@ class BatchPanel extends StatelessWidget {
     required this.onClose,
     this.placing = false,
     this.onTogglePlacing,
+    this.showMoveAction = true,
   });
 
   /// 已选单元数(0 = 多选模式里还没点;划词多选恒 ≥2)。
@@ -1100,6 +1114,7 @@ class BatchPanel extends StatelessWidget {
   /// 进/出落位阶段。null = 这条路不适用(划词多选没有芯片可点)或者
   /// 眼下没有能落的位置(比如全选中了,搬到哪儿都还是原样)。
   final VoidCallback? onTogglePlacing;
+  final bool showMoveAction;
 
   /// 面板本地的统一数值权重读数(换一批选中即重置 1.0)。
   final double mult;
@@ -1328,19 +1343,21 @@ class BatchPanel extends StatelessWidget {
             const SizedBox(height: 10),
             Row(
               children: [
-                Expanded(
-                  child: _action(
-                    context,
-                    '移动',
-                    icon: Icons.swap_horiz,
-                    // 亮着 = 落位阶段开着,再点一下退出。没有有效落点时这颗
-                    // 是灰的(判据见 chipValidGaps),免得点进一个空阶段。
-                    selected: placing,
-                    enabled: onTogglePlacing != null,
-                    onTap: onTogglePlacing ?? () {},
+                if (showMoveAction) ...[
+                  Expanded(
+                    child: _action(
+                      context,
+                      '移动',
+                      icon: Icons.swap_horiz,
+                      // 亮着 = 落位阶段开着,再点一下退出。没有有效落点时这颗
+                      // 是灰的(判据见 chipValidGaps),免得点进一个空阶段。
+                      selected: placing,
+                      enabled: onTogglePlacing != null,
+                      onTap: onTogglePlacing ?? () {},
+                    ),
                   ),
-                ),
-                const SizedBox(width: 8),
+                  const SizedBox(width: 8),
+                ],
                 Expanded(
                   child: _action(
                     context,

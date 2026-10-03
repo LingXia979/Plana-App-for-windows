@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../albums/album_state.dart';
 import 'package:flutter/material.dart';
@@ -10,6 +12,7 @@ import 'gallery_grid_sheet.dart';
 import 'result_badge_chip.dart';
 import 'result_thumb.dart';
 import '../../../core/util/haptics.dart';
+import '../../import/desktop_image_drop.dart';
 
 // ---- 缩略图几何:**渲染与滚动定位共用这一组常数,谁都别再各写一份** ----
 //
@@ -67,7 +70,9 @@ double _thumbSlotW(double aspect) =>
 /// 跟随它,点历史缩略图切走看历史 —— 对齐 web 桌面端的占位卡交互。
 /// 取消不在卡上:卡这么小,取消挨着「切换跟随」这个主手势太容易点错,
 /// 它长在画布那条进度胶囊上(见 ProgressPill,web 也是放在状态条上)。
-/// 历史图**上滑**即拿起,条上方浮出两条落点(下分享、上删除),拖上去松手即
+/// 桌面历史图按住并向任意方向移动即可拖起，落到接收区后执行该区域的导入。
+/// 松在其他位置则取消；右上角 × 点两次删除。
+/// 移动端历史图**上滑**即拿起,条上方浮出两条落点(下分享、上删除),拖上去松手即
 /// 分享 / 删;拖回来或松在别处什么都不发生 —— 所以删除不再另弹确认。
 /// 竖向手势与横向滚动各认各的轴(见 [_FilmThumb] 的 affinity),不用自己
 /// 进竞技场调解。
@@ -83,8 +88,14 @@ class FilmStrip extends StatefulWidget {
     this.jobs = const [],
     this.selectedJobId,
     this.onSelectJob,
+    this.showMore = true,
+    this.desktop = false,
+    this.onImport,
   });
 
+  final bool showMore;
+  final bool desktop;
+  final ValueChanged<String>? onImport;
   final List<ResultImage> results;
   final String? selectedId;
   final ValueChanged<String> onSelect;
@@ -92,7 +103,7 @@ class FilmStrip extends StatefulWidget {
   /// 拖进分享区后分享这一张(按保存设置处理、拉系统面板都在调用方)。
   final ValueChanged<String> onShare;
 
-  /// 拖进删除区后删这一张(状态与盘上文件由调用方处理)。
+  /// 桌面确认 × 或移动端拖进删除区后删这一张，由调用方处理状态与文件。
   final ValueChanged<String> onDelete;
 
   /// 在跑的任务,**已按新→旧排好**(调用方给 `GenPool.newestFirst`)。
@@ -108,6 +119,24 @@ class FilmStrip extends StatefulWidget {
 
 class _FilmStripState extends State<FilmStrip> {
   final _sc = ScrollController();
+  String? _armedDelete;
+  Timer? _deleteTimer;
+
+  void _cancelDelete() {
+    _deleteTimer?.cancel();
+    if (_armedDelete != null && mounted) setState(() => _armedDelete = null);
+  }
+
+  void _deleteClick(String id) {
+    if (_armedDelete == id) {
+      _cancelDelete();
+      _dropDelete(id);
+      return;
+    }
+    _deleteTimer?.cancel();
+    setState(() => _armedDelete = id);
+    _deleteTimer = Timer(const Duration(seconds: 3), _cancelDelete);
+  }
 
   @override
   void initState() {
@@ -121,13 +150,16 @@ class _FilmStripState extends State<FilmStrip> {
     super.didUpdateWidget(old);
     if (old.selectedId != widget.selectedId ||
         old.results.length != widget.results.length ||
-        old.jobs.length != widget.jobs.length) {
+        old.jobs.length != widget.jobs.length ||
+        old.selectedJobId != widget.selectedJobId) {
+      _cancelDelete();
       WidgetsBinding.instance.addPostFrameCallback((_) => _reveal());
     }
   }
 
   @override
   void dispose() {
+    _deleteTimer?.cancel();
     _hideBands();
     _sc.dispose();
     super.dispose();
@@ -240,44 +272,78 @@ class _FilmStripState extends State<FilmStrip> {
                     }
                     final r = widget.results[i - extra];
                     return _FilmThumb(
+                      key: ValueKey('history-thumb-${r.id}'),
                       result: r,
+                      desktop: widget.desktop,
                       selected:
                           r.id == widget.selectedId &&
                           widget.selectedJobId == null,
-                      onTap: () => widget.onSelect(r.id),
-                      onDragStart: _showBands,
+                      onTap: () {
+                        _cancelDelete();
+                        widget.onSelect(r.id);
+                      },
+                      onDragStart: widget.desktop ? _cancelDelete : _showBands,
                       onDragEnd: _hideBands,
+                      onImport: widget.desktop
+                          ? () => widget.onImport?.call(r.id)
+                          : null,
+                      deleteButton: widget.desktop
+                          ? Tooltip(
+                              message: _armedDelete == r.id
+                                  ? '再次点击删除'
+                                  : '删除（点击两次）',
+                              child: IconButton.filledTonal(
+                                key: ValueKey('history-delete-${r.id}'),
+                                style: IconButton.styleFrom(
+                                  padding: EdgeInsets.zero,
+                                  minimumSize: const Size(24, 24),
+                                  maximumSize: const Size(24, 24),
+                                  tapTargetSize:
+                                      MaterialTapTargetSize.shrinkWrap,
+                                  backgroundColor: scheme.surface.withValues(
+                                    alpha: .94,
+                                  ),
+                                  foregroundColor: _armedDelete == r.id
+                                      ? scheme.error
+                                      : scheme.onSurfaceVariant,
+                                ),
+                                onPressed: () => _deleteClick(r.id),
+                                icon: const Icon(Icons.close, size: 16),
+                              ),
+                            )
+                          : null,
                     );
                   },
                 ),
               ),
               // 悬浮「›」展开全部:压在缩略图之上,靠投影拉开层次
-              Positioned(
-                top: 0,
-                bottom: 0,
-                right: _moreRight,
-                child: Center(
-                  child: Material(
-                    color: scheme.surfaceContainerHighest,
-                    elevation: 4,
-                    shadowColor: Colors.black.withValues(alpha: .45),
-                    shape: const CircleBorder(),
-                    clipBehavior: Clip.antiAlias,
-                    child: InkWell(
-                      onTap: () => showGalleryGrid(context),
-                      child: SizedBox(
-                        width: _moreSize,
-                        height: _moreSize,
-                        child: Icon(
-                          Icons.chevron_right,
-                          size: 24,
-                          color: scheme.onSurfaceVariant,
+              if (widget.showMore)
+                Positioned(
+                  top: 0,
+                  bottom: 0,
+                  right: _moreRight,
+                  child: Center(
+                    child: Material(
+                      color: scheme.surfaceContainerHighest,
+                      elevation: 4,
+                      shadowColor: Colors.black.withValues(alpha: .45),
+                      shape: const CircleBorder(),
+                      clipBehavior: Clip.antiAlias,
+                      child: InkWell(
+                        onTap: () => showGalleryGrid(context),
+                        child: SizedBox(
+                          width: _moreSize,
+                          height: _moreSize,
+                          child: Icon(
+                            Icons.chevron_right,
+                            size: 24,
+                            color: scheme.onSurfaceVariant,
+                          ),
                         ),
                       ),
                     ),
                   ),
                 ),
-              ),
             ],
           ),
         ),
@@ -373,26 +439,41 @@ class _GenThumb extends ConsumerWidget {
   }
 }
 
-class _FilmThumb extends StatelessWidget {
+class _FilmThumb extends StatefulWidget {
   const _FilmThumb({
+    super.key,
     required this.result,
+    this.desktop = false,
     required this.selected,
     required this.onTap,
     required this.onDragStart,
     required this.onDragEnd,
+    this.onImport,
+    this.deleteButton,
   });
 
   final ResultImage result;
+  final bool desktop;
   final bool selected;
   final VoidCallback onTap;
   final VoidCallback onDragStart;
   final VoidCallback onDragEnd;
+  final VoidCallback? onImport;
+  final Widget? deleteButton;
+
+  @override
+  State<_FilmThumb> createState() => _FilmThumbState();
+}
+
+class _FilmThumbState extends State<_FilmThumb> {
+  double _dragY = 0;
+  ResultImage get result => widget.result;
 
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     final w = _thumbImgW(result.aspect);
-    return Draggable<String>(
+    final draggable = Draggable<String>(
       data: result.id,
       // affinity 竖直 = 只用 VerticalDragGestureRecognizer 进竞技场:一上来就
       // 横移的归列表滚动,往上走的才算拿起。两条手势按轴分,天然不打架。
@@ -402,11 +483,20 @@ class _FilmThumb extends StatelessWidget {
       affinity: Axis.vertical,
       axis: Axis.vertical,
       onDragStarted: () {
+        _dragY = 0;
         Haptics.medium();
-        onDragStart();
+        widget.onDragStart();
       },
-      onDragEnd: (_) => onDragEnd(),
-      onDraggableCanceled: (_, _) => onDragEnd(),
+      onDragUpdate: (details) => _dragY += details.delta.dy,
+      onDragEnd: (_) {
+        widget.onDragEnd();
+        if (widget.onImport != null && _dragY <= -48) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) widget.onImport?.call();
+          });
+        }
+      },
+      onDraggableCanceled: (_, _) => widget.onDragEnd(),
       feedback: _feedback(w),
       // 占位保住原来的宽度,否则拿起一张整条会往左塌一截,
       // 拖回来时又弹回去 —— 拖到哪儿了就更看不清了
@@ -423,10 +513,10 @@ class _FilmThumb extends StatelessWidget {
         ),
       ),
       child: GestureDetector(
-        onTap: onTap,
+        onTap: widget.onTap,
         child: _shell(
           scheme,
-          selected: selected,
+          selected: widget.selected,
           child: Stack(
             children: [
               ResultThumb(
@@ -445,6 +535,21 @@ class _FilmThumb extends StatelessWidget {
           ),
         ),
       ),
+    );
+    final image = widget.desktop
+        ? GalleryImageDrag(
+            result: result,
+            onStart: widget.onDragStart,
+            onEnd: widget.onDragEnd,
+            child: draggable.child,
+          )
+        : draggable;
+    if (widget.deleteButton == null) return image;
+    return Stack(
+      children: [
+        image,
+        Positioned(top: 3, right: 3, child: widget.deleteButton!),
+      ],
     );
   }
 

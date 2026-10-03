@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -8,17 +9,62 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/auth/bot_session_store.dart';
 import '../../core/net/backend_client.dart';
 import '../../core/net/remote_image.dart';
+import '../../core/platform/desktop.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/ui/image_drop.dart';
 import '../../core/util/image_pick.dart';
 import '../gallery/gallery_state.dart';
 import '../generate/generate_state.dart';
 import '../generate/widgets/common.dart'
-    show ExpandBody, confirmDialog, hintSnack;
+    show ExpandBody, confirmDialog, hintSnack, sharedAxisRoute;
 import 'artist_models.dart';
 import 'public_tags.dart';
 import 'tag_library.dart';
 import 'tag_models.dart';
 import 'tag_preview_gen.dart';
+
+// One editor per window, including calls from the embedded inspiration pane.
+// Rapid/repeated invocations must not leave stacked modal barriers behind.
+final _openTagEditors = Expando<Future<void>>('tag-editors');
+
+Future<void> showTagEditor(
+  BuildContext context, {
+  required TagCategory cat,
+  TagEntry? edit,
+}) {
+  final desktop = ProviderScope.containerOf(
+    context,
+    listen: false,
+  ).read(desktopModeProvider);
+  if (!desktop) {
+    return Navigator.of(
+      context,
+    ).push<void>(sharedAxisRoute(TagEditorPage(cat: cat, edit: edit)));
+  }
+  final navigator = Navigator.of(context, rootNavigator: true);
+  final existing = _openTagEditors[navigator];
+  if (existing != null) return existing;
+  final opened = showDialog<void>(
+    context: context,
+    useRootNavigator: true,
+    requestFocus: true,
+    barrierDismissible: false,
+    builder: (_) => Dialog(
+      key: const ValueKey('tag-editor-dialog'),
+      constraints: const BoxConstraints(maxWidth: 920, maxHeight: 680),
+      insetPadding: const EdgeInsets.all(24),
+      clipBehavior: Clip.antiAlias,
+      child: SizedBox(
+        width: 920,
+        height: 680,
+        child: TagEditorPage(cat: cat, edit: edit, floating: true),
+      ),
+    ),
+  );
+  final result = opened.whenComplete(() => _openTagEditors[navigator] = null);
+  _openTagEditors[navigator] = result;
+  return result;
+}
 
 /// 折叠式条目编辑器(创建/编辑统一,4 分类字段差异由配置驱动;
 /// UI 框架对齐设计稿 handoff 的手风琴方案,配色走 app 主题):
@@ -28,10 +74,16 @@ import 'tag_preview_gen.dart';
 /// 必填未齐时主按钮视觉禁用但可点(点了亮校验并展开缺失卡);
 /// 收藏副本(favorited)内容只读、仅标签可改。
 class TagEditorPage extends ConsumerStatefulWidget {
-  const TagEditorPage({super.key, required this.cat, this.edit});
+  const TagEditorPage({
+    super.key,
+    required this.cat,
+    this.edit,
+    this.floating = false,
+  });
 
   final TagCategory cat;
   final TagEntry? edit;
+  final bool floating;
 
   @override
   ConsumerState<TagEditorPage> createState() => _TagEditorPageState();
@@ -89,7 +141,6 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
   (int, int)? _genProgress;
 
   bool get _hasPreview => widget.cat != TagCategory.other;
-  bool get _hasNegative => widget.cat != TagCategory.artist;
   bool get _canGenerate =>
       widget.cat == TagCategory.character || widget.cat == TagCategory.artist;
   bool get _generating => _genIndex != null;
@@ -165,7 +216,7 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
       category: widget.cat,
       name: name ?? _name.text.trim(),
       positive: _positive.text.trim(),
-      negative: _hasNegative ? _negative.text.trim() : (_edit?.negative ?? ''),
+      negative: _negative.text.trim(),
       aliases: _def.key == TagCategory.character ? [..._aliases] : const [],
       tags: _tags.toList()..sort(),
       models: normalizeArtistModels(_models.toList()),
@@ -606,7 +657,9 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
       () => setState(() {
         _positive.text = gen.prompt.trim();
         final neg = gen.negativePrompt.trim();
-        if (_hasNegative && neg.isNotEmpty) {
+        // The artist action imports the positive style string only. Restoring
+        // its negative editor must not start replacing a separately edited UC.
+        if (widget.cat != TagCategory.artist && neg.isNotEmpty) {
           _negative.text = neg;
           _showNegative = true;
         }
@@ -627,15 +680,24 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
     if (_slotCount == 1 || into != null) {
       final f = await pickImageFile(context);
       if (f == null || !mounted) return;
-      setState(() {
-        final s = _slots[into ?? 0];
-        s.bytes = f.bytes;
-        s.ref = null;
-      });
+      _applyPickedImages([f], into: into ?? 0);
       return;
     }
     final files = await pickImageFiles(context);
     if (files.isEmpty || !mounted) return;
+    _applyPickedImages(files);
+  }
+
+  void _applyPickedImages(List<PickedImage> files, {int? into}) {
+    if (!mounted || files.isEmpty || _locked || _busy || _generating) return;
+    if (into != null) {
+      setState(() {
+        _slots[into]
+          ..bytes = files.first.bytes
+          ..ref = null;
+      });
+      return;
+    }
     final list = [for (final f in files.take(_slotCount)) f.bytes];
     setState(() {
       var idx = 0;
@@ -836,75 +898,211 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
+    final desktop = ref.watch(desktopModeProvider);
+    if (desktop) {
+      return CallbackShortcuts(
+        bindings: {
+          const SingleActivator(LogicalKeyboardKey.escape): () {
+            if (widget.floating && !_busy && !_generating) {
+              Navigator.pop(context);
+            }
+          },
+        },
+        child: Focus(autofocus: widget.floating, child: _desktopEditor(scheme)),
+      );
+    }
     return Scaffold(
       body: SafeArea(
-        child: Column(
-          children: [
-            _header(scheme),
-            if (_validationVisible && !_canSave) _validationBanner(scheme),
-            Expanded(
-              child: ListView(
-                padding: const EdgeInsets.fromLTRB(14, 4, 14, 16),
+        child: Padding(
+          padding: EdgeInsets.symmetric(vertical: desktop ? 12 : 0),
+          child: Align(
+            alignment: Alignment.topCenter,
+            child: ConstrainedBox(
+              key: const ValueKey('tag-editor-form'),
+              constraints: BoxConstraints(
+                maxWidth: desktop ? 880 : double.infinity,
+              ),
+              child: Column(
                 children: [
-                  _section(
-                    id: 'name',
-                    title: '名称',
-                    required: true,
-                    filled: _nameOk,
-                    collapsedValue: _name.text.trim().isEmpty
-                        ? null
-                        : _name.text.trim(),
-                    body: _nameBody(scheme),
-                  ),
-                  _section(
-                    id: 'prompt',
-                    title: '提示词',
-                    required: true,
-                    filled: _positiveOk,
-                    collapsedValue: _positive.text.trim().isEmpty
-                        ? null
-                        : _positive.text.trim(),
-                    body: _promptBody(scheme),
-                  ),
-                  if (_hasPreview)
-                    _section(
-                      id: 'preview',
-                      title: '预览图',
-                      filled: _slots.any((s) => s.filled),
-                      collapsedValue: _slots.any((s) => s.filled)
-                          ? '${_slots.where((s) => s.filled).length} 张'
-                          : null,
-                      body: _previewBody(scheme),
+                  _header(scheme),
+                  if (_validationVisible && !_canSave)
+                    _validationBanner(scheme),
+                  Expanded(
+                    child: ListView(
+                      padding: const EdgeInsets.fromLTRB(14, 4, 14, 16),
+                      children: [
+                        _section(
+                          id: 'name',
+                          title: '名称',
+                          required: true,
+                          filled: _nameOk,
+                          collapsedValue: _name.text.trim().isEmpty
+                              ? null
+                              : _name.text.trim(),
+                          body: _nameBody(scheme),
+                        ),
+                        _section(
+                          id: 'prompt',
+                          title: '提示词',
+                          required: true,
+                          filled: _positiveOk,
+                          collapsedValue: _positive.text.trim().isEmpty
+                              ? null
+                              : _positive.text.trim(),
+                          body: _promptBody(scheme),
+                        ),
+                        if (_hasPreview)
+                          _section(
+                            id: 'preview',
+                            title: '预览图',
+                            filled: _slots.any((s) => s.filled),
+                            collapsedValue: _slots.any((s) => s.filled)
+                                ? '${_slots.where((s) => s.filled).length} 张'
+                                : null,
+                            body: _previewBody(scheme),
+                          ),
+                        // 只有画风有这一档 —— 角色/场景/其他标模型没有意义
+                        if (widget.cat == TagCategory.artist)
+                          _section(
+                            id: 'models',
+                            title: '适用模型',
+                            filled: _models.isNotEmpty,
+                            collapsedValue: _models.isEmpty
+                                ? kGenericModelLabel
+                                : normalizeArtistModels(
+                                    _models.toList(),
+                                  ).map(artistModelShort).join(' · '),
+                            body: _modelsBody(scheme),
+                          ),
+                        _section(
+                          id: 'tags',
+                          title: '标签',
+                          filled: _tags.isNotEmpty,
+                          collapsedValue: _tags.isEmpty
+                              ? null
+                              : _tags.map((t) => '#$t').join(' '),
+                          body: _tagsBody(scheme),
+                        ),
+                        if (_isEdit) _managementRow(scheme),
+                      ],
                     ),
-                  // 只有画风有这一档 —— 角色/场景/其他标模型没有意义
-                  if (widget.cat == TagCategory.artist)
-                    _section(
-                      id: 'models',
-                      title: '适用模型',
-                      filled: _models.isNotEmpty,
-                      collapsedValue: _models.isEmpty
-                          ? kGenericModelLabel
-                          : normalizeArtistModels(
-                              _models.toList(),
-                            ).map(artistModelShort).join(' · '),
-                      body: _modelsBody(scheme),
-                    ),
-                  _section(
-                    id: 'tags',
-                    title: '标签',
-                    filled: _tags.isNotEmpty,
-                    collapsedValue: _tags.isEmpty
-                        ? null
-                        : _tags.map((t) => '#$t').join(' '),
-                    body: _tagsBody(scheme),
                   ),
-                  if (_isEdit) _managementRow(scheme),
+                  _footer(scheme),
                 ],
               ),
             ),
-            _footer(scheme),
-          ],
+          ),
         ),
+      ),
+    );
+  }
+
+  Widget _desktopEditor(ColorScheme scheme) {
+    final fields = <Widget>[
+      _desktopField('名称', _nameBody(scheme), invalid: !_nameOk, required: true),
+      _desktopField(
+        '提示词',
+        _promptBody(scheme),
+        invalid: !_positiveOk,
+        required: true,
+      ),
+      if (widget.cat == TagCategory.artist)
+        _desktopField('适用模型', _modelsBody(scheme)),
+      _desktopField('标签', _tagsBody(scheme)),
+      if (_isEdit) _managementRow(scheme),
+    ];
+    return Scaffold(
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Center(
+            child: ConstrainedBox(
+              key: const ValueKey('tag-editor-form'),
+              constraints: const BoxConstraints(maxWidth: 920),
+              child: Column(
+                children: [
+                  _header(scheme),
+                  if (_validationVisible && !_canSave)
+                    _validationBanner(scheme),
+                  const SizedBox(height: 12),
+                  Expanded(
+                    child: LayoutBuilder(
+                      builder: (context, constraints) {
+                        final split =
+                            _hasPreview && constraints.maxWidth >= 720;
+                        final preview = _hasPreview
+                            ? Padding(
+                                key: const ValueKey('tag-editor-preview'),
+                                padding: const EdgeInsets.all(12),
+                                child: _previewBody(scheme, desktop: true),
+                              )
+                            : const SizedBox.shrink();
+                        final form = Column(
+                          key: const ValueKey('tag-editor-details'),
+                          children: [
+                            Expanded(
+                              child: ListView(
+                                padding: const EdgeInsets.fromLTRB(0, 0, 0, 12),
+                                children: [
+                                  if (_hasPreview && !split)
+                                    SizedBox(height: 460, child: preview),
+                                  ...fields,
+                                ],
+                              ),
+                            ),
+                            _footer(scheme),
+                          ],
+                        );
+                        if (!split) return form;
+                        return Row(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Expanded(child: preview),
+                            const SizedBox(width: 20),
+                            SizedBox(
+                              width: constraints.maxWidth >= 840 ? 440 : 380,
+                              child: form,
+                            ),
+                          ],
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _desktopField(
+    String title,
+    Widget body, {
+    bool invalid = false,
+    bool required = false,
+  }) {
+    final scheme = context.scheme;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: _validationVisible && invalid
+              ? scheme.error
+              : scheme.outlineVariant.withValues(alpha: .5),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(required ? '$title *' : title, style: context.texts.titleSmall),
+          const SizedBox(height: 8),
+          body,
+        ],
       ),
     );
   }
@@ -915,10 +1113,11 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
       padding: const EdgeInsets.fromLTRB(4, 6, 14, 4),
       child: Row(
         children: [
-          IconButton(
-            icon: const Icon(Icons.arrow_back),
-            onPressed: () => Navigator.pop(context),
-          ),
+          if (!widget.floating)
+            IconButton(
+              icon: const Icon(Icons.arrow_back),
+              onPressed: () => Navigator.pop(context),
+            ),
           Container(
             width: 34,
             height: 34,
@@ -955,6 +1154,16 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
           if (_locked) ...[
             const SizedBox(width: 8),
             Icon(Icons.lock_outline, size: 15, color: scheme.onSurfaceVariant),
+          ],
+          if (widget.floating) ...[
+            const Spacer(),
+            IconButton(
+              tooltip: '关闭编辑器',
+              icon: const Icon(Icons.close),
+              onPressed: _busy || _generating
+                  ? null
+                  : () => Navigator.pop(context),
+            ),
           ],
         ],
       ),
@@ -1307,57 +1516,103 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
         TextField(
           controller: _positive,
           readOnly: _locked,
-          maxLines: 8,
-          minLines: 5,
+          maxLines: widget.floating ? 7 : 8,
+          minLines: widget.floating ? 4 : 5,
           style: mono(context, size: 12.5).copyWith(height: 1.6),
-          decoration: _fieldDeco('例如: wlop, rurudo'),
+          decoration: _fieldDeco(switch (widget.cat) {
+            TagCategory.artist => '例如: wlop, rurudo',
+            TagCategory.character => '例如: 1girl, cat ears, white hair',
+            TagCategory.scene => '例如: cherry blossoms, garden, sunlight',
+            _ => '输入提示词…',
+          }),
           onChanged: (_) => setState(() {}),
         ),
-        if (_hasNegative) ...[
-          const SizedBox(height: 10),
-          _foldHeader(
-            open: _showNegative,
-            title: '负面提示词',
-            suffix: _negative.text.trim().isEmpty ? '(可选)' : '',
-            onTap: () => setState(() => _showNegative = !_showNegative),
-            actions: [
-              if (_negative.text.trim().isNotEmpty)
-                _tokenPill(_tokens(_negative.text)),
-              if (_showNegative && !_locked)
-                _miniAction(Icons.content_paste, '粘贴', () => _paste(_negative)),
-            ],
-          ),
-          ExpandBody(
-            expanded: _showNegative,
-            child: Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: TextField(
-                controller: _negative,
-                readOnly: _locked,
-                maxLines: 4,
-                minLines: 3,
-                style: mono(context, size: 12.5).copyWith(height: 1.6),
-                decoration: _fieldDeco('例如: bad anatomy, worst quality'),
-                onChanged: (_) => setState(() {}),
-              ),
+        const SizedBox(height: 10),
+        _foldHeader(
+          open: _showNegative,
+          title: '负面提示词',
+          suffix: _negative.text.trim().isEmpty ? '(可选)' : '',
+          onTap: () => setState(() => _showNegative = !_showNegative),
+          actions: [
+            if (_negative.text.trim().isNotEmpty)
+              _tokenPill(_tokens(_negative.text)),
+            if (_showNegative && !_locked)
+              _miniAction(Icons.content_paste, '粘贴', () => _paste(_negative)),
+          ],
+        ),
+        ExpandBody(
+          expanded: _showNegative,
+          child: Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: TextField(
+              controller: _negative,
+              readOnly: _locked,
+              maxLines: 4,
+              minLines: 3,
+              style: mono(context, size: 12.5).copyWith(height: 1.6),
+              decoration: _fieldDeco('例如: bad anatomy, worst quality'),
+              onChanged: (_) => setState(() {}),
             ),
           ),
-        ],
+        ),
       ],
     );
   }
 
-  Widget _previewBody(ColorScheme scheme) {
+  Widget _previewBody(
+    ColorScheme scheme, {
+    bool desktop = false,
+    bool fitted = false,
+  }) {
+    if (desktop && !fitted && _slotCount == 1) {
+      return LayoutBuilder(
+        builder: (context, constraints) {
+          final width = math.min(
+            constraints.maxWidth,
+            math.max(180, constraints.maxHeight - (_locked ? 0 : 92)) *
+                _def.previewAspect,
+          );
+          return Align(
+            alignment: Alignment.topCenter,
+            child: SizedBox(
+              width: width,
+              child: _previewBody(scheme, desktop: true, fitted: true),
+            ),
+          );
+        },
+      );
+    }
     final hint = switch (widget.cat) {
       TagCategory.character => '建议竖图 832×1216,用于展示角色全身',
       TagCategory.artist => '横图 1216×832 · 四格画风样例,首张为封面',
       _ => '建议方图 1024×1024,展示场景氛围',
     };
     final single = _slotCount == 1;
-    return Column(
+    final content = Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        if (single)
+        if (desktop && single)
+          AspectRatio(
+            key: const ValueKey('tag-editor-portrait'),
+            aspectRatio: _def.previewAspect,
+            child: _slotView(0, fit: BoxFit.contain),
+          )
+        else if (desktop)
+          Expanded(
+            child: single
+                ? _slotView(0, fit: BoxFit.contain)
+                : GridView.count(
+                    crossAxisCount: 2,
+                    mainAxisSpacing: 8,
+                    crossAxisSpacing: 8,
+                    childAspectRatio: _def.previewAspect,
+                    children: [
+                      for (var i = 0; i < _slotCount; i++)
+                        _slotView(i, fit: BoxFit.contain),
+                    ],
+                  ),
+          )
+        else if (single)
           Center(
             child: ConstrainedBox(
               constraints: BoxConstraints(
@@ -1394,6 +1649,7 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
             children: [
               Expanded(
                 child: OutlinedButton.icon(
+                  style: desktop ? _previewButtonStyle() : null,
                   onPressed: _generating ? null : () => _pickImages(),
                   icon: const Icon(Icons.upload_outlined, size: 16),
                   label: const Text('上传', maxLines: 1, softWrap: false),
@@ -1402,6 +1658,7 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
               const SizedBox(width: 8),
               Expanded(
                 child: OutlinedButton.icon(
+                  style: desktop ? _previewButtonStyle() : null,
                   onPressed: _generating ? null : () => _pickFromHistory(),
                   icon: const Icon(Icons.history, size: 16),
                   label: const Text('历史', maxLines: 1, softWrap: false),
@@ -1411,6 +1668,7 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
                 const SizedBox(width: 8),
                 Expanded(
                   child: FilledButton.icon(
+                    style: desktop ? _previewButtonStyle() : null,
                     onPressed: _generating || _positive.text.trim().isEmpty
                         ? null
                         : () => _generateInto([
@@ -1437,39 +1695,62 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
           Center(
             child: Text(
               hint,
+              textAlign: TextAlign.center,
               style: context.texts.labelSmall!.copyWith(color: scheme.outline),
             ),
           ),
         ],
       ],
     );
+    return desktop
+        ? ImageDropRegion(
+            key: const ValueKey('tag-preview-image-drop'),
+            label: '导入预览图',
+            enabled: !_locked && !_busy && !_generating,
+            multiple: !single,
+            onDrop: (images, _) async {
+              if (images.length > _slotCount) {
+                throw FormatException('预览最多接收 $_slotCount 张图片，请减少后重试');
+              }
+              _applyPickedImages(images);
+            },
+            child: content,
+          )
+        : content;
   }
 
-  Widget _slotView(int i) {
+  ButtonStyle _previewButtonStyle() => FilledButton.styleFrom(
+    padding: const EdgeInsets.symmetric(horizontal: 6),
+    minimumSize: const Size(0, 36),
+    textStyle: context.texts.labelLarge?.copyWith(fontSize: 12),
+    visualDensity: VisualDensity.compact,
+  );
+
+  Widget _slotView(int i, {BoxFit fit = BoxFit.cover}) {
     final scheme = context.scheme;
     final s = _slots[i];
     final generating = _genIndex == i;
     final isCover = _slotCount > 1 && s.filled && i == _cover;
     Widget content;
     if (s.bytes != null) {
-      content = Image.memory(s.bytes!, fit: BoxFit.cover);
+      content = Image.memory(s.bytes!, fit: fit);
     } else if (s.ref?.isNotEmpty ?? false) {
       final r = s.ref!;
       content = r.startsWith('http')
           ? RemoteImage(
               r,
-              fit: BoxFit.cover,
+              fit: fit,
               errorBuilder: (_, _, _) => _emptySlotIcon(scheme),
             )
           : Image.file(
               File(r),
-              fit: BoxFit.cover,
+              fit: fit,
               errorBuilder: (_, _, _) => _emptySlotIcon(scheme),
             );
     } else {
       content = _emptySlotIcon(scheme);
     }
-    return Material(
+    final tile = Material(
       color: scheme.surfaceContainerHighest,
       borderRadius: BorderRadius.circular(11),
       clipBehavior: Clip.antiAlias,
@@ -1539,6 +1820,15 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
         ),
       ),
     );
+    return ref.watch(desktopModeProvider)
+        ? ImageDropRegion(
+            key: ValueKey('tag-preview-slot-drop-$i'),
+            label: '替换这张预览图',
+            enabled: !_locked && !_busy && !_generating,
+            onDrop: (images, _) async => _applyPickedImages(images, into: i),
+            child: tile,
+          )
+        : tile;
   }
 
   Widget _emptySlotIcon(ColorScheme scheme) => Center(
@@ -1716,7 +2006,9 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
   // ---- Footer ----
 
   ButtonStyle _outStyle() => OutlinedButton.styleFrom(
-    minimumSize: const Size(0, 52),
+    minimumSize: Size(0, widget.floating ? 44 : 52),
+    side: widget.floating ? BorderSide.none : null,
+    backgroundColor: widget.floating ? context.scheme.primaryContainer : null,
     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
   );
 
@@ -1808,9 +2100,12 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
       ];
     }
     return Material(
-      color: scheme.surfaceContainer,
+      key: const ValueKey('tag-editor-save-actions'),
+      color: widget.floating ? Colors.transparent : scheme.surfaceContainer,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+        padding: widget.floating
+            ? const EdgeInsets.only(top: 10)
+            : const EdgeInsets.fromLTRB(14, 10, 14, 12),
         child: Row(children: children),
       ),
     );
@@ -1827,7 +2122,7 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
       child: FilledButton.icon(
         onPressed: _busy ? null : onPressed,
         style: FilledButton.styleFrom(
-          minimumSize: const Size(0, 52),
+          minimumSize: Size(0, widget.floating ? 44 : 52),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(16),
           ),

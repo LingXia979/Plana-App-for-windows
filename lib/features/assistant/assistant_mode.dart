@@ -77,22 +77,27 @@ final assistantModesProvider =
 ///
 /// 在用的是导入的预设就不必取:那份存在本机,没有新旧之分。取不到最新的(网络抖了)
 /// 就还是手上那份。
-Future<Set<AssistantMode>> refreshAssistantModes(
+/// 页面在等待期间关闭时返回 null,不再访问已销毁的 WidgetRef。
+Future<Set<AssistantMode>?> refreshAssistantModes(
   WidgetRef ref,
   RulesFamily f,
 ) async {
+  final context = ref.context;
   final custom = (await ref.read(
     rulesLibraryProvider.future,
   )).customRulesFor(f);
+  if (!context.mounted) return null;
   if (custom != null) return supportedModes(custom);
   final base = ref.read(backendBaseProvider).value ?? '';
   final sid = (await ref.read(botSessionProvider.future))?.sessionId ?? '';
+  if (!context.mounted) return null;
   final latest = await fetchDefaultRules(
     f,
     backendBase: base,
     sessionId: sid,
     fresh: true,
   );
+  if (!context.mounted) return null;
   // 取回来的已经进了 fetchDefaultRules 的缓存,重建时读到的就是这份
   ref.invalidate(defaultRulesProvider(f));
   return supportedModes(latest.rules);

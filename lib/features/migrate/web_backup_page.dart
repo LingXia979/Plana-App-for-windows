@@ -1,3 +1,4 @@
+import '../../core/ui/settings_scaffold.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -99,11 +100,12 @@ class _WebBackupPageState extends ConsumerState<WebBackupPage> {
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     final b = _backup;
-    return Scaffold(
+    return SettingsScaffold(
       appBar: AppBar(title: const Text('导入 web 备份')),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 28),
         children: [
+          const SettingsPageHeader(),
           Text(
             '在 web 端「设置 → 数据备份 → 导出数据」得到的 '
             'novelai_backup_*.json,可在此导入。',

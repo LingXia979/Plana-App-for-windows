@@ -2,9 +2,12 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
 
+import '../../core/store/atomic_file.dart';
+import 'inspiration_examples.dart';
 import 'tag_models.dart';
 
 /// 灵感页本地库状态:全部条目 + 每分类标签池 + 每分类最近使用。
@@ -56,6 +59,7 @@ final tagLibraryProvider = AsyncNotifierProvider<TagLibrary, TagLibraryState>(
 /// 读写;损坏时回空库)。所有变更先改状态再尽力落盘。
 class TagLibrary extends AsyncNotifier<TagLibraryState> {
   late File _file;
+  Future<void> _writes = Future.value();
 
   @override
   Future<TagLibraryState> build() async {
@@ -64,11 +68,19 @@ class TagLibrary extends AsyncNotifier<TagLibraryState> {
     try {
       if (await _file.exists()) {
         final j = jsonDecode(await _file.readAsString());
-        if (j is Map<String, dynamic>) return _decode(j);
+        if (j is Map<String, dynamic>) {
+          final loaded = _decode(j);
+          debugPrint(
+            'Inspiration library: ${loaded.entries.length} entries at ${_file.path}',
+          );
+          return loaded;
+        }
       }
-    } catch (_) {
+    } catch (error) {
+      debugPrint('Inspiration library could not be read: $error');
       // 损坏 → 空库(条目无二进制本体,无从重建)
     }
+    debugPrint('Inspiration library: empty at ${_file.path}');
     return const TagLibraryState();
   }
 
@@ -99,24 +111,52 @@ class TagLibrary extends AsyncNotifier<TagLibraryState> {
 
   TagLibraryState get _s => state.value ?? const TagLibraryState();
 
-  Future<void> _set(TagLibraryState next) async {
+  Future<void> _set(
+    TagLibraryState next, {
+    bool requirePersistence = false,
+  }) async {
     state = AsyncData(next);
-    try {
-      await _file.writeAsString(
-        jsonEncode({
-          'version': 1,
-          'entries': [for (final e in next.entries) e.toJson()],
-          'pools': {
-            for (final en in next.pools.entries)
-              tagCategoryDef(en.key).webId: en.value,
-          },
-          'usage': {
-            for (final en in next.usage.entries)
-              tagCategoryDef(en.key).webId: en.value,
-          },
-        }),
-      );
-    } catch (_) {}
+    final contents = jsonEncode({
+      'version': 1,
+      'entries': [for (final e in next.entries) e.toJson()],
+      'pools': {
+        for (final en in next.pools.entries)
+          tagCategoryDef(en.key).webId: en.value,
+      },
+      'usage': {
+        for (final en in next.usage.entries)
+          tagCategoryDef(en.key).webId: en.value,
+      },
+    });
+    // Serialize whole-file saves so a slower earlier write cannot erase a later
+    // edit. Atomic replacement preserves the last complete library on failure.
+    final write = _writes.then((_) => writeStringAtomic(_file, contents));
+    _writes = write.catchError((Object error) {
+      debugPrint('Inspiration library could not be saved: $error');
+    });
+    await (requirePersistence ? write : _writes);
+  }
+
+  Future<int> addPreviewExamples(TagCategory category) async {
+    await future;
+    final examples = await loadInspirationExamples(
+      category: category,
+      existingIds: {for (final e in _s.entries) e.id},
+      support: _file.parent,
+    );
+    final byId = {for (final e in _s.entries) e.id: e};
+    var added = 0;
+    for (final example in examples) {
+      if (byId.containsKey(example.id)) continue;
+      byId[example.id] = example;
+      added++;
+    }
+    // Persist even after a previous failed save. Existing edits are retained.
+    await _set(
+      _s.copyWith(entries: byId.values.toList()),
+      requirePersistence: true,
+    );
+    return added;
   }
 
   static String newId(TagCategory c) {

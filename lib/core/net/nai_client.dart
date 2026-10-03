@@ -1,3 +1,4 @@
+import '../util/canonical_number.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -537,7 +538,7 @@ class NaiClient {
             },
             body: jsonEncode({
               'image': imageBase64,
-              'information_extracted': infoExtracted,
+              'information_extracted': canonicalNumber(infoExtracted),
               'model': model,
             }),
           )

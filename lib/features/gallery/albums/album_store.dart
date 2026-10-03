@@ -16,6 +16,10 @@ class AlbumStore {
   Future<void> _tail = Future.value();
   final _pendingCovers = <String>{};
   int _resetVersion = 0;
+  int _editRevision = 0;
+
+  /// Includes queued writes whose new memberships are not yet visible in data.
+  int get editRevision => _editRevision;
   Future<void> get idle => _tail;
   File get _file => File('${root.path}/albums.json');
   File get _backup => File('${root.path}/albums.json.bak');
@@ -55,6 +59,7 @@ class AlbumStore {
     AlbumsData Function(AlbumsData) change, {
     bool reset = false,
   }) {
+    _editRevision++;
     final work = _tail.then((_) async {
       if (readOnly && !reset) throw StateError('图库数据需要恢复，暂时不能修改');
       final next = change(data);

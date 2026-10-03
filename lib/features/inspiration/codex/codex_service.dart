@@ -10,7 +10,8 @@ import 'codex_tag_zh.dart';
 
 /// 法典数据源接入:官网 CDN 取 index / media / 每部 JSON,以及原站的 tag 中文对照。
 /// 每部 JSON 大(最大 ~11MB),按 `id@版本` 落盘缓存(版本不变即命中不重拉),
-/// 解析放 isolate(compute),主线程不卡。图片不缓存(交给 Flutter 图缓存 + CDN 强缓存)。
+/// 解析放 isolate(compute)。图片缓存由 RemoteImageStore（磁盘）和 Flutter
+/// ImageCache（已解码内存）负责，本服务只处理目录数据。
 class CodexService {
   CodexService({http.Client? client}) : _client = client ?? http.Client();
 

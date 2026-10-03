@@ -26,6 +26,14 @@ bool FlutterWindow::OnCreate() {
   }
   RegisterPlugins(flutter_controller_->engine());
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
+  image_drop_window_ = flutter_controller_->view()->GetNativeWindow();
+  image_drop_target_ = new ImageDropTarget(
+      image_drop_window_, flutter_controller_->engine()->messenger());
+  if (FAILED(RegisterDragDrop(image_drop_window_, image_drop_target_))) {
+    image_drop_target_->Release();
+    image_drop_target_ = nullptr;
+    image_drop_window_ = nullptr;
+  }
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
     this->Show();
@@ -40,6 +48,12 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  if (image_drop_target_) {
+    RevokeDragDrop(image_drop_window_);
+    image_drop_target_->Release();
+    image_drop_target_ = nullptr;
+    image_drop_window_ = nullptr;
+  }
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }

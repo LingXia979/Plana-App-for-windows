@@ -23,7 +23,7 @@ double? stepOf({required double min, required double max, int? divisions}) =>
     ? null
     : (max - min) / divisions;
 
-/// 步长 → 读数/输入该保留几位小数(0.05 → 2,1 → 0)。
+/// 步长 → 紧凑读数该保留几位小数(0.05 → 2,1 → 0)。手输不受此限制。
 /// 连续滑杆没有步长可推,退回两位 —— 与 [ParamValueBox] 的默认读数一致。
 int decimalsForStep(double? step) {
   if (step == null || step <= 0) return 2;
@@ -35,6 +35,178 @@ int decimalsForStep(double? step) {
 }
 
 const _pow10 = [1.0, 10.0, 100.0, 1000.0];
+
+/// Desktop numeric editor. Drafts stay local until Enter or focus leaves;
+/// invalid drafts never change the parameter, Escape restores its value.
+class InlineParamInput extends StatefulWidget {
+  const InlineParamInput({
+    super.key,
+    required this.label,
+    required this.value,
+    required this.onCommit,
+    required this.min,
+    required this.max,
+    this.divisions,
+    this.snapToDivisions = false,
+    this.text,
+    this.dense = false,
+  });
+  final String label;
+  final double value, min, max;
+  final ValueChanged<double>? onCommit;
+  final int? divisions;
+
+  /// Only integer/discrete parameters quantize typed values. Decimal parameters
+  /// keep their full double precision; divisions still determines the readout.
+  final bool snapToDivisions;
+  final String? text;
+  final bool dense;
+
+  @override
+  State<InlineParamInput> createState() => _InlineParamInputState();
+}
+
+class _InlineParamInputState extends State<InlineParamInput> {
+  late final _controller = TextEditingController(text: _display);
+  late final _focus = FocusNode()..addListener(_focusChanged);
+  String? _error;
+  bool _dirty = false;
+  bool _canceling = false;
+  String get _display =>
+      widget.text ??
+      widget.value.toStringAsFixed(
+        decimalsForStep(
+          stepOf(min: widget.min, max: widget.max, divisions: widget.divisions),
+        ),
+      );
+
+  void _focusChanged() {
+    if (_focus.hasFocus) {
+      _controller.text = widget.value.toString();
+      _dirty = false;
+      _controller.selection = TextSelection(
+        baseOffset: 0,
+        extentOffset: _controller.text.length,
+      );
+    } else {
+      if (!_canceling) _commit();
+      if (_error == null) _controller.text = _display;
+    }
+  }
+
+  bool _commit() {
+    if (widget.onCommit == null || !_dirty) return true;
+    final value = double.tryParse(_controller.text.trim());
+    if (value == null ||
+        !value.isFinite ||
+        value < widget.min - 1e-9 ||
+        value > widget.max + 1e-9) {
+      setState(
+        () => _error = '请输入 ${_plain(widget.min)} ～ ${_plain(widget.max)}',
+      );
+      return false;
+    }
+    final snapped = quantizeToDivisions(
+      value.clamp(widget.min, widget.max),
+      min: widget.min,
+      max: widget.max,
+      divisions: widget.snapToDivisions ? widget.divisions : null,
+    );
+    setState(() => _error = null);
+    _dirty = false;
+    widget.onCommit!(snapped);
+    _controller.text = snapped.toString();
+    return true;
+  }
+
+  @override
+  void didUpdateWidget(covariant InlineParamInput oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.value != widget.value || oldWidget.text != widget.text) {
+      _controller.text = _focus.hasFocus ? widget.value.toString() : _display;
+      _dirty = false;
+      _error = null;
+    }
+  }
+
+  @override
+  void dispose() {
+    _focus.removeListener(_focusChanged);
+    _focus.dispose();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Tooltip(
+    message:
+        _error ??
+        '${widget.label} · ${_plain(widget.min)} ～ ${_plain(widget.max)} · Enter 确认 / Esc 撤销',
+    child: Focus(
+      onKeyEvent: (_, event) {
+        if (event is KeyDownEvent &&
+            event.logicalKey == LogicalKeyboardKey.escape) {
+          setState(() {
+            _controller.text = _display;
+            _error = null;
+            _dirty = false;
+          });
+          _canceling = true;
+          _focus.unfocus();
+          _canceling = false;
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      },
+      child: SizedBox(
+        width: widget.dense ? 56 : 66,
+        child: TextField(
+          key: ValueKey('inline-param-${widget.label}'),
+          controller: _controller,
+          focusNode: _focus,
+          enabled: widget.onCommit != null,
+          textAlign: TextAlign.center,
+          style: mono(
+            context,
+            size: widget.dense ? 11 : 13,
+            color: context.scheme.primary,
+          ),
+          keyboardType: const TextInputType.numberWithOptions(
+            decimal: true,
+            signed: true,
+          ),
+          textInputAction: TextInputAction.done,
+          onEditingComplete: () {},
+          onSubmitted: (_) {
+            if (_commit()) _focus.unfocus();
+          },
+          onChanged: (_) {
+            _dirty = true;
+            if (_error != null) setState(() => _error = null);
+          },
+          decoration: InputDecoration(
+            isDense: true,
+            filled: true,
+            fillColor: context.scheme.surfaceContainerHigh,
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 4,
+              vertical: 7,
+            ),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+              borderSide: BorderSide(
+                color: _error == null
+                    ? context.scheme.outlineVariant
+                    : context.scheme.error,
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+}
 
 /// 去掉尾随零的紧凑写法(范围/步长提示用):1.10 → 1.1,200.000 → 200。
 String _plain(double v) {
@@ -97,7 +269,7 @@ class ParamValueBox extends StatelessWidget {
   }
 }
 
-/// 手输参数值。确定 → 返回钳进 [min],[max] 并对齐步长的值;取消 → null。
+/// 手输参数值。只有 [snapToDivisions] 开启时对齐刻度;取消 → null。
 ///
 /// 超范围**不静默钳住**:直接在输入框下报出范围,免得用户以为自己填的数生效了。
 Future<double?> showParamInput(
@@ -107,6 +279,7 @@ Future<double?> showParamInput(
   double min = 0,
   double max = 1,
   int? divisions,
+  bool snapToDivisions = false,
 }) {
   return showDialog<double>(
     context: context,
@@ -116,6 +289,7 @@ Future<double?> showParamInput(
       min: min,
       max: max,
       divisions: divisions,
+      snapToDivisions: snapToDivisions,
     ),
   );
 }
@@ -127,6 +301,7 @@ class _ParamInputDialog extends StatefulWidget {
     required this.min,
     required this.max,
     this.divisions,
+    required this.snapToDivisions,
   });
 
   final String title;
@@ -134,6 +309,7 @@ class _ParamInputDialog extends StatefulWidget {
   final double min;
   final double max;
   final int? divisions;
+  final bool snapToDivisions;
 
   @override
   State<_ParamInputDialog> createState() => _ParamInputDialogState();
@@ -152,9 +328,7 @@ class _ParamInputDialogState extends State<_ParamInputDialog> {
   @override
   void initState() {
     super.initState();
-    final init = widget.value
-        .clamp(widget.min, widget.max)
-        .toStringAsFixed(_decimals);
+    final init = widget.value.clamp(widget.min, widget.max).toString();
     // 自动全选:进来就能直接覆写,省一次「先清空」
     _ctrl = TextEditingController(text: init)
       ..selection = TextSelection(baseOffset: 0, extentOffset: init.length);
@@ -179,10 +353,12 @@ class _ParamInputDialogState extends State<_ParamInputDialog> {
       (_current + dir * step).clamp(widget.min, widget.max),
       min: widget.min,
       max: widget.max,
-      divisions: widget.divisions,
+      divisions: widget.snapToDivisions ? widget.divisions : null,
     );
     Haptics.selection();
-    final s = next.toStringAsFixed(_decimals);
+    final s = widget.snapToDivisions
+        ? next.toStringAsFixed(_decimals)
+        : next.toString();
     // 程序改文本不会走 onChanged,加减键的可用态得自己 setState 刷
     setState(() {
       _error = null;
@@ -195,7 +371,7 @@ class _ParamInputDialogState extends State<_ParamInputDialog> {
 
   void _submit() {
     final v = double.tryParse(_ctrl.text.trim());
-    if (v == null) {
+    if (v == null || !v.isFinite) {
       setState(() => _error = '请输入数字');
       return;
     }
@@ -210,7 +386,7 @@ class _ParamInputDialogState extends State<_ParamInputDialog> {
         v.clamp(widget.min, widget.max),
         min: widget.min,
         max: widget.max,
-        divisions: widget.divisions,
+        divisions: widget.snapToDivisions ? widget.divisions : null,
       ),
     );
   }
@@ -243,11 +419,11 @@ class _ParamInputDialogState extends State<_ParamInputDialog> {
                   textAlign: TextAlign.center,
                   style: mono(context, size: 18),
                   keyboardType: TextInputType.numberWithOptions(
-                    decimal: _decimals > 0,
+                    decimal: !widget.snapToDivisions || _decimals > 0,
                     signed: widget.min < 0,
                   ),
                   inputFormatters: [
-                    FilteringTextInputFormatter.allow(RegExp(r'[0-9.\-]')),
+                    FilteringTextInputFormatter.allow(RegExp(r'[0-9.eE+\-]')),
                   ],
                   textInputAction: TextInputAction.done,
                   onSubmitted: (_) => _submit(),
@@ -277,7 +453,7 @@ class _ParamInputDialogState extends State<_ParamInputDialog> {
             _error ??
                 (_step == null
                     ? '范围 $_range'
-                    : '范围 $_range · 步长 ${_plain(_step)}'),
+                    : '范围 $_range · ${widget.snapToDivisions ? '步长' : '加减步长'} ${_plain(_step)}'),
             textAlign: TextAlign.center,
             style: context.texts.labelSmall!.copyWith(
               color: _error == null ? scheme.outline : scheme.error,

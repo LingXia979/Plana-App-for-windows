@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../generate/generate_state.dart';
@@ -21,6 +22,7 @@ class EditorState {
     this.activePositive = true,
     this.canUndo = false,
     this.foldBodies = const {},
+    this.foldLinks = const [],
   });
 
   final String positiveText;
@@ -30,6 +32,7 @@ class EditorState {
 
   /// 折叠表:占位符名字 → 折叠体(正/负两侧共用,载入时已跨侧去重)。
   final Map<String, String> foldBodies;
+  final List<PromptFoldLink> foldLinks;
 
   String get activeText => activePositive ? positiveText : negativeText;
 
@@ -42,16 +45,18 @@ class EditorState {
     bool? activePositive,
     bool? canUndo,
     Map<String, String>? foldBodies,
+    List<PromptFoldLink>? foldLinks,
   }) => EditorState(
     positiveText: positiveText ?? this.positiveText,
     negativeText: negativeText ?? this.negativeText,
     activePositive: activePositive ?? this.activePositive,
     canUndo: canUndo ?? this.canUndo,
     foldBodies: foldBodies ?? this.foldBodies,
+    foldLinks: foldLinks ?? this.foldLinks,
   );
 }
 
-typedef _Snap = (String pos, String neg);
+typedef _Snap = (String pos, String neg, List<PromptFoldLink> links);
 
 /// 单个编辑目标(主提示词/某角色)的撤销档。**进程级长效**:退出编辑器
 /// 不清空,重进接着撤,只在进程结束或角色被删时消亡。折叠表一并留存且
@@ -63,6 +68,12 @@ class _UndoArchive {
 }
 
 class EditorNotifier extends Notifier<EditorState> {
+  EditorNotifier({this.immediateWriteBack = false});
+
+  /// Inline editors stay open while Generate and other editors are used.
+  final bool immediateWriteBack;
+  bool isWritingBack = false;
+
   /// key = 角色 id,主提示词用 ''。
   final Map<String, _UndoArchive> _archives = {};
   static const _maxHistory = 60;
@@ -82,7 +93,10 @@ class EditorNotifier extends Notifier<EditorState> {
   Timer? _writeBack;
 
   @override
-  EditorState build() => const EditorState();
+  EditorState build() {
+    ref.onDispose(() => _writeBack?.cancel());
+    return const EditorState();
+  }
 
   void load({
     required String positive,
@@ -100,13 +114,30 @@ class EditorNotifier extends Notifier<EditorState> {
     };
     _archives.removeWhere((k, _) => !live.contains(k));
     final arc = _arc;
+    final input = ref.read(generateProvider);
+    final links = validPromptFoldLinks(
+      positive,
+      negative,
+      charId == null
+          ? input.promptFoldLinks
+          : [
+              for (final character in input.characters)
+                if (character.id == charId) ...character.foldLinks,
+            ],
+    );
+    final posNames = <String, String>{}, negNames = <String, String>{};
     // 草稿(完整折叠语法)→ 正文占位符 + 折叠表。负面侧避开正面已占的
     // 名字,两侧共同避开撤销档已占的名字(同名同体复用,不同体加序号 ——
     // 免得本次载入的折叠顶掉历史快照还指望着的同名旧折叠体)。
-    final (posText, posBodies) = collapseFolds(positive, seed: arc.folds);
+    final (posText, posBodies) = collapseFolds(
+      positive,
+      seed: arc.folds,
+      onCollapsed: (fold, name) => posNames[fold.name] = name,
+    );
     final (negText, negBodies) = collapseFolds(
       negative,
       seed: {...arc.folds, ...posBodies},
+      onCollapsed: (fold, name) => negNames[fold.name] = name,
     );
     arc.folds = {...arc.folds, ...posBodies, ...negBodies};
     state = EditorState(
@@ -115,6 +146,13 @@ class EditorNotifier extends Notifier<EditorState> {
       activePositive: startPositive,
       canUndo: arc.snaps.isNotEmpty,
       foldBodies: arc.folds,
+      foldLinks: [
+        for (final link in links)
+          link.renamed(
+            posNames[link.positiveName]!,
+            negNames[link.negativeName]!,
+          ),
+      ],
     );
   }
 
@@ -122,7 +160,19 @@ class EditorNotifier extends Notifier<EditorState> {
   /// (重名且内容不同时自动加序号)。表只增不删——撤销回带占位符的旧文本时
   /// 仍能解析。
   String registerFold(String name, String body) {
-    final n = uniqueFoldName(name, body, state.foldBodies);
+    final linkedNames = {
+      for (final link in state.foldLinks) ...[
+        link.positiveName,
+        link.negativeName,
+      ],
+    };
+    // A newly registered manual fold must not reuse the anchor of an imported
+    // pair, even if its display name and body happen to be identical.
+    final lookup = {
+      ...state.foldBodies,
+      for (final name in linkedNames) name: '${state.foldBodies[name]}\u0000',
+    };
+    final n = uniqueFoldName(name, body, lookup);
     final next = {...state.foldBodies, n: body};
     _arc.folds = next; // 撤销档同步留存:快照回带占位符时仍解析得回
     state = state.copyWith(foldBodies: next);
@@ -131,6 +181,10 @@ class EditorNotifier extends Notifier<EditorState> {
 
   void _scheduleWriteBack() {
     _writeBack?.cancel();
+    if (immediateWriteBack) {
+      flushWriteBack();
+      return;
+    }
     _writeBack = Timer(const Duration(milliseconds: 400), flushWriteBack);
   }
 
@@ -139,6 +193,15 @@ class EditorNotifier extends Notifier<EditorState> {
   /// ——从前这里写死了 setPrompts,点角色卡进来编辑会静默覆盖主提示词。
   void flushWriteBack() {
     _writeBack?.cancel();
+    isWritingBack = true;
+    try {
+      _writeToGenerate();
+    } finally {
+      isWritingBack = false;
+    }
+  }
+
+  void _writeToGenerate() {
     final gen = ref.read(generateProvider.notifier);
     final id = _charId;
     // 草稿 = 占位符展开回完整折叠语法(下次载入原样收回);定稿再剔编辑期语法
@@ -148,12 +211,14 @@ class EditorNotifier extends Notifier<EditorState> {
     final neg = outputOf(negDraft);
     final posRaw = draftOf(posDraft, pos);
     final negRaw = draftOf(negDraft, neg);
+    final links = validPromptFoldLinks(posDraft, negDraft, state.foldLinks);
     if (id == null) {
       gen.setPrompts(
         positive: pos,
         negative: neg,
         positiveRaw: posRaw,
         negativeRaw: negRaw,
+        promptFoldLinks: links,
       );
       return;
     }
@@ -164,7 +229,8 @@ class EditorNotifier extends Notifier<EditorState> {
       if (c.positive == pos &&
           c.negative == neg &&
           c.positiveRaw == posRaw &&
-          c.negativeRaw == negRaw) {
+          c.negativeRaw == negRaw &&
+          listEquals(c.foldLinks, links)) {
         return;
       }
       break;
@@ -175,21 +241,79 @@ class EditorNotifier extends Notifier<EditorState> {
       negative: neg,
       positiveRaw: posRaw,
       negativeRaw: negRaw,
+      foldLinks: links,
     );
   }
 
   /// 写入当前段。structural=true(删/插/改权重等)必入撤销栈,打字按 700ms 合并。
-  void editActive(String text, {bool structural = false}) {
+  void editActive(
+    String text, {
+    bool structural = false,
+    bool detachRemovedFolds = false,
+  }) {
+    if (text == state.activeText) return;
+    final bodies = state.foldBodies;
+    final existingLinks = validPromptFoldLinks(
+      expandFolds(state.positiveText, bodies),
+      expandFolds(state.negativeText, bodies),
+      state.foldLinks,
+    );
+    var opposite = state.activePositive
+        ? state.negativeText
+        : state.positiveText;
+    final oldRefs = parseFoldRefs(state.activeText, bodies);
+    final newRefs = parseFoldRefs(text, bodies);
+    final replacesFold = newRefs.any(
+      (next) =>
+          newRefs.where((ref) => ref.name == next.name).length >
+          oldRefs.where((ref) => ref.name == next.name).length,
+    );
+    var removedLinkedFold = false;
+    for (final link in existingLinks) {
+      final name = state.activePositive ? link.positiveName : link.negativeName;
+      if (newRefs.any((ref) => ref.name == name)) continue;
+      final old = oldRefs.where((ref) => ref.name == name).toList();
+      if (old.length != 1) continue;
+      removedLinkedFold = true;
+      // The editor's explicit unfold action replaces a reference with its body
+      // in place (also within weight/disabled wrappers). It detaches the pair;
+      // it never means deleting its counterpart.
+      if (detachRemovedFolds ||
+          replacesFold ||
+          unfoldRef(state.activeText, old.single, bodies) == text) {
+        continue;
+      }
+      final otherName = state.activePositive
+          ? link.negativeName
+          : link.positiveName;
+      final other = parseFoldRefs(
+        opposite,
+        bodies,
+      ).where((ref) => ref.name == otherName).toList();
+      if (other.length == 1) {
+        opposite = deleteFoldRef(opposite, other.single).$1;
+      }
+    }
+    final positive = state.activePositive ? text : opposite;
+    final negative = state.activePositive ? opposite : text;
+    final nextLinks = validPromptFoldLinks(
+      expandFolds(positive, bodies),
+      expandFolds(negative, bodies),
+      existingLinks,
+    );
     final now = DateTime.now().millisecondsSinceEpoch;
-    if (structural || now - _lastPushMs > 700) {
+    if (structural || removedLinkedFold || now - _lastPushMs > 700) {
       final snaps = _arc.snaps;
-      snaps.add((state.positiveText, state.negativeText));
+      snaps.add((state.positiveText, state.negativeText, state.foldLinks));
       if (snaps.length > _maxHistory) snaps.removeAt(0);
       _lastPushMs = now;
     }
-    state = state.activePositive
-        ? state.copyWith(positiveText: text, canUndo: true)
-        : state.copyWith(negativeText: text, canUndo: true);
+    state = state.copyWith(
+      positiveText: positive,
+      negativeText: negative,
+      foldLinks: nextLinks,
+      canUndo: true,
+    );
     _scheduleWriteBack();
   }
 
@@ -206,6 +330,7 @@ class EditorNotifier extends Notifier<EditorState> {
     state = state.copyWith(
       positiveText: s.$1,
       negativeText: s.$2,
+      foldLinks: s.$3,
       canUndo: snaps.isNotEmpty,
     );
     _scheduleWriteBack();

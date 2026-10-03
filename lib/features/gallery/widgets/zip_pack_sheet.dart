@@ -23,16 +23,27 @@ Future<ZipPacked?> showZipPackSheet(
   required GalleryStore store,
   required SaveSettings settings,
   required String defaultName,
-}) => showModalBottomSheet<ZipPacked>(
-  context: context,
-  isScrollControlled: true,
-  builder: (_) => _ZipPackSheet(
+  bool desktop = false,
+}) {
+  Widget content(BuildContext context) => _ZipPackSheet(
     items: items,
     store: store,
     settings: settings,
     defaultName: defaultName,
-  ),
-);
+  );
+  if (desktop) {
+    return showDialog<ZipPacked>(
+      context: context,
+      builder: (ctx) =>
+          Dialog(child: SizedBox(width: 480, child: content(ctx))),
+    );
+  }
+  return showModalBottomSheet<ZipPacked>(
+    context: context,
+    isScrollControlled: true,
+    builder: content,
+  );
+}
 
 class _ZipPackSheet extends StatefulWidget {
   const _ZipPackSheet({

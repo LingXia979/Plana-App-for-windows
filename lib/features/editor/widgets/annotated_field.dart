@@ -4,13 +4,14 @@ import 'dart:ui' show BoxHeightStyle;
 import 'package:flutter/foundation.dart' show mapEquals;
 import 'package:flutter/gestures.dart' show computePanSlop;
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart' show RenderProxyBox;
+import 'package:flutter/rendering.dart' show RenderEditable, RenderProxyBox;
 
 import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/editor_theme.dart';
 import '../data/suggestions.dart' show transCacheRev;
 import '../editor_models.dart';
 import 'rich_tag_controller.dart';
+import 'editor_body.dart';
 
 /// 行距分配策略:注音行高(2.0)默认按**比例**分配行距,会把绝大部分行距塞到
 /// 基线**上方**(升部权重远大于降部),基线下方几乎不留白——结果正文连同权重
@@ -38,11 +39,17 @@ class AnnotatedField extends StatefulWidget {
     this.onCursorDrag,
     this.scrollController,
     this.onFoldTap,
+    this.scrollable = true,
+    this.minLines,
+    this.padding = const EdgeInsets.fromLTRB(16, 2, 16, 24),
   });
 
   final RichTagController controller;
   final FocusNode focusNode;
   final String hint;
+  final bool scrollable;
+  final int? minLines;
+  final EdgeInsets padding;
 
   /// 注音翻译开关(编辑器设置):关=摘除注音层,行高收紧不再为译文留白。
   final bool showTrans;
@@ -63,14 +70,44 @@ class AnnotatedField extends StatefulWidget {
   final void Function(String name)? onFoldTap;
 
   @override
-  State<AnnotatedField> createState() => _AnnotatedFieldState();
+  State<AnnotatedField> createState() => AnnotatedFieldState();
 }
 
-class _AnnotatedFieldState extends State<AnnotatedField> {
+class AnnotatedFieldState extends State<AnnotatedField> {
   /// 底色层 / 注音层是按设置条件挂进 Stack 的,开关一动 TextField 的兄弟下标
   /// 就变了 —— 没有这把全局 key,框架会按位置改嫁,把输入框连同焦点和选区
   /// 一起重建。
   final _fieldKey = GlobalKey();
+
+  /// Current caret/selection end in global coordinates, after text layout.
+  Rect? selectionAnchor() {
+    RenderEditable? render;
+    void visit(RenderObject child) {
+      if (child is RenderEditable) {
+        render = child;
+      } else {
+        child.visitChildren(visit);
+      }
+    }
+
+    final field = _fieldKey.currentContext?.findRenderObject();
+    if (field != null) visit(field);
+    final editable = render;
+    final selection = widget.controller.selection;
+    if (editable == null || !editable.hasSize || !selection.isValid) {
+      return null;
+    }
+    final caret = editable.getLocalRectForCaret(
+      TextPosition(
+        offset: selection.extentOffset.clamp(0, widget.controller.text.length),
+        affinity: selection.affinity,
+      ),
+    );
+    return Rect.fromPoints(
+      editable.localToGlobal(caret.topLeft),
+      editable.localToGlobal(caret.bottomRight),
+    );
+  }
 
   late final _handles = _WatchedHandles(this);
 
@@ -135,10 +172,10 @@ class _AnnotatedFieldState extends State<AnnotatedField> {
   }
 
   @override
-  void didUpdateWidget(AnnotatedField old) {
-    super.didUpdateWidget(old);
-    if (old.focusNode != widget.focusNode) {
-      old.focusNode.removeListener(_onFocusChanged);
+  void didUpdateWidget(AnnotatedField oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.focusNode != widget.focusNode) {
+      oldWidget.focusNode.removeListener(_onFocusChanged);
       widget.focusNode.addListener(_onFocusChanged);
     }
   }
@@ -154,18 +191,26 @@ class _AnnotatedFieldState extends State<AnnotatedField> {
     final scheme = context.scheme;
     final pal = context.editor;
     final scaler = MediaQuery.textScalerOf(context);
-    final base = kEditorBaseStyle.copyWith(
-      fontSize: widget.fontSize,
-      height: widget.showTrans ? null : 1.5,
-    );
+    // TextField merges its style with bodyLarge (M3). The paint layers must
+    // inherit the same font family/fallbacks, or highlights wrap at other words.
+    final theme = Theme.of(context);
+    final inputStyle = theme.useMaterial3
+        ? context.texts.bodyLarge!
+        : context.texts.titleMedium!;
+    final base = inputStyle
+        .merge(kEditorBaseStyle)
+        .copyWith(
+          fontSize: widget.fontSize,
+          height: widget.showTrans ? null : 1.5,
+        );
 
-    return SingleChildScrollView(
+    return EditorBody(
       controller: widget.scrollController,
       // 一屏放得下也照样接拖动:编辑页滚动收起顶栏后,靠「顶上往下拽」
       // 放出来(见 ChromeScrollTracker)
-      physics: const AlwaysScrollableScrollPhysics(),
+      scrollable: widget.scrollable,
       // 顶部只留 2:第一行 2 倍行高自带约 6 的上半行距,再多就和顶栏隔得太开
-      padding: const EdgeInsets.fromLTRB(16, 2, 16, 24),
+      padding: widget.padding,
       child: LayoutBuilder(
         builder: (context, constraints) {
           final width = constraints.maxWidth;
@@ -249,6 +294,10 @@ class _AnnotatedFieldState extends State<AnnotatedField> {
                     focusNode: widget.focusNode,
                     style: base.copyWith(color: scheme.onSurface),
                     maxLines: null,
+                    minLines: widget.minLines,
+                    scrollPhysics: widget.scrollable
+                        ? null
+                        : const NeverScrollableScrollPhysics(),
                     cursorColor: pal.cursor,
                     cursorWidth: _kCursorWidth,
                     selectionControls: _handles,
@@ -256,6 +305,7 @@ class _AnnotatedFieldState extends State<AnnotatedField> {
                     textInputAction: TextInputAction.newline,
                     decoration: InputDecoration(
                       isDense: true,
+                      filled: widget.scrollable ? null : false,
                       isCollapsed: true,
                       contentPadding: EdgeInsets.zero,
                       border: InputBorder.none,
@@ -387,7 +437,7 @@ class _WatchedHandles extends MaterialTextSelectionControls
     with TextSelectionHandleControls {
   _WatchedHandles(this.owner);
 
-  final _AnnotatedFieldState owner;
+  final AnnotatedFieldState owner;
 
   @override
   Size getHandleSize(double textLineHeight) =>

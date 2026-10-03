@@ -60,7 +60,7 @@ class GeneratePage extends ConsumerWidget {
                         itemBuilder: (context, i) => Padding(
                           key: ValueKey('mod-${visible[i].name}'),
                           padding: const EdgeInsets.only(top: 9),
-                          child: _moduleCard(visible[i], i),
+                          child: buildGenerateModuleCard(visible[i], i),
                         ),
                       ),
                     ),
@@ -102,7 +102,7 @@ class GeneratePage extends ConsumerWidget {
   }
 }
 
-Widget _moduleCard(GenModule m, int index) => switch (m) {
+Widget buildGenerateModuleCard(GenModule m, int? index) => switch (m) {
   GenModule.character => CharacterCard(reorderIndex: index),
   GenModule.vibe => VibeCard(reorderIndex: index),
   GenModule.charRef => CharRefCard(reorderIndex: index),

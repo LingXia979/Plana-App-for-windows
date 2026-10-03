@@ -231,6 +231,16 @@ class AlbumsData {
 }
 
 /// 仅撤销本次变化的关系；保留此后新增加的其他归属。
+class GalleryTransferChange {
+  GalleryTransferChange.moved(this.memberships) : copiedIds = const {};
+  GalleryTransferChange.copied(Set<String> ids)
+    : copiedIds = Set.unmodifiable(ids),
+      memberships = null;
+  final AlbumChange? memberships;
+  final Set<String> copiedIds;
+  int get count => memberships?.count ?? copiedIds.length;
+}
+
 class AlbumChange {
   AlbumChange(AlbumsData before, AlbumsData after, Set<String> images)
     : before = {

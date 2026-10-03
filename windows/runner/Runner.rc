@@ -90,12 +90,12 @@ BEGIN
         BLOCK "040904e4"
         BEGIN
             VALUE "CompanyName", "com.plana" "\0"
-            VALUE "FileDescription", "plana_app" "\0"
+            VALUE "FileDescription", "Plana app for windows" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "plana_app" "\0"
+            VALUE "InternalName", "plana_app_for_windows" "\0"
             VALUE "LegalCopyright", "Copyright (C) 2026 com.plana. All rights reserved." "\0"
-            VALUE "OriginalFilename", "plana_app.exe" "\0"
-            VALUE "ProductName", "plana_app" "\0"
+            VALUE "OriginalFilename", "plana_app_for_windows.exe" "\0"
+            VALUE "ProductName", "Plana app for windows" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

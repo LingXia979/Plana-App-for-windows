@@ -19,10 +19,11 @@ final vibeCacheProvider = FutureProvider<VibeEncodeCache>(
 );
 
 class VibeEncodeCache {
-  VibeEncodeCache._(this._dir, this._names);
+  VibeEncodeCache._(this._dir, this._names, this._diskNames);
 
   final Directory _dir;
   final Set<String> _names; // 已有文件名索引;值按需读盘
+  final Map<String, String> _diskNames; // canonical name -> existing disk name
 
   /// 写盘失败时的内存兜底(本会话仍可命中)。
   final Map<String, String> _mem = {};
@@ -32,11 +33,12 @@ class VibeEncodeCache {
   static String _fileName(String imageHash, String model, double ie) =>
       '${imageHash}_${_normModel(model)}_${jsNum(ie)}.enc';
 
-  static Future<VibeEncodeCache> load() async {
+  static Future<VibeEncodeCache> load({Directory? supportRoot}) async {
     Directory? dir;
     final names = <String>{};
+    final diskNames = <String, String>{};
     try {
-      final sup = await getApplicationSupportDirectory();
+      final sup = supportRoot ?? await getApplicationSupportDirectory();
       dir = Directory('${sup.path}/vibe_encodings');
       await dir.create(recursive: true);
 
@@ -67,13 +69,34 @@ class VibeEncodeCache {
 
       await for (final ent in dir.list()) {
         if (ent is File && ent.path.endsWith('.enc')) {
-          names.add(ent.uri.pathSegments.last);
+          final original = ent.uri.pathSegments.last;
+          final stem = original.substring(0, original.length - 4);
+          final first = stem.indexOf('_'), last = stem.lastIndexOf('_');
+          var canonical = original;
+          if (first > 0 && last > first) {
+            final ie = double.tryParse(stem.substring(last + 1));
+            if (ie != null && ie.isFinite) {
+              canonical = _fileName(
+                stem.substring(0, first),
+                stem.substring(first + 1, last),
+                ie,
+              );
+            }
+          }
+          names.add(canonical);
+          if (!diskNames.containsKey(canonical) || original == canonical) {
+            diskNames[canonical] = original;
+          }
         }
       }
     } catch (_) {
       // 目录不可用按空缓存起步(只影响命中率,不影响生成)
     }
-    return VibeEncodeCache._(dir ?? Directory('vibe_encodings'), names);
+    return VibeEncodeCache._(
+      dir ?? Directory('vibe_encodings'),
+      names,
+      diskNames,
+    );
   }
 
   Future<String?> get(String imageHash, String model, double ie) async {
@@ -82,7 +105,7 @@ class VibeEncodeCache {
     if (mem != null) return mem;
     if (!_names.contains(n)) return null;
     try {
-      final s = await File('${_dir.path}/$n').readAsString();
+      final s = await File('${_dir.path}/${_diskNames[n] ?? n}').readAsString();
       return s.isEmpty ? null : s;
     } catch (_) {
       return null;
@@ -99,6 +122,7 @@ class VibeEncodeCache {
     try {
       await File('${_dir.path}/$n').writeAsString(encoding);
       _names.add(n);
+      _diskNames[n] = n;
       _mem.remove(n);
     } catch (_) {
       _mem[n] = encoding; // 落盘失败:内存兜底,本会话可用
@@ -121,6 +145,7 @@ class VibeEncodeCache {
       }
     } catch (_) {}
     _names.clear();
+    _diskNames.clear();
     _mem.clear();
   }
 

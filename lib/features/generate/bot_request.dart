@@ -1,3 +1,4 @@
+import '../../core/util/canonical_number.dart';
 import 'dart:convert';
 
 import '../../core/util/transparency.dart';
@@ -160,8 +161,8 @@ Map<String, dynamic> buildBotParams(
       for (var i = 0; i < vibes.length; i++)
         {
           'encodedVibe': vibes[i].encodedVibe,
-          'strength': strengths[i],
-          'informationExtracted': vibes[i].infoExtracted,
+          'strength': canonicalNumber(strengths[i]),
+          'informationExtracted': canonicalNumber(vibes[i].infoExtracted),
         },
     ];
   }

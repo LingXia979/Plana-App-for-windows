@@ -4,6 +4,8 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/store/app_stores.dart';
+import '../../../core/platform/desktop.dart';
+import '../../desktop/desktop_library_state.dart';
 import '../../../core/store/ui_prefs.dart';
 import '../../generate/generation_controller.dart';
 import '../gallery_state.dart';
@@ -14,11 +16,25 @@ final albumsProvider = NotifierProvider<AlbumsNotifier, AlbumsData>(
 );
 
 final galleryBrowseAlbumProvider = Provider<String?>((ref) {
+  if (ref.watch(desktopModeProvider)) {
+    final selection = ref.watch(desktopLibraryProvider);
+    final id = selection.albumId;
+    if (selection.automatic) return id;
+    return ref.watch(albumsProvider).exists(id) ? id : null;
+  }
   final id = ref.watch(uiPrefsProvider).galleryBrowseAlbum;
   return id.isEmpty || !ref.watch(albumsProvider).exists(id) ? null : id;
 });
 
 final gallerySaveTargetProvider = Provider<GallerySaveTarget>((ref) {
+  if (ref.watch(desktopModeProvider)) {
+    final selection = ref.watch(desktopLibraryProvider);
+    final captured = selection.capture(DateTime.now());
+    return selection.automatic ||
+            ref.watch(albumsProvider).exists(captured.albumId)
+        ? captured
+        : const GallerySaveTarget.all();
+  }
   final id = ref.watch(uiPrefsProvider).gallerySaveAlbum;
   return id.isEmpty || !ref.watch(albumsProvider).exists(id)
       ? const GallerySaveTarget.all()
@@ -77,6 +93,27 @@ class AlbumsNotifier extends Notifier<AlbumsData> {
     for (final r in ref.read(galleryProvider).results) r.id,
   };
 
+  /// Created only after the first successful image save. The store serializes
+  /// updates, so parallel generations share one date album.
+  Future<void> ensureDailyAlbum(String id) async {
+    if (!isDailyAlbum(id)) throw ArgumentError.value(id, 'id');
+    if (state.exists(id)) return;
+    await _edit(
+      (d) => d.exists(id)
+          ? d
+          : d.copyWith(
+              albums: [
+                GalleryAlbum(
+                  id: id,
+                  name: id.substring(4),
+                  createdAt: DateTime.now().millisecondsSinceEpoch,
+                ),
+                ...d.albums,
+              ],
+            ),
+    );
+  }
+
   Future<void> _edit(
     AlbumsData Function(AlbumsData) change, {
     bool reset = false,
@@ -132,17 +169,31 @@ class AlbumsNotifier extends Notifier<AlbumsData> {
     });
   }
 
-  Future<void> delete(String id) async {
-    await _edit((d) => d.deleteAlbum(id));
-    if (!ref.mounted) return;
+  Future<bool> delete(
+    String id, {
+    bool Function(AlbumsData current)? canDelete,
+  }) async {
+    var accepted = true;
+    await _edit((d) {
+      if (canDelete?.call(d) == false) {
+        accepted = false;
+        return d;
+      }
+      return d.deleteAlbum(id);
+    });
+    if (!accepted || !ref.mounted) return accepted;
     final prefs = ref.read(uiPrefsProvider);
     if (prefs.galleryBrowseAlbum == id) browse(null);
     if (prefs.gallerySaveAlbum == id) setSave(null);
     _lastSelected.remove(id);
+    return true;
   }
 
   void browse(String? id, {bool alsoSave = false}) {
     if (!state.exists(id)) throw StateError('图库已被删除');
+    if (ref.read(desktopModeProvider)) {
+      ref.read(desktopLibraryProvider.notifier).choose(id);
+    }
     final savedScope = ref.read(uiPrefsProvider).galleryBrowseAlbum;
     final old = savedScope.isEmpty || !state.exists(savedScope)
         ? null
@@ -178,6 +229,10 @@ class AlbumsNotifier extends Notifier<AlbumsData> {
 
   void setSave(String? id) {
     if (!state.exists(id)) throw StateError('图库已被删除');
+    if (ref.read(desktopModeProvider)) {
+      browse(id, alsoSave: true);
+      return;
+    }
     ref
         .read(uiPrefsProvider.notifier)
         .patch((p) => p.copyWith(gallerySaveAlbum: id ?? ''));
@@ -240,6 +295,84 @@ class AlbumsNotifier extends Notifier<AlbumsData> {
   }
 
   Future<void> undo(AlbumChange change) => _edit((d) => change.undo(d, _live));
+
+  Future<GalleryTransferChange> transfer(
+    Set<String> images,
+    Set<String> targets, {
+    required bool copy,
+    String? sourceAlbum,
+  }) async {
+    if (targets.isEmpty || (!copy && targets.length != 1)) {
+      throw StateError('请选择目标图库');
+    }
+    if (copy) {
+      return GalleryTransferChange.copied(
+        await ref
+            .read(galleryProvider.notifier)
+            .copyResults(images, targets, sourceAlbum: sourceAlbum),
+      );
+    }
+    final target = targets.single;
+    late AlbumChange change;
+    await _edit((d) {
+      if (!d.exists(target) || !d.exists(sourceAlbum)) {
+        throw StateError('图库已不存在，请重新选择');
+      }
+      if (target == sourceAlbum) throw StateError('请选择另一个图库');
+      final live = images
+          .intersection(_live)
+          .where((id) => d.contains(sourceAlbum, id))
+          .toSet();
+      final memberships = {...d.memberships};
+      for (final id in live) {
+        final albums = {...d.ofImage(id)};
+        // Moving keeps the image identity. Copying above creates new identities.
+        sourceAlbum == null ? albums.clear() : albums.remove(sourceAlbum);
+        albums.add(target);
+        memberships[id] = albums;
+      }
+      final next = d.copyWith(memberships: memberships);
+      change = AlbumChange(d, next, live);
+      return next;
+    });
+    return GalleryTransferChange.moved(change);
+  }
+
+  Future<void> placeCopies(
+    Map<String, String> destinations, {
+    required Set<String> sources,
+    required String? sourceAlbum,
+  }) => _edit((d) {
+    if (!d.exists(sourceAlbum) ||
+        !destinations.values.every(d.exists) ||
+        !sources.every(
+          (id) => _live.contains(id) && d.contains(sourceAlbum, id),
+        ) ||
+        !destinations.keys.every(_live.contains)) {
+      throw StateError('来源图片或目标图库已变化，请重新复制');
+    }
+    return d.copyWith(
+      memberships: {
+        ...d.memberships,
+        for (final e in destinations.entries) e.key: {e.value},
+      },
+    );
+  });
+
+  Future<void> undoTransfer(GalleryTransferChange change) async {
+    if (change.memberships case final AlbumChange memberships) {
+      await undo(memberships);
+    } else {
+      final deleted = await ref
+          .read(galleryProvider.notifier)
+          .deleteResultsVerified(change.copiedIds.toList());
+      if (ref.mounted &&
+          change.copiedIds.difference(deleted).any(_live.contains)) {
+        throw StateError('部分副本未能删除，请稍后重试');
+      }
+    }
+  }
+
   Future<void> removeImages(Set<String> ids) =>
       _edit((d) => d.removeImages(ids));
 

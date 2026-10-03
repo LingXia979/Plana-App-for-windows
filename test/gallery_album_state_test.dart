@@ -140,21 +140,21 @@ void main() {
       albums.browse(scoped ? album : null);
       albums.setSave(other);
       gallery.select(ids[2]);
-      gallery.deleteResults([ids[2]]);
+      await gallery.deleteResults([ids[2]]);
       expect(c.read(galleryViewProvider).selectedId, ids[1]);
       expect(c.read(galleryProvider).selectedId, ids[1]);
 
       // 删除左侧未选中的缩略图，不改变当前预览。
-      gallery.deleteResults([ids[4]]);
+      await gallery.deleteResults([ids[4]]);
       expect(c.read(galleryViewProvider).selectedId, ids[1]);
 
       // 最后一张没有下一张时，选最近的上一张。
       gallery.select(ids[0]);
-      gallery.deleteResults([ids[0]]);
+      await gallery.deleteResults([ids[0]]);
       expect(c.read(galleryViewProvider).selectedId, ids[1]);
 
       // 连续/批量删除跳过一起删除的项，选中结果也持久化。
-      gallery.deleteResults([ids[1], ids[2]]);
+      await gallery.deleteResults([ids[1], ids[2]]);
       expect(c.read(galleryViewProvider).selectedId, ids[3]);
       stores.flushNow();
       await stores.gallery.idle;
@@ -162,7 +162,7 @@ void main() {
       final restored = await AppStores.open(rootOverride: root);
       expect(restored.gallery.initialSelectedId, ids[3]);
 
-      gallery.deleteResults([ids[3]]);
+      await gallery.deleteResults([ids[3]]);
       expect(c.read(galleryViewProvider).results, isEmpty);
       expect(c.read(galleryViewProvider).selectedId, isNull);
       expect(c.read(galleryProvider).selectedId, isNull);
@@ -194,7 +194,7 @@ void main() {
       seed: 5,
       target: const GallerySaveTarget.all(),
     );
-    gallery.deleteResults([ids[3], ids[2]]);
+    await gallery.deleteResults([ids[3], ids[2]]);
     expect(c.read(galleryProvider).selectedId, ids[1]);
     await pending;
     expect(c.read(galleryViewProvider).selectedId, ids[1]);

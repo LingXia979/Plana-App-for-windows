@@ -205,6 +205,7 @@ class _SaveSheetState extends ConsumerState<_SaveSheet> {
                         final v = await showParamInput(
                           context,
                           title: '压缩质量',
+                          snapToDivisions: true,
                           value: (_s.quality * 100).roundToDouble(),
                           min: 10,
                           max: 100,

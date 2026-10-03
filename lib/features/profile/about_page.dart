@@ -1,3 +1,4 @@
+import '../../core/ui/settings_scaffold.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:url_launcher/url_launcher.dart';
@@ -19,11 +20,12 @@ class AboutPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
-    return Scaffold(
+    return SettingsScaffold(
       appBar: AppBar(title: const Text('关于')),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(14, 8, 14, 28),
         children: [
+          const SettingsPageHeader(),
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 20),
             child: Column(

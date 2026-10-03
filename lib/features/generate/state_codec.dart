@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import '../../core/store/blob_store.dart';
+import '../editor/editor_models.dart' show PromptFoldLink;
 import 'char_position.dart';
 import 'models.dart';
 import 'nai_request.dart' show kLegacyAutoCenters;
@@ -15,12 +16,71 @@ class EncodedState {
   final Set<String> refs;
 }
 
+/// Reference-only counterpart of encodeGenerateState for the live workspace.
+/// Hashing does not write blobs or mutate the user's pending draft.
+Future<Set<String>> generateStateBlobRefs(
+  GenerateState state,
+  BlobStore blobs,
+) async {
+  final refs = <String>{};
+  Future<void> include(Uint8List? bytes, {String? known}) async {
+    if (bytes != null) refs.add(await blobs.hashOf(bytes, known: known));
+  }
+
+  for (final item in state.vibes) {
+    await include(item.image, known: item.imageHash);
+  }
+  for (final item in state.charRefs) {
+    await include(item.image, known: item.imageHash);
+  }
+  for (final item in state.kreaStyleRefs) {
+    await include(item.image, known: item.imageHash);
+  }
+  await include(state.img2img?.image);
+  final inpaint = state.inpaint;
+  await include(inpaint?.image);
+  await include(inpaint?.mask);
+  await include(inpaint?.grid);
+  await include(inpaint?.paste?.original);
+  await include(inpaint?.paste?.focusMask);
+  return refs;
+}
+
 T? _enumByName<T extends Enum>(List<T> values, Object? name) {
   if (name is! String) return null;
   for (final v in values) {
     if (v.name == name) return v;
   }
   return null;
+}
+
+InpaintFocus? _decodeInpaintFocus(Object? value) {
+  if (value is! Map) return null;
+  final x = value['x'], y = value['y'];
+  final width = value['width'], height = value['height'];
+  final context = value['context'];
+  if (x is! int ||
+      y is! int ||
+      width is! int ||
+      height is! int ||
+      context is! int ||
+      [x, y, width, height, context].any((v) => v % 8 != 0) ||
+      x < 0 ||
+      y < 0 ||
+      context < 32 ||
+      context > 96 ||
+      width <= context * 2 ||
+      height <= context * 2 ||
+      width * height > 768 * 768) {
+    return null;
+  }
+  return InpaintFocus(
+    x: x,
+    y: y,
+    width: width,
+    height: height,
+    context: context,
+  );
 }
 
 Future<EncodedState> encodeGenerateState(
@@ -87,6 +147,8 @@ Future<EncodedState> encodeGenerateState(
     if (s.promptRaw.isNotEmpty) 'promptRaw': s.promptRaw,
     if (s.negativePromptRaw.isNotEmpty)
       'negativePromptRaw': s.negativePromptRaw,
+    if (s.promptFoldLinks.isNotEmpty)
+      'promptFoldLinks': [for (final link in s.promptFoldLinks) link.toJson()],
     'characters': [
       for (final c in s.characters)
         {
@@ -96,6 +158,8 @@ Future<EncodedState> encodeGenerateState(
           'negative': c.negative,
           if (c.positiveRaw.isNotEmpty) 'positiveRaw': c.positiveRaw,
           if (c.negativeRaw.isNotEmpty) 'negativeRaw': c.negativeRaw,
+          if (c.foldLinks.isNotEmpty)
+            'foldLinks': [for (final link in c.foldLinks) link.toJson()],
           'enabled': c.enabled,
           if (c.position != null) 'position': c.position,
           'activeTab': c.activeTab.name,
@@ -198,6 +262,16 @@ Future<EncodedState> encodeGenerateState(
             'tightH': paste.tightH,
             'outW': paste.outW,
             'outH': paste.outH,
+            if (paste.focus case final focus?)
+              'focus': {
+                'x': focus.x,
+                'y': focus.y,
+                'width': focus.width,
+                'height': focus.height,
+                'context': focus.context,
+              },
+            if (paste.focusMask != null)
+              'focusMask': await putImg(paste.focusMask!),
           },
       },
   };
@@ -220,8 +294,7 @@ Future<EncodedState> encodeGenerateState(
 /// ⚠ 下标必须按当年的口径算 —— 只数 `enabled && positive 非空` 的那些
 /// (见 buildNaiPayload 的 chars 过滤),否则一个禁用的首位角色会让后面全错一格。
 /// 不参与出图的那些补个不冲突的空位即可,它们本来也发不出去。
-({List<CharacterPrompt> characters, bool useCoords})?
-_migrateLegacyPositions(
+({List<CharacterPrompt> characters, bool useCoords})? _migrateLegacyPositions(
   List<CharacterPrompt> characters, {
   required bool hadUseCoordsKey,
 }) {
@@ -284,7 +357,7 @@ Future<GenerateState> decodeGenerateState(
           position: e['position'] as String?,
           activeTab:
               _enumByName(CharTab.values, e['activeTab']) ?? CharTab.positive,
-        ),
+        ).copyWith(foldLinks: PromptFoldLink.decode(e['foldLinks'])),
       );
     }
   }
@@ -505,9 +578,36 @@ Future<GenerateState> decodeGenerateState(
     final mask = await img(e['mask']);
     if (image != null && mask != null) {
       InpaintPaste? paste;
+      var validFocusedPaste = true;
       if (e['paste'] is Map) {
         final pe = e['paste'] as Map;
         final original = await img(pe['original']);
+        final focus = _decodeInpaintFocus(pe['focus']);
+        final focusMask = await img(pe['focusMask']);
+        // New focused jobs may never fall back to a rectangular paste after
+        // a required blob or geometry record is lost. Old records stay valid.
+        if (pe.containsKey('focus')) {
+          validFocusedPaste =
+              original != null && focus != null && focusMask != null;
+          if (focus != null) {
+            final outW = (pe['outW'] as num?)?.toInt() ?? 0;
+            final outH = (pe['outH'] as num?)?.toInt() ?? 0;
+            validFocusedPaste =
+                validFocusedPaste &&
+                focus.x + focus.width <= outW &&
+                focus.y + focus.height <= outH;
+            if (focusMask != null && focusMask.length >= 8) {
+              final header = ByteData.sublistView(focusMask);
+              validFocusedPaste =
+                  validFocusedPaste &&
+                  header.getUint32(0) == outW &&
+                  header.getUint32(4) == outH &&
+                  focusMask.length == 8 + ((outW + 7) ~/ 8) * ((outH + 7) ~/ 8);
+            } else {
+              validFocusedPaste = false;
+            }
+          }
+        }
         if (original != null) {
           paste = InpaintPaste(
             original: original,
@@ -519,17 +619,21 @@ Future<GenerateState> decodeGenerateState(
             tightH: (pe['tightH'] as num?)?.toInt() ?? 0,
             outW: (pe['outW'] as num?)?.toInt() ?? 0,
             outH: (pe['outH'] as num?)?.toInt() ?? 0,
+            focus: focus,
+            focusMask: focusMask,
           );
         }
       }
-      inpaint = InpaintJob(
-        image: image,
-        mask: mask,
-        strength: (e['strength'] as num?)?.toDouble() ?? 0.7,
-        paste: paste,
-        sourceId: e['sourceId'] as String?,
-        grid: await img(e['grid']),
-      );
+      if (validFocusedPaste) {
+        inpaint = InpaintJob(
+          image: image,
+          mask: mask,
+          strength: (e['strength'] as num?)?.toDouble() ?? 0.7,
+          paste: paste,
+          sourceId: e['sourceId'] as String?,
+          grid: await img(e['grid']),
+        );
+      }
     }
   }
 
@@ -572,5 +676,5 @@ Future<GenerateState> decodeGenerateState(
     kreaStyleRefs: kreaStyleRefs,
     kreaStyleRefWeight: (j['kreaStyleRefWeight'] as num?)?.toDouble() ?? 1.0,
     inpaint: inpaint,
-  );
+  ).copyWith(promptFoldLinks: PromptFoldLink.decode(j['promptFoldLinks']));
 }

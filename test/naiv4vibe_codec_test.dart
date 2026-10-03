@@ -13,6 +13,9 @@ void main() {
       expect(jsNum(0.8), '0.8');
       expect(jsNum(0.61), '0.61');
       expect(jsNum(0.05), '0.05');
+      expect(jsNum(.712345678901234), '0.712345678901234');
+      expect(jsNum(.000001), '0.000001');
+      expect(jsNum(.0000001), '1e-7');
     });
   });
 

@@ -11,7 +11,8 @@ import '../gen_modules.dart';
 import '../generate_state.dart';
 import '../generation_controller.dart';
 import '../loop_controller.dart';
-import '../models.dart' show GenParams, kBatchMax, stepsRangeOf;
+import '../models.dart'
+    show GenParams, kBatchMax, stepsRangeOf, isAnimaModel, isKreaModel;
 import '../vibe_encoder.dart';
 import '../../import/import_panel.dart';
 import 'advanced_sheet.dart';
@@ -24,6 +25,8 @@ import 'resolution_sheet.dart';
 /// 几个读数共用创作页同一个位置,所以状态收成一个 —— 原先两个各存各的
 /// open、还得互相 close 一把,再加一个就是三处两两配对。
 enum FloatingPill { none, steps, batch }
+
+enum GenerationSettingTarget { steps, guidance, seed }
 
 /// 浮动控件的开合 + 拖动草稿。
 ///
@@ -81,7 +84,9 @@ final sentParamsProvider = Provider<GenParams>((ref) {
 
 /// 吸底操作栏:参数读数 chips + 循环伴钮 + 生成主按钮
 class BottomActionBar extends ConsumerStatefulWidget {
-  const BottomActionBar({super.key});
+  const BottomActionBar({super.key, this.desktop = false, this.onSettingTap});
+  final bool desktop;
+  final ValueChanged<GenerationSettingTarget>? onSettingTap;
 
   @override
   ConsumerState<BottomActionBar> createState() => _BottomActionBarState();
@@ -131,6 +136,132 @@ class _BottomActionBarState extends ConsumerState<BottomActionBar> {
         (fee ?? _lastVibeFee);
     // 按**会发出去**的那份参数判(见 sentParamsProvider)
     final batchable = sent.params.batchable;
+
+    if (widget.desktop) {
+      final cfg = isAnimaModel(p.model)
+          ? p.animaCfg
+          : isKreaModel(p.model)
+          ? p.kreaCfg
+          : p.cfg;
+      return Material(
+        color: scheme.surfaceContainerLow,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                key: const ValueKey('desktop-generation-summary'),
+                decoration: BoxDecoration(
+                  color: scheme.surfaceContainerLowest,
+                  border: Border.all(color: scheme.outlineVariant),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                padding: const EdgeInsets.all(4),
+                child: Row(
+                  children: [
+                    for (final item in [
+                      (GenerationSettingTarget.steps, '步数', '${p.activeSteps}'),
+                      (
+                        GenerationSettingTarget.guidance,
+                        '引导',
+                        cfg.toStringAsFixed(1),
+                      ),
+                      (
+                        GenerationSettingTarget.seed,
+                        '种子',
+                        p.seed.isEmpty ? '随机' : p.seed,
+                      ),
+                    ])
+                      Expanded(
+                        flex: item.$1 == GenerationSettingTarget.seed ? 3 : 2,
+                        child: _DesktopReadout(
+                          key: ValueKey('desktop-summary-${item.$1.name}'),
+                          label: item.$2,
+                          value: item.$3,
+                          tooltip: item.$1 == GenerationSettingTarget.seed
+                              ? '清空种子，改为每次随机'
+                              : null,
+                          onTap: item.$1 == GenerationSettingTarget.seed
+                              ? () => ref
+                                    .read(generateProvider.notifier)
+                                    .applyParams(
+                                      ref
+                                          .read(generateProvider)
+                                          .params
+                                          .copyWith(seed: ''),
+                                    )
+                              : widget.onSettingTap == null
+                              ? null
+                              : () => widget.onSettingTap!(item.$1),
+                        ),
+                      ),
+                    Expanded(
+                      flex: 3,
+                      child: Builder(
+                        builder: (anchor) => _DesktopReadout(
+                          key: const ValueKey('desktop-summary-resolution'),
+                          label: '比例',
+                          value: '${p.width}×${p.height}',
+                          onTap: () => showResolutionSheet(anchor),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: _GenerateButton(
+                      cost: totalCost,
+                      onGenerate: () {
+                        _hintDisabledVibes(context, ref);
+                        ref.read(generationProvider.notifier).generate();
+                      },
+                      progress: pool.busy ? gen.progress : null,
+                      runningCount: pool.busy ? pool.jobs.length : 0,
+                      stopIcon: loop.active && !loop.stopping
+                          ? Icons.stop_rounded
+                          : Icons.close_rounded,
+                      onStop: loop.active && !loop.stopping
+                          ? () => ref.read(loopStatusProvider.notifier).stop()
+                          : () =>
+                                ref.read(generationProvider.notifier).cancel(),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  SizedBox(
+                    height: 52,
+                    width: 42,
+                    child: IconButton.filledTonal(
+                      tooltip: '循环生成',
+                      onPressed: () => showLoopSheet(context),
+                      isSelected: loop.active,
+                      icon: const Icon(Icons.autorenew, size: 21),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  SizedBox(
+                    height: 52,
+                    width: 42,
+                    child: IconButton.outlined(
+                      tooltip: '导入图片',
+                      onPressed: () => openImportPanel(context),
+                      icon: const Icon(
+                        Icons.add_photo_alternate_outlined,
+                        size: 21,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      );
+    }
 
     return Material(
       color: scheme.surfaceContainer,
@@ -273,6 +404,52 @@ class _BottomActionBarState extends ConsumerState<BottomActionBar> {
       ),
     );
   }
+}
+
+class _DesktopReadout extends StatelessWidget {
+  const _DesktopReadout({
+    super.key,
+    required this.label,
+    required this.value,
+    required this.onTap,
+    this.tooltip,
+  });
+  final String label, value;
+  final VoidCallback? onTap;
+  final String? tooltip;
+
+  @override
+  Widget build(BuildContext context) => Tooltip(
+    message: tooltip ?? '$label：$value · 点击设置',
+    child: InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 7),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              label,
+              style: context.texts.bodySmall!.copyWith(
+                color: context.scheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              value,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: context.texts.labelLarge!.copyWith(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
 }
 
 /// 生成/排队前置检查:缺当前模型编码的纯编码 Vibe 无从现场编码,
@@ -893,6 +1070,7 @@ class _StepsSliderPill extends ConsumerWidget {
               final v = await showParamInput(
                 context,
                 title: '步数 Steps',
+                snapToDivisions: true,
                 value: steps.toDouble(),
                 min: min.toDouble(),
                 max: max.toDouble(),

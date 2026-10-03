@@ -10,6 +10,9 @@ import '../../features/generate/workspace_store.dart';
 import '../../features/stats/key_ledger.dart';
 import '../net/remote_image.dart';
 import 'blob_store.dart';
+import 'atomic_file.dart';
+import 'desktop_output_store.dart';
+import 'desktop_output_location.dart';
 import 'cache_sweep.dart';
 import 'prefs_store.dart';
 import 'storage_stats.dart';
@@ -26,12 +29,14 @@ class AppStores {
     this.assistant,
     this.prefs,
     this.albums,
+    this.desktopOutput,
   );
 
   final BlobStore blobs;
   final WorkspaceStore workspace;
   final GalleryStore gallery;
   final AlbumStore albums;
+  final DesktopOutputStore desktopOutput;
   final KeyLedgerStore ledger;
 
   /// AI 助手的对话存档,见 [AssistantStore]。
@@ -53,11 +58,15 @@ class AppStores {
       AssistantStore(blobs, root),
       PrefsStore.emptyForTest(root),
       AlbumStore(root),
+      DesktopOutputStore(Directory('${root.path}/outputs')),
     );
   }
 
   /// [rootOverride]:测试指定根目录(生产走平台 support 目录)。
-  static Future<AppStores> open({Directory? rootOverride}) async {
+  static Future<AppStores> open({
+    Directory? rootOverride,
+    String? executablePath,
+  }) async {
     Directory root;
     if (rootOverride != null) {
       root = rootOverride;
@@ -67,6 +76,12 @@ class AppStores {
       } catch (_) {
         root = Directory.systemTemp; // 拿不到目录的极端兜底:本次会话内存态可用
       }
+    }
+    // 先恢复，避免把 rename 失败留下的有效图片/设置误判为空档。
+    try {
+      await recoverPendingWrites(root);
+    } on FileSystemException {
+      /* 保留恢复文件 */
     }
     // 远端图缓存目录:ImageProvider 拿不到 ref,只能挂静态量,这里是唯一
     // 知道 root 的地方(见 RemoteImageStore)。
@@ -84,9 +99,31 @@ class AppStores {
     final prefs = await PrefsStore.open(root);
     await workspace.load();
     await gallery.load();
-    await albums.load(liveImages: gallery.initialResults.map((r) => r.id).toSet());
+    await albums.load(
+      liveImages: gallery.initialResults.map((r) => r.id).toSet(),
+    );
     await ledger.load();
     await assistant.load();
+    Directory outputRoot = Directory('${root.path}/outputs');
+    final legacyOutputRoots = <Directory>[];
+    final outputLocationIssues = <String>[];
+    if (rootOverride == null && Platform.isWindows) {
+      legacyOutputRoots.add(outputRoot);
+      legacyOutputRoots.add(
+        legacyExecutableWorksDirectory(executablePath: executablePath),
+      );
+      outputRoot = desktopWorksDirectory(executablePath: executablePath);
+      final locations = await registerDesktopWorksRoot(root, outputRoot);
+      legacyOutputRoots.addAll(locations.previous);
+      outputLocationIssues.addAll(locations.issues);
+      try {
+        final documents = await getApplicationDocumentsDirectory();
+        legacyOutputRoots.add(legacyDesktopWorksDirectory(documents));
+      } catch (_) {
+        // The gallery is still in AppData; an unavailable old folder is not an
+        // empty gallery and must not redirect new works back to C:.
+      }
+    }
     return AppStores._(
       blobs,
       workspace,
@@ -95,6 +132,11 @@ class AppStores {
       assistant,
       prefs,
       albums,
+      DesktopOutputStore(
+        outputRoot,
+        legacyRoots: legacyOutputRoots,
+        locationIssues: outputLocationIssues,
+      ),
     );
   }
 
@@ -111,6 +153,9 @@ class AppStores {
   void postBootMaintenance() {
     Future<void>(() async {
       await Future<void>.delayed(const Duration(seconds: 6));
+      // Disk work runs after the first frame, one pair at a time through the
+      // output queue so new saves and deletions can interleave safely.
+      await desktopOutput.migrateLegacy();
       await sweepPickerCache();
       await RemoteImageStore.trim();
       await clearRetiredRoleLexicon();

@@ -3,11 +3,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'core/app_info.dart';
 import 'core/auth/auth_mode.dart';
+import 'core/platform/desktop.dart';
 import 'core/store/app_stores.dart';
 import 'core/store/gen_settings.dart';
 import 'core/theme/app_theme.dart';
 import 'core/theme/theme_settings.dart';
 import 'core/ui/input_focus_guard.dart';
+import 'core/ui/image_drop.dart';
+import 'features/import/desktop_image_drop.dart';
 import 'features/onboarding/welcome_page.dart';
 import 'features/shell/app_shell.dart';
 import 'core/util/haptics.dart';
@@ -57,15 +60,34 @@ class PlanaApp extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final ts = ref.watch(themeSettingsProvider);
+    final desktop = ref.watch(desktopModeProvider);
+    ThemeData adapt(ThemeData theme) => !desktop
+        ? theme
+        : theme.copyWith(
+            textTheme: theme.textTheme.apply(
+              fontFamily: 'Microsoft YaHei',
+              fontFamilyFallback: const ['Segoe UI'],
+            ),
+            visualDensity: VisualDensity.compact,
+            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            bottomSheetTheme: theme.bottomSheetTheme.copyWith(
+              constraints: const BoxConstraints(maxWidth: 720),
+            ),
+            dialogTheme: theme.dialogTheme.copyWith(
+              constraints: const BoxConstraints(maxWidth: 760),
+            ),
+          );
     // 触感开关同步到全局出口:调用点在手势/绘制层,拿不到 ref,只能这样递。
     Haptics.enabled = ts.haptics;
     return MaterialApp(
       title: kAppName,
       debugShowCheckedModeBanner: false,
-      theme: AppTheme.light(ts.seed.color),
-      darkTheme: AppTheme.dark(ts.seed.color),
+      theme: adapt(AppTheme.light(ts.seed.color)),
+      darkTheme: adapt(AppTheme.dark(ts.seed.color)),
       themeMode: ts.mode,
       navigatorObservers: [_inputFocusGuard],
+      builder: (context, child) =>
+          desktop ? DesktopImageDropHost(child: child!) : child!,
       home: const _AuthGate(),
     );
   }
@@ -78,6 +100,12 @@ class _AuthGate extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    if (ref.watch(desktopModeProvider)) {
+      return const DesktopImportRegion(
+        acceptInternal: false,
+        child: AppShell(),
+      );
+    }
     final mode = ref.watch(authModeProvider);
     final gs = ref.watch(genSettingsProvider);
     if (mode.isLoading || gs.isLoading) return const _SplashHold();

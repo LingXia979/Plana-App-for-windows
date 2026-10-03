@@ -1,8 +1,10 @@
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/store/app_stores.dart';
+import '../editor/editor_models.dart' show PromptFoldLink;
 import '../vibe_library/naiv4vibe_codec.dart' show kModelToEncodingKey;
 import 'agent_chars.dart';
 import 'char_position.dart';
@@ -161,6 +163,7 @@ class GenerateNotifier extends Notifier<GenerateState> {
     String? negative,
     String? positiveRaw,
     String? negativeRaw,
+    List<PromptFoldLink>? foldLinks,
     bool? enabled,
     Object? position = const Object(),
     CharTab? activeTab,
@@ -177,6 +180,7 @@ class GenerateNotifier extends Notifier<GenerateState> {
                     negative: negative,
                     positiveRaw: positiveRaw,
                     negativeRaw: negativeRaw,
+                    foldLinks: foldLinks,
                     enabled: enabled,
                     activeTab: activeTab,
                   )
@@ -186,6 +190,7 @@ class GenerateNotifier extends Notifier<GenerateState> {
                     negative: negative,
                     positiveRaw: positiveRaw,
                     negativeRaw: negativeRaw,
+                    foldLinks: foldLinks,
                     enabled: enabled,
                     position: position,
                     activeTab: activeTab,
@@ -680,6 +685,8 @@ class GenerateNotifier extends Notifier<GenerateState> {
         mask: cur.mask,
         strength: strength,
         paste: cur.paste,
+        sourceId: cur.sourceId,
+        grid: cur.grid,
       ),
     );
   }
@@ -701,6 +708,7 @@ class GenerateNotifier extends Notifier<GenerateState> {
     String? negative,
     String? positiveRaw,
     String? negativeRaw,
+    List<PromptFoldLink>? promptFoldLinks,
   }) {
     final nextRawP =
         positiveRaw ??
@@ -714,7 +722,9 @@ class GenerateNotifier extends Notifier<GenerateState> {
     if ((positive ?? state.prompt) == state.prompt &&
         (negative ?? state.negativePrompt) == state.negativePrompt &&
         nextRawP == state.promptRaw &&
-        nextRawN == state.negativePromptRaw) {
+        nextRawN == state.negativePromptRaw &&
+        (promptFoldLinks == null ||
+            listEquals(promptFoldLinks, state.promptFoldLinks))) {
       return;
     }
     state = state.copyWith(
@@ -722,6 +732,7 @@ class GenerateNotifier extends Notifier<GenerateState> {
       negativePrompt: negative,
       promptRaw: nextRawP,
       negativePromptRaw: nextRawN,
+      promptFoldLinks: promptFoldLinks,
     );
   }
 

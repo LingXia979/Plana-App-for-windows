@@ -6,6 +6,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/app_theme.dart';
+import '../../../core/platform/desktop.dart';
+import '../../../core/ui/image_drop.dart';
 import '../../../core/util/image_pick.dart';
 import '../generate_state.dart';
 import '../models.dart';
@@ -36,6 +38,10 @@ class _KreaStyleRefCardState extends ConsumerState<KreaStyleRefCard> {
   Future<void> _onAdd() async {
     final files = await pickImageFiles(context);
     if (files.isEmpty || !mounted) return;
+    await _addImages(files);
+  }
+
+  Future<void> _addImages(List<PickedImage> files) async {
     final notifier = ref.read(generateProvider.notifier);
     String? lastId;
     var dropped = 0;
@@ -98,7 +104,7 @@ class _KreaStyleRefCardState extends ConsumerState<KreaStyleRefCard> {
     final activeCount = state.activeKreaStyleRefs.length;
     final isTurbo = kreaTierOf(state.params.model) == 'turbo';
 
-    return SectionCard(
+    final card = SectionCard(
       icon: Icons.palette_outlined,
       title: '风格参考',
       reorderIndex: widget.reorderIndex,
@@ -206,5 +212,13 @@ class _KreaStyleRefCardState extends ConsumerState<KreaStyleRefCard> {
         ],
       ),
     );
+    return ref.watch(desktopModeProvider)
+        ? ImageDropRegion(
+            label: '加入风格参考',
+            multiple: true,
+            onDrop: (images, _) => _addImages(images),
+            child: card,
+          )
+        : card;
   }
 }
