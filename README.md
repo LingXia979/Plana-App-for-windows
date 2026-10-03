@@ -1,115 +1,74 @@
 <div align="center">
 
-<img src="assets/app_icon.png" width="96" alt="Plana App">
+<img src="assets/app_icon.png" width="96" alt="Plana App for Windows">
 
-# Plana App
+# Plana App for Windows
 
-**NovelAI 第三方 Android 客户端** —— 可能是最舒适的 AI 绘图移动创作端
+**面向 Windows 的 AI 绘图工作台**
+
+提示词、画布、图库与 AI 助手，在一个桌面窗口中完成。
 
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/mc5024/Plana-App?label=release)](https://github.com/mc5024/Plana-App/releases)
-[![Android](https://img.shields.io/badge/Android-7.0%2B-3ddc84?logo=android&logoColor=white)](#构建)
+[![Windows](https://img.shields.io/badge/Windows-x64-3572A5)](#界面预览)
+[![Status](https://img.shields.io/badge/状态-桌面版测试中-6A5ACD)](#项目状态)
 [![Flutter](https://img.shields.io/badge/built%20with-Flutter-02569B?logo=flutter&logoColor=white)](https://flutter.dev)
+
+[界面预览](#界面预览) · [桌面版亮点](#桌面版亮点) · [问题反馈](https://github.com/LingXia979/Plana-App-for-windows/issues) · [上游项目](https://github.com/mc5024/Plana-App)
 
 </div>
 
----
+## 项目状态
 
-## 亮点
+本项目基于 [Plana App](https://github.com/mc5024/Plana-App) 开发 Windows 桌面适配。
+下方展示本地 Windows 测试版 **windows.43**；该版本的桌面源码与下载包目前尚未同步到本分支。
 
-- **提示词编辑器** 专为移动端设计的独占全屏编辑页,底部自动弹出补全候选;正文支持文本与芯片两种显示形态,
-  权重面板提供权重增减与清除、复制、禁用、删除及 SD 语法转换
+- `Plana-app-for-windows`：Windows 桌面适配分支。
+- [`plana-app-gallery-optimization`](https://github.com/LingXia979/Plana-App-for-windows/tree/plana-app-gallery-optimization)：图库优化分支。
+- Android 原版介绍与下载请前往[上游仓库](https://github.com/mc5024/Plana-App)。
 
-- **标签补全与翻译** 支持中英文搜词与搜角色,候选附 Danbooru 摘要与别名,标签自动翻译
+## 界面预览
 
-- **后台生成** 退至后台继续出图不中断,进度常驻通知栏,并适配灵动岛与状态栏胶囊(Android 16)
+以下为 Windows 测试版的实际界面，使用隔离的示例图库与演示对话，不含个人作品、API 密钥或真实授权信息。
 
-- **队列与循环** 多组标签可连续入队依次生成;循环出图可指定张数或不限,随时暂停
+### 创作工作台
 
-- **NAI 5 适配** 角色画布定位、透明背景、Max 重绘等新特性均已适配
+左侧编辑提示词与生成参数，中间查看画布与历史，右侧随时使用 AI 助手或灵感库。
 
-- **参数导入** 高级导入面板完整展示图片内嵌的元数据并支持逐项勾选,兼容 NAI 隐写信息与 ComfyUI / A1111 元数据
+![Windows 创作工作台：提示词、画布与助手同屏](screenshots/windows/workspace.png)
 
-- **本地图库** 原图与参数快照本地留存,可按模型与标签检索,导出时元数据可保留、清除或改写;
-  支持按住抬起预览、胶片条拖至垃圾条删除、网格多选批量操作
+### 图库与作品详情
 
-- **自定义图库与日期筛选** 支持自建图库、封面及批量归类,「全部作品」汇总历史图片;
-  画布下方通过紧凑胶囊分别选择浏览图库与新图保存位置,排队任务沿用提交时的保存位置。
-  日期支持单日、范围及直接拖动起止端点,导入参数时可选择切换到来源图库
+按图库整理作品，结合日期、模型与收藏筛选；打开大图即可查看尺寸、种子和完整提示词。
 
-- **按生成时间导出** 批量按从旧到新的顺序逐张保存,文件名和拍摄日期保留生成时间;
-  PNG 可同时保留自定义生成信息,手机相册的添加日期仍为实际导出时刻
+![Windows 图库：大图预览与作品信息](screenshots/windows/gallery.png)
 
-- **素材库** 灵感库按角色 / 画风 / 场景归类存储并可生成预览图;Vibe 库支持 `.naiv4vibe` 导入导出与逐模型编码管理;
-  角色参考图库留存用过的参考图
+### AI 助手
 
-- **法典图鉴** 可浏览社区整理的提示词、画师串与合集,一键加入创作页
+在独立页面中整理绘图想法、管理会话，将生成的提示词导入创作页；支持多图附件与历史选图。
 
-- **用量统计** 本机按天记账,统计张数与消耗点数,提供趋势图与当日明细
+![Windows AI 助手：会话列表、演示对话与提示词提案](screenshots/windows/assistant.png)
 
-- **提示词预设** 内置档位对齐官方,支持自建预设并指定拼接在正向词之前或之后;导入图片时自动识别并剥离
+## 桌面版亮点
 
-- **工具箱** SD ⇄ NAI 权重语法整串互转,结果带权重高亮并可直接导入创作页;另附图片元数据查看与改写
+以下功能对应上方展示的 Windows 测试版。
 
-NAI 网页端的常规能力 —— 多角色与位置、Vibe Transfer、角色参考、图生图、局部重绘与扩图、
-放大、分辨率与费用预估、token 读数 —— 均已完整支持。
+- **桌面工作台**：可调整侧栏宽度，提示词、画布与助手同屏；支持鼠标、键盘与文件拖入。
+- **提示词与预设**：文本／标签视图切换，正负提示词折叠联动；快捷小窗查看与切换预设。
+- **图库管理**：自建图库、日期筛选、收藏、多选与批量导出；一次复制到多个图库，每份副本独立保存。
+- **AI 助手**：一次附加多张图片，从历史选择图片，拖到助手区域即可加入对话；支持会话管理与消息编辑。
+- **参考与画布**：Vibe／角色参考单击立即切换、双击放大；图生图放大与超分辨率提供独立入口。
+- **本地作品**：自动保存到程序根目录的 `output` 文件夹；创作历史、图库与生成参数可继续使用。
 
-## 截图
+## 账号与使用
 
-| 创作页 | 提示词编辑器 | 图库 |
-|:---:|:---:|:---:|
-| <img src="screenshots/generate.jpg" width="250" alt="创作页"> | <img src="screenshots/editor.jpg" width="250" alt="提示词编辑器"> | <img src="screenshots/gallery.jpg" width="250" alt="图库"> |
+绘图需使用者自行配置 NovelAI 等相应服务；AI 助手需自行配置可用接口或相应服务授权。
+测试包不附带开发者的 API 密钥、Web／Bot 授权、会话 Cookie 或个人图库。
 
-| 法典图鉴 | 参数导入 | 用量统计 |
-|:---:|:---:|:---:|
-| <img src="screenshots/codex.jpg" width="250" alt="法典图鉴"> | <img src="screenshots/import.jpg" width="250" alt="参数导入"> | <img src="screenshots/stats.jpg" width="250" alt="用量统计"> |
+## 反馈与上游
 
-## 使用方式
+Windows 版的问题与建议请提交到[本仓库 Issues](https://github.com/LingXia979/Plana-App-for-windows/issues)，并注明版本、复现步骤及相关截图。
 
-**Token 直连 —— 完整可用,不依赖任何第三方服务。** 填入自己的 NovelAI Token(或用账号密码登录),
-请求直接发往 NovelAI,上面列出的功能全部可用,这是本应用的默认形态。
-
-应用另外内置了一个后端服务地址,用于内部使用的部分扩展能力,需授权。它是可选的 ——
-直连模式下完全无需授权也可使用,引导页与「我的 → 账号与接入」里可随时改成自建地址或留空彻底不用,
-但服务端不在本仓库内。
-
-## 开发计划
-
-| 计划 | 说明 | 阶段 |
-|---|---|---|
-| **多平台适配** | iOS 计划中;其他平台尚未规划 | 计划中 |
-| **内置图像编辑** | 接入图像编辑模型,直接在应用内改图,不必导出到其他工具 | 远期 |
-| **ComfyUI 连接器** | 接入自建 ComfyUI 作为出图后端 | 远期 |
-
-## 交流与反馈
-
-QQ 群:**1078261982**
-
-Bug 与功能建议走 [Issues](https://github.com/mc5024/Plana-App/issues)。
-
-## 构建
-
-要求 Dart SDK ^3.12.2(Flutter 3.44 起);Android 7.0(API 24)以上,compileSdk 36(灵动岛进度需要)。
-
-```bash
-flutter pub get
-flutter build apk --release --target-platform android-arm64
-```
-
-产物为 `build/app/outputs/apk/release/Plana-<版本>-arm64-v8a.apk`,仅出 arm64-v8a。
-
-图库改动可使用 Gradle 属性 `-PplanaGalleryTest=true` 构建独立验收包。
-该开关适用于 debug/profile/release,启用后包名为 `com.sora214.plana.app.gallerytest`,
-名称为「Plana 图库测试」,与正常版本数据独立,测试包使用 debug 签名。
-未启用时沿用原包名、名称及签名配置。直接运行 Gradle 前先执行 `flutter pub get`,
-生成原生插件注册文件,避免缺少插件导致启动失败。
-
-```bash
-flutter analyze && flutter test
-```
-
-回归覆盖分词器、Anlas 公式、Vibe 哈希口径、NAI 5 载荷契约、Argon2id 派生,
-以及图库归属、日期拖选、保存顺序、元数据和生成预览交接。
+本项目保留上游的开源许可与第三方声明。原版功能、Android 构建说明及原作者维护的版本见 [mc5024/Plana-App](https://github.com/mc5024/Plana-App)。
 
 ## 致谢与出处
 
@@ -162,7 +121,7 @@ flutter analyze && flutter test
 
 Copyright (C) 2026 Sora_Light
 
-本项目以 GPL-3.0 发布,全文见 [LICENSE](LICENSE)。分发修改版(含打包成 APK 分发)
+本项目以 GPL-3.0 发布,全文见 [LICENSE](LICENSE)。分发修改版(含打包为安装包或便携包分发)
 须同样以 GPL-3.0 开源;本程序不作任何担保。
 
 第三方内容不在本许可范围内,版权归各自作者所有,详见
