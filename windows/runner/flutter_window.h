@@ -3,11 +3,14 @@
 
 #include <flutter/dart_project.h>
 #include <flutter/flutter_view_controller.h>
+#include <flutter/method_channel.h>
+#include <flutter/encodable_value.h>
 
 #include <memory>
 
 #include "win32_window.h"
 #include "image_drop_target.h"
+#include "image_clipboard.h"
 
 // A window that does nothing but host a Flutter view.
 class FlutterWindow : public Win32Window {
@@ -31,6 +34,8 @@ class FlutterWindow : public Win32Window {
   std::unique_ptr<flutter::FlutterViewController> flutter_controller_;
   ImageDropTarget* image_drop_target_ = nullptr;
   HWND image_drop_window_ = nullptr;
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> clipboard_channel_;
+  std::unique_ptr<ImageClipboard> image_clipboard_;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_

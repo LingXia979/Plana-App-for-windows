@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -12,10 +13,9 @@ import '../util/image_pick.dart';
 
 /// One drag has one payload and one recipient. Bytes are read only on drop.
 class ImageDropPayload {
-  ImageDropPayload.files(List<String> paths)
+  ImageDropPayload.files(List<String> paths, {this.source})
     : paths = List.unmodifiable(paths),
       imageId = null,
-      source = null,
       _load = null;
 
   ImageDropPayload.image({
@@ -32,6 +32,50 @@ class ImageDropPayload {
          return [PickedImage(name, bytes)];
        });
 
+  factory ImageDropPayload.clipboard(Map<Object?, Object?> arguments) {
+    final paths = (arguments['paths'] as List?)?.cast<String>() ?? const [];
+    final error = arguments['error'] as String? ?? '';
+    if (error.isEmpty && paths.isNotEmpty) {
+      return ImageDropPayload.files(paths, source: 'clipboard');
+    }
+    return ImageDropPayload.image(
+      name: 'clipboard.png',
+      source: 'clipboard',
+      load: () async {
+        if (error.isNotEmpty) {
+          throw FormatException(switch (error) {
+            'clipboard_busy' => '剪贴板暂时被占用，请重试粘贴',
+            'too_many_images' => '一次最多粘贴 64 张图片',
+            _ => '无法读取剪贴板图片，请重新复制；单张最多 64 MB',
+          });
+        }
+        final bytes = arguments['bytes'] as Uint8List?;
+        if (bytes == null || bytes.isEmpty) {
+          throw const FormatException('剪贴板中没有可读取的图片');
+        }
+        // A DIB gains a small BMP header in the native reader.
+        if (bytes.length > 64 * 1024 * 1024 + 14) {
+          throw const FormatException('剪贴板图片过大：单张最多 64 MB');
+        }
+        if (arguments['bitmap'] != true) return bytes;
+        final codec = await ui.instantiateImageCodec(bytes);
+        try {
+          final frame = await codec.getNextFrame();
+          try {
+            final png = await frame.image.toByteData(
+              format: ui.ImageByteFormat.png,
+            );
+            return png?.buffer.asUint8List();
+          } finally {
+            frame.image.dispose();
+          }
+        } finally {
+          codec.dispose();
+        }
+      },
+    );
+  }
+
   final List<String> paths;
   final String? imageId;
   final String? source;
@@ -40,7 +84,7 @@ class ImageDropPayload {
 
   Future<List<PickedImage>> read() async {
     if (count == 0 || count > 64) {
-      throw const FormatException('一次最多拖入 64 张图片');
+      throw const FormatException('一次最多导入 64 张图片');
     }
     final files = <PickedImage>[];
     if (_load != null) {
@@ -58,7 +102,13 @@ class ImageDropPayload {
       }
     }
     // Validate the entire batch before any recipient changes its state.
+    var totalBytes = 0;
     for (final file in files) {
+      totalBytes += file.bytes.length;
+      if (file.bytes.length > 64 * 1024 * 1024 ||
+          totalBytes > 256 * 1024 * 1024) {
+        throw const FormatException('图片过大：单张最多 64 MB，一次最多 256 MB');
+      }
       try {
         final (width, height) = await decodeImageSize(file.bytes);
         if (width <= 0 || height <= 0) throw const FormatException();
@@ -86,6 +136,8 @@ class ImageDropRegion extends StatefulWidget {
     this.enabled = true,
     this.acceptInternal = true,
     this.accept,
+    this.pasteDefault = false,
+    this.pasteFallback = false,
   });
 
   final String label;
@@ -96,18 +148,44 @@ class ImageDropRegion extends StatefulWidget {
   final bool acceptInternal;
   final bool Function(ImageDropPayload)? accept;
 
+  /// The active full page receives a paste even over its navigation header.
+  final bool pasteDefault;
+
+  /// A generic page-wide receiver yields to a more specific active page.
+  final bool pasteFallback;
+
   @override
   State<ImageDropRegion> createState() => _ImageDropRegionState();
 }
 
 class _ImageDropRegionState extends State<ImageDropRegion> {
+  _DesktopImageDropHostState? _host;
   bool _externalHover = false;
   bool _busy = false;
   bool get _enabled => widget.enabled && !_busy;
   bool _accepts(ImageDropPayload payload) =>
       _enabled &&
-      (widget.acceptInternal || payload.paths.isNotEmpty) &&
+      (widget.acceptInternal ||
+          payload.paths.isNotEmpty ||
+          payload.source == 'clipboard') &&
       (widget.accept?.call(payload) ?? true);
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final host = context.findAncestorStateOfType<_DesktopImageDropHostState>();
+    if (_host != host) {
+      _host?._regions.remove(this);
+      _host = host;
+      _host?._regions.add(this);
+    }
+  }
+
+  @override
+  void dispose() {
+    _host?._regions.remove(this);
+    super.dispose();
+  }
 
   void _hover(bool value) {
     if (mounted && value != _externalHover) {
@@ -115,17 +193,22 @@ class _ImageDropRegionState extends State<ImageDropRegion> {
     }
   }
 
-  Future<void> _receive(ImageDropPayload payload) async {
+  Future<void> _receive(
+    ImageDropPayload payload, {
+    bool Function()? stillVisible,
+  }) async {
     if (!_accepts(payload)) return;
     setState(() => _busy = true);
     try {
       if (!widget.multiple && payload.count > 1) {
-        throw const FormatException('此处一次接收一张图片，请拖入单张图片');
+        throw const FormatException('此处一次接收一张图片，请选择单张图片');
       }
       final images = await payload.read();
-      if (mounted) await widget.onDrop(images, payload);
+      if (mounted && widget.enabled && (stillVisible?.call() ?? true)) {
+        await widget.onDrop(images, payload);
+      }
     } catch (error) {
-      if (mounted) {
+      if (mounted && (stillVisible?.call() ?? true)) {
         final message = error is FormatException
             ? error.message
             : '图片导入失败，请检查文件是否可读';
@@ -189,6 +272,26 @@ class _ImageDropRegionState extends State<ImageDropRegion> {
   );
 }
 
+/// Extends a pane's paste target to its header without changing drag targets.
+class ImagePasteProxy extends StatelessWidget {
+  const ImagePasteProxy({
+    super.key,
+    required this.target,
+    required this.child,
+    this.enabled = true,
+  });
+  final GlobalKey target;
+  final Widget child;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) => MetaData(
+    metaData: this,
+    behavior: HitTestBehavior.translucent,
+    child: child,
+  );
+}
+
 class DesktopImageDropHost extends StatefulWidget {
   const DesktopImageDropHost({super.key, required this.child});
   final Widget child;
@@ -201,6 +304,7 @@ class DesktopImageDropHost extends StatefulWidget {
 class _DesktopImageDropHostState extends State<DesktopImageDropHost> {
   _ImageDropRegionState? _hovered;
   bool _receiving = false;
+  final _regions = <_ImageDropRegionState>{};
 
   @override
   void initState() {
@@ -208,14 +312,18 @@ class _DesktopImageDropHostState extends State<DesktopImageDropHost> {
     DesktopImageDropHost.channel.setMethodCallHandler(_nativeEvent);
   }
 
-  _ImageDropRegionState? _at(Offset position) {
+  HitTestResult _hit(Offset position) {
     final hit = HitTestResult();
     WidgetsBinding.instance.hitTestInView(
       hit,
       position,
       View.of(context).viewId,
     );
-    for (final entry in hit.path) {
+    return hit;
+  }
+
+  _ImageDropRegionState? _at(Offset position) {
+    for (final entry in _hit(position).path) {
       final target = entry.target;
       if (target is RenderMetaData &&
           target.metaData is _ImageDropRegionState) {
@@ -227,6 +335,66 @@ class _DesktopImageDropHostState extends State<DesktopImageDropHost> {
     return null;
   }
 
+  bool _visible(_ImageDropRegionState region, {Offset? at}) {
+    if (!region.mounted || ModalRoute.of(region.context)?.isCurrent == false) {
+      return false;
+    }
+    final box = region.context.findRenderObject();
+    if (box is! RenderBox ||
+        !box.attached ||
+        !box.hasSize ||
+        box.size.isEmpty) {
+      return false;
+    }
+    final point = at ?? box.localToGlobal(box.size.center(Offset.zero));
+    return _hit(point).path.any(
+      (entry) =>
+          entry.target is RenderMetaData &&
+          (entry.target as RenderMetaData).metaData == region,
+    );
+  }
+
+  _ImageDropRegionState? _pasteAt(Offset position) {
+    _ImageDropRegionState? fallback;
+    for (final entry in _hit(position).path) {
+      final render = entry.target;
+      if (render is! RenderMetaData) continue;
+      final data = render.metaData;
+      if (data is _ImageDropRegionState) {
+        if (!data.widget.pasteFallback) return data;
+        fallback = data;
+        break;
+      }
+      if (data is ImagePasteProxy && data.enabled) {
+        return data.target.currentState as _ImageDropRegionState?;
+      }
+    }
+    final activePage = _regions
+        .where((region) => region.widget.pasteDefault && _visible(region))
+        .lastOrNull;
+    if (activePage != null) return activePage;
+    if (fallback != null) return fallback;
+    // Pointer outside the window: use the focused, still-visible input area.
+    _ImageDropRegionState? focused;
+    FocusManager.instance.primaryFocus?.context?.visitAncestorElements((
+      element,
+    ) {
+      if (element is StatefulElement &&
+          element.state is _ImageDropRegionState) {
+        final region = element.state as _ImageDropRegionState;
+        if (_visible(region)) {
+          focused = region;
+          return false;
+        }
+      }
+      return true;
+    });
+    return focused ??
+        _regions
+            .where((region) => region.widget.pasteFallback && _visible(region))
+            .lastOrNull;
+  }
+
   Future<void> _nativeEvent(MethodCall call) async {
     if (!mounted) return;
     if (call.method == 'leave') {
@@ -234,13 +402,28 @@ class _DesktopImageDropHostState extends State<DesktopImageDropHost> {
       _hovered = null;
       return;
     }
-    if (call.method != 'over' && call.method != 'drop') return;
+    if (call.method != 'over' &&
+        call.method != 'drop' &&
+        call.method != 'paste') {
+      return;
+    }
     final args = Map<Object?, Object?>.from(call.arguments as Map);
     final scale = View.of(context).devicePixelRatio;
     final point = Offset(
       (args['x'] as num).toDouble() / scale,
       (args['y'] as num).toDouble() / scale,
     );
+    if (call.method == 'paste') {
+      final target = _pasteAt(point);
+      if (target == null || !target._enabled) return;
+      // Region-local busy state prevents duplicates without locking a newly
+      // opened import dialog for the lifetime of its parent callback.
+      await target._receive(
+        ImageDropPayload.clipboard(args),
+        stillVisible: () => _visible(target, at: point) || _visible(target),
+      );
+      return;
+    }
     final target = _receiving ? null : _at(point);
     if (_hovered != target) {
       _hovered?._hover(false);

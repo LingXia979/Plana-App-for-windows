@@ -65,15 +65,18 @@ class DesktopImportRegion extends ConsumerWidget {
     required this.child,
     this.acceptInternal = true,
     this.canvas = false,
+    this.pasteFallback = false,
   });
   final Widget child;
   final bool acceptInternal;
   final bool canvas;
+  final bool pasteFallback;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) => ImageDropRegion(
     label: '导入图片',
     acceptInternal: acceptInternal,
+    pasteFallback: pasteFallback,
     accept: (payload) => !canvas || payload.source != 'canvas',
     onDrop: (images, payload) async {
       final result = ref

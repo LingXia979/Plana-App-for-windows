@@ -65,8 +65,9 @@ const _suggests = <({String text, bool canvas})>[
 ];
 
 class AssistantPage extends ConsumerStatefulWidget {
-  const AssistantPage({super.key, this.embedded = false});
+  const AssistantPage({super.key, this.embedded = false, this.imageDropKey});
   final bool embedded;
+  final GlobalKey? imageDropKey;
 
   @override
   ConsumerState<AssistantPage> createState() => _AssistantPageState();
@@ -291,8 +292,9 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
     );
 
     return ImageDropRegion(
-      key: const ValueKey('assistant-image-drop'),
+      key: widget.imageDropKey ?? const ValueKey('assistant-image-drop'),
       label: '将图片添加到对话框',
+      pasteDefault: !widget.embedded,
       multiple: true,
       enabled:
           ref.watch(desktopModeProvider) &&

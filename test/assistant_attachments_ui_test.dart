@@ -279,6 +279,40 @@ void main() {
 
   for (final embedded in [false, true]) {
     testWidgets(
+      'clipboard image and files append without import or send, embedded=$embedded',
+      (tester) async {
+        await mount(tester, embedded: embedded);
+        final point = embedded
+            ? const Offset(1000, 180)
+            : const Offset(50, 380);
+        await tester.runAsync(() async {
+          await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+            DesktopImageDropHost.channel.name,
+            const StandardMethodCodec().encodeMethodCall(
+              MethodCall('paste', {
+                'x': point.dx,
+                'y': point.dy,
+                'bytes': pngA,
+                'bitmap': false,
+                'paths': <String>[],
+                'error': '',
+              }),
+            ),
+            (_) {},
+          );
+        });
+        await settle(tester);
+        expect(key('assistant-pending-images'), findsOneWidget);
+        await native(tester, 'paste', point, [second.path]);
+        expect(find.text('已添加 2 张图片'), findsOneWidget);
+        expect(fallbackImports, 0);
+        expect(recorder().sent, isEmpty);
+        await tester.tap(find.byTooltip('发送 (Enter) · Shift + Enter 换行'));
+        await tester.pumpAndSettle();
+        expect(recorder().sent.single.images, [pngA, pngB]);
+      },
+    );
+    testWidgets(
       'external batch anywhere in assistant attaches instead of importing, embedded=$embedded',
       (tester) async {
         await mount(tester, embedded: embedded);

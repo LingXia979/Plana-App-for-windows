@@ -103,6 +103,7 @@ class _AuthGate extends ConsumerWidget {
     if (ref.watch(desktopModeProvider)) {
       return const DesktopImportRegion(
         acceptInternal: false,
+        pasteFallback: true,
         child: AppShell(),
       );
     }

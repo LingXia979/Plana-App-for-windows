@@ -19,13 +19,15 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/platform/desktop.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../gallery/gallery_state.dart'
     show galleryImageProvider, galleryProvider, galleryThumbProvider;
 import '../../gallery/models.dart' show ResultImage;
 import '../../generate/gen_jobs.dart' show GenJob;
 import '../../generate/generation_controller.dart' show generationProvider;
-import '../../generate/widgets/common.dart' show StripeThumb;
+import '../../generate/widgets/common.dart' show StripeThumb, hintSnack;
+import '../../generate/widgets/reference_image_preview.dart';
 import '../../shell/shell_state.dart';
 import '../assistant_models.dart';
 import '../assistant_state.dart';
@@ -133,7 +135,7 @@ Uint8List? _bytesOf(WidgetRef ref, ResultImage r) =>
     ref.watch(galleryImageProvider(r.id)).value ??
     ref.watch(galleryThumbProvider(r.id)).value;
 
-class _Done extends ConsumerWidget {
+class _Done extends ConsumerStatefulWidget {
   const _Done({
     super.key,
     required this.msgId,
@@ -146,15 +148,54 @@ class _Done extends ConsumerWidget {
   final double maxW;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final size = _box(result.width, result.height, maxW);
+  ConsumerState<_Done> createState() => _DoneState();
+}
+
+class _DoneState extends ConsumerState<_Done> {
+  bool _previewOpen = false;
+
+  Future<void> _openImage() async {
+    if (!ref.read(desktopModeProvider)) {
+      ref.read(galleryProvider.notifier).select(widget.result.id);
+      ref.read(shellIndexProvider.notifier).select(kTabGallery);
+      return;
+    }
+    if (_previewOpen) return;
+    _previewOpen = true;
+    final page = ref.read(shellIndexProvider);
+    try {
+      // A thumbnail may be visible while the original is still loading. Only
+      // open the original; viewing must not change gallery/canvas selection.
+      final result = widget.result;
+      final image =
+          result.bytes ??
+          await ref.read(galleryImageProvider(result.id).future);
+      if (!mounted ||
+          ref.read(shellIndexProvider) != page ||
+          ModalRoute.of(context)?.isCurrent == false) {
+        return;
+      }
+      if (image == null || image.isEmpty) {
+        hintSnack(context, '原图暂时无法读取');
+        return;
+      }
+      await showReferenceImagePreview(context, image: image, title: 'AI 助手图片');
+    } catch (_) {
+      if (mounted && ref.read(shellIndexProvider) == page) {
+        hintSnack(context, '原图暂时无法读取');
+      }
+    } finally {
+      _previewOpen = false;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final result = widget.result;
+    final size = _box(result.width, result.height, widget.maxW);
     final bytes = _bytesOf(ref, result);
     return GestureDetector(
-      // 点开切去图库看大图 —— 放大、超分、存盘那些都在那边。
-      onTap: () {
-        ref.read(galleryProvider.notifier).select(result.id);
-        ref.read(shellIndexProvider.notifier).select(kTabGallery);
-      },
+      onTap: _openImage,
       child: _frame(context, size, [
         if (bytes != null)
           _Bitmap(bytes: bytes, size: size)
@@ -162,7 +203,11 @@ class _Done extends ConsumerWidget {
           StripeThumb(width: size.width, height: size.height, radius: 0),
         // 跑着的时候框里换成了进度,这颗跟着一起不在 —— 同一条消息连投两单,
         // 进度条只跟得住一单。
-        Positioned(right: 10, bottom: 10, child: _AgainButton(msgId: msgId)),
+        Positioned(
+          right: 10,
+          bottom: 10,
+          child: _AgainButton(msgId: widget.msgId),
+        ),
       ]),
     );
   }
@@ -260,7 +305,7 @@ class _Running extends ConsumerWidget {
 ///
 /// 摆图里而不是图下面:一颗按钮单独占一行,而它跟这张图是绑死的 —— 浮进去
 /// 既省一行,也说清楚了「重出的是这张」。底色带半透明,压在深色浅色图上都看得见。
-/// 48 见方:它压在一整张可点的图上,点偏了就被带去图库。
+/// 48 见方:它压在一整张可点的图上,与图片查看操作独立。
 class _AgainButton extends ConsumerWidget {
   const _AgainButton({required this.msgId});
 
@@ -274,7 +319,7 @@ class _AgainButton extends ConsumerWidget {
       shape: const CircleBorder(),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
-        // 图本体点了是去图库,这颗要吃掉自己的点击,别顺着漏下去
+        // 这颗要吃掉自己的点击，避免同时触发图片查看。
         onTap: () => ref.read(assistantProvider.notifier).generateFrom(msgId),
         child: Tooltip(
           message: '重新生成',
