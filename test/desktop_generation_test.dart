@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -12,7 +13,9 @@ import 'package:plana_app/core/store/app_stores.dart';
 import 'package:plana_app/features/desktop/desktop_library_state.dart';
 import 'package:plana_app/features/gallery/albums/album_state.dart';
 import 'package:plana_app/features/gallery/gallery_state.dart';
+import 'package:plana_app/features/generate/generate_state.dart';
 import 'package:plana_app/features/generate/generation_controller.dart';
+import 'package:plana_app/features/generate/loop_controller.dart';
 import 'package:plana_app/features/generate/models.dart';
 import 'package:plana_app/features/shell/shell_state.dart';
 
@@ -52,8 +55,89 @@ class _Client extends NaiClient {
   );
 }
 
+class _LoopClient extends _Client {
+  _LoopClient(this.bytes);
+
+  final Uint8List bytes;
+  final requests = List.generate(4, (_) => Completer<void>());
+  final finish = List.generate(4, (_) => Completer<void>());
+  int count = 0;
+
+  @override
+  Stream<NaiFrame> generateImageStream({
+    required String token,
+    required Map<String, dynamic> body,
+    GenAbort? abort,
+  }) async* {
+    final index = count++;
+    requests[index].complete();
+    await finish[index].future;
+    yield (step: 28, isFinal: true, bytes: bytes);
+  }
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  for (final scenario in [
+    (desktop: true, stop: false),
+    (desktop: false, stop: false),
+    (desktop: true, stop: true),
+  ]) {
+    test('循环生成保留桌面页与主动切页，移动端仅开始时切图库：$scenario', () async {
+      final stores = AppStores.ephemeral();
+      final client = _LoopClient(
+        await File('assets/app_icon.png').readAsBytes(),
+      );
+      final c = ProviderContainer(
+        overrides: [
+          appStoresProvider.overrideWithValue(stores),
+          desktopModeProvider.overrideWithValue(scenario.desktop),
+          authModeProvider.overrideWith(_Auth.new),
+          naiKeysStoreProvider.overrideWith(_Keys.new),
+          naiClientProvider.overrideWith((ref, base) => client),
+        ],
+      );
+      try {
+        await c.read(authModeProvider.future);
+        await c.read(naiKeysStoreProvider.future);
+        c.read(generateProvider.notifier).setLoop(LoopCount.x4);
+        final loop = c.read(loopStatusProvider.notifier);
+        final work = loop.start();
+        final pages = <int>[];
+        final count = scenario.stop ? 1 : 4;
+        for (var i = 0; i < count; i++) {
+          await client.requests[i].future.timeout(const Duration(seconds: 10));
+          pages.add(c.read(shellIndexProvider));
+          if (scenario.stop) loop.stop();
+          if (i == 1) {
+            c.read(shellIndexProvider.notifier).select(kTabAssistant);
+          }
+          client.finish[i].complete();
+        }
+        await work.timeout(const Duration(seconds: 10));
+        final initialPage = scenario.desktop ? kTabCreate : kTabGallery;
+        expect(
+          pages,
+          scenario.stop
+              ? [initialPage]
+              : [initialPage, initialPage, kTabAssistant, kTabAssistant],
+        );
+        expect(
+          c.read(shellIndexProvider),
+          scenario.stop ? kTabCreate : kTabAssistant,
+        );
+        expect(client.count, count);
+        expect(c.read(galleryProvider).results, hasLength(count));
+        expect(c.read(generationProvider).jobs, isEmpty);
+        expect(c.read(loopStatusProvider).active, isFalse);
+      } finally {
+        c.dispose();
+        stores.flushNow();
+        await stores.gallery.idle;
+        await stores.albums.idle;
+      }
+    });
+  }
   for (final automatic in [true, false]) {
     test('真实生成状态流保持任务图库，不打断正在浏览的网格：auto=$automatic', () async {
       final stores = AppStores.ephemeral();

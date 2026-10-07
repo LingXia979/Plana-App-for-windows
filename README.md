@@ -20,7 +20,7 @@
 ## 项目状态
 
 本项目基于 [Plana App](https://github.com/mc5024/Plana-App) 开发 Windows 桌面适配。
-当前版本为 **1.1.1-windows.45（构建 64）**。本分支提供对应的 Windows 桌面源码，安装包与便携版见 [Releases](https://github.com/LingXia979/Plana-App-for-windows/releases/tag/v1.1.1-windows.45)。
+当前版本为 **1.1.1-windows.46（构建 65）**。本分支提供对应的 Windows 桌面源码，安装包与便携版见 [Releases](https://github.com/LingXia979/Plana-App-for-windows/releases/tag/v1.1.1-windows.46)。
 
 - `Plana-app-for-windows`：Windows 桌面适配分支。
 - [`plana-app-gallery-optimization`](https://github.com/LingXia979/Plana-App-for-windows/tree/plana-app-gallery-optimization)：图库优化分支。
@@ -28,9 +28,9 @@
 
 ## 下载与安装
 
-- [中文安装包（Windows x64）](https://github.com/LingXia979/Plana-App-for-windows/releases/download/v1.1.1-windows.45/Plana-Windows-1.1.1-windows.45-x64-setup.exe)：按中文向导选择安装目录，支持开始菜单、可选桌面快捷方式及卸载。
-- [便携版 ZIP](https://github.com/LingXia979/Plana-App-for-windows/releases/download/v1.1.1-windows.45/Plana-Windows-1.1.1-windows.45-x64.zip)：完整解压后运行 `plana_app_for_windows.exe`。
-- [SHA-256 校验清单](https://github.com/LingXia979/Plana-App-for-windows/releases/download/v1.1.1-windows.45/Plana-Windows-1.1.1-windows.45-x64-SHA256.txt)。
+- [中文安装包（Windows x64）](https://github.com/LingXia979/Plana-App-for-windows/releases/download/v1.1.1-windows.46/Plana-Windows-1.1.1-windows.46-x64-setup.exe)：按中文向导选择安装目录，支持开始菜单、可选桌面快捷方式及卸载。
+- [便携版 ZIP](https://github.com/LingXia979/Plana-App-for-windows/releases/download/v1.1.1-windows.46/Plana-Windows-1.1.1-windows.46-x64.zip)：完整解压后运行 `plana_app_for_windows.exe`。
+- [SHA-256 校验清单](https://github.com/LingXia979/Plana-App-for-windows/releases/download/v1.1.1-windows.46/Plana-Windows-1.1.1-windows.46-x64-SHA256.txt)。
 
 升级前请关闭旧版。作品自动保存到程序旁的 `output` 文件夹，卸载保留个人数据。发布包不附带个人账号、API/Bot/Web 授权、提示词草稿或私人 tag 库，首次使用请自行配置。当前安装包未进行代码签名。
 
@@ -63,6 +63,7 @@
 以下功能对应上方展示的 Windows 测试版。
 
 - **桌面工作台**：可调整侧栏宽度，提示词、画布与助手同屏；支持鼠标、键盘、文件拖入和快捷粘贴图片，图片按鼠标所在区域导入。
+- **循环生成**：在创作页连续生成并查看进度与结果；中途手动切页不会被后续任务打断。
 - **提示词与预设**：文本／标签视图切换，正负提示词折叠联动；快捷小窗查看与切换预设。
 - **图库管理**：自建图库、日期筛选、收藏、多选与批量导出；一次复制到多个图库，每份副本独立保存。
 - **AI 助手**：一次附加多张图片，从历史选择图片，拖入或粘贴到助手区域即可加入附件；支持会话管理、消息编辑及生成图原图预览。

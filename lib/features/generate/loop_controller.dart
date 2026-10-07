@@ -3,6 +3,7 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/live_progress/live_progress.dart';
+import '../../core/platform/desktop.dart';
 import '../shell/shell_state.dart';
 import 'gen_queue.dart';
 import 'generate_state.dart';
@@ -53,8 +54,11 @@ class LoopNotifier extends Notifier<LoopStatus> {
     final total = ref.read(generateProvider).params.loop.count; // 开跑时锁档位
     final galleryTarget = ref.read(gallerySaveTargetProvider);
     state = LoopStatus(active: true, total: total);
-    // 只在开跑时切一次图库;之后每张不再强拉(generate 里按 _inLoop 跳过)
-    ref.read(shellIndexProvider.notifier).select(kTabGallery);
+    // 桌面直接在创作画布显示进度；移动端只在开跑时切一次图库。
+    // 后续每张都保留用户当前页面(generate 里按 _inLoop 跳过)。
+    if (!ref.read(desktopModeProvider)) {
+      ref.read(shellIndexProvider.notifier).select(kTabGallery);
+    }
 
     final gen = ref.read(generationProvider.notifier);
     var dispatched = 0; // 已投出的张数(含在跑的)
