@@ -55,10 +55,10 @@ int estimateCost(
   final pixels = p.width * p.height;
   final free =
       isOpus &&
-      p.steps <= 28 &&
+      p.activeSteps <= 28 &&
       pixels <= 1048576 &&
       !_v5NoLongerFree(p.model, v5Charged);
-  var baseCost = _baseCost(pixels, p.steps, isV5: isNai5Model(p.model));
+  var baseCost = _baseCost(pixels, p.activeSteps, isV5: isNai5Model(p.model));
   final i2i = s.img2img;
   if (i2i?.image != null) baseCost = max(2, (baseCost * i2i!.strength).ceil());
   // 两笔附加费都按**模型是否真会下发**计:V5 不支持 Vibe / 角色参考,载荷里
@@ -88,10 +88,10 @@ int estimateInpaintCost(
   final pixels = sendW * sendH;
   final free =
       isOpus &&
-      p.steps <= 28 &&
+      p.activeSteps <= 28 &&
       pixels <= 1048576 &&
       !_v5NoLongerFree(p.model, v5Charged);
-  var baseCost = _baseCost(pixels, p.steps, isV5: isNai5Model(p.model));
+  var baseCost = _baseCost(pixels, p.activeSteps, isV5: isNai5Model(p.model));
   baseCost = max(2, (baseCost * strength).ceil());
   final vibeExtra = vibeSupportsModel(p.model)
       ? max(0, s.enabledVibes - 4) * 2

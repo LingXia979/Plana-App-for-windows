@@ -10,6 +10,7 @@ import 'nai_request.dart'
         CharRefPayload,
         Img2ImgRef,
         naiModelId,
+        naiNegativePrompt,
         naiSamplerId,
         naiSupportsTransparency,
         normalizeVibeStrengths;
@@ -42,7 +43,7 @@ Map<String, dynamic> buildBotParams(
   List<KreaStyleRefPayload> kreaStyleRefs = const [],
 }) {
   final p = s.params;
-  final model = naiModelId(p.model);
+  final model = naiModelId(p.model, effort: p.naiEffort);
   final is45 = crSupportsModel(p.model);
   final isV5 = model.startsWith('nai-diffusion-5');
 
@@ -75,21 +76,21 @@ Map<String, dynamic> buildBotParams(
 
   final params = <String, dynamic>{
     'positivePrompt': promptText,
-    'negativePrompt': s.negativePrompt,
+    'negativePrompt': naiNegativePrompt(s),
     'width': p.width,
     'height': p.height,
     'seed': seed,
-    'steps': p.steps,
+    'steps': p.activeSteps,
     'scale': p.cfg,
-    'sampler': naiSamplerId(p.sampler),
-    'cfgRescale': p.cfgRescale,
+    'sampler': naiSamplerId(p.activeNaiSampler),
+    'cfgRescale': p.activeNaiCfgRescale,
     // V5 没有 noiseSchedule / cfgDelay 这两项能力(后端也会再兜一道):
     // 别把用户切到 V5 之前留下的值带过去,与直连线同一口径
     'noiseSchedule': isV5 ? 'karras' : p.noiseSchedule,
     'varietyPlus': !isV5 && p.varietyPlus,
     'qualityToggle': qualityToggle ?? builtinPresetHasPositive(presetId),
     'tagHintQt': tagHints.qt,
-    'tagHintUcPreset': tagHints.ucPreset,
+    'tagHintUcPreset': p.isNaiMedium ? 0 : tagHints.ucPreset,
     if (canTransparent) ...{
       'straightAlpha': straightAlpha,
       'tagHintTransparentBackground': anyPromptHasTransparentBackground(
@@ -100,7 +101,7 @@ Map<String, dynamic> buildBotParams(
     if (img2img?.upscaledEnhance == true) 'upscaledEnhance': true,
     // 与直连同一个函数:后端对 int 是原样透传的,这里发错就直接写进图片元数据。
     // 重绘模型由后端换,这里给生成模型即可(同 web bot 线)。
-    'ucPreset': ucPresetValue(presetId, model),
+    'ucPreset': p.isNaiMedium ? 0 : ucPresetValue(presetId, model),
     'normalizeVibeStrength': p.normalizeVibe,
     'model': model, // 后端接受 API 内部名,直接透传
     'characterPrompts': [
@@ -108,7 +109,7 @@ Map<String, dynamic> buildBotParams(
         {
           'enabled': true,
           'positive': c.positive.trim(),
-          'negative': c.negative.trim(),
+          'negative': p.isNaiMedium ? '' : c.negative.trim(),
           'position': c.position ?? '',
         },
     ],

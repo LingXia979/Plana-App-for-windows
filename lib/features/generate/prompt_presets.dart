@@ -614,6 +614,10 @@ String? _stripTagRun(
   return '$whitespace${source.substring(kept.start)}';
 }
 
+/// Medium always uses this built-in UC, independently of the quality preset.
+String get naiMediumNegativePrompt =>
+    kDefaultPromptPresets.firstWhere((p) => p.id == 'v5-standard').negative;
+
 /// 认出这张图用的是哪条预设,并把预设文本从提示词里剥回去。
 ///
 /// 命中条件(严,宁可漏不可错 —— 错认等于静默删掉用户自己写的词):
@@ -625,25 +629,38 @@ String? _stripTagRun(
 /// - 候选按 tag 总数倒序:长档先试,免得短档把长档的一部分先啃掉。
 ///
 /// [hintQt] / [hintUcPreset] 是元数据里的档位提示,只用来把候选排到队首。
+/// [naiMedium] 仅用于明确识别为 Medium 的图片，负面证据改用固定 Heavy。
 ({PromptPreset preset, String positive, String negative})? detectPromptPreset(
   List<PromptPreset> presets,
   String positive,
   String negative, {
   int? hintQt,
   int? hintUcPreset,
+  bool naiMedium = false,
 }) {
   // 与 applyPromptPreset 对称:后缀是拼在 `text:` 之前的,剥的时候也只在那一段里剥
   final (posHead, posTextBlock) = _splitAtTextMarker(positive);
-  final hinted = _presetIdsFromTagHints(hintQt, hintUcPreset);
+  final hinted = naiMedium
+      ? {
+          for (final entry in _presetOfficialSource.entries)
+            if (hintQt != null && _hintNum(entry.value.quality) == hintQt)
+              entry.key,
+        }
+      : _presetIdsFromTagHints(hintQt, hintUcPreset);
+  final fixedNegative = naiMedium ? _splitTags(naiMediumNegativePrompt) : null;
+  final eligible = naiMedium
+      ? promptPresetsForModel(presets, 'NAI 5.0 Full')
+      : presets;
 
   final candidates =
       [
-        for (final p in presets)
-          if (p.positive.isNotEmpty || p.negative.isNotEmpty)
+        for (final p in eligible)
+          if (p.positive.isNotEmpty || (!naiMedium && p.negative.isNotEmpty))
             (
               preset: p,
               weight:
-                  _splitTags(p.positive).length + _splitTags(p.negative).length,
+                  _splitTags(p.positive).length +
+                  (naiMedium ? 0 : _splitTags(p.negative).length),
             ),
       ]..sort((a, b) {
         final ha = hinted.contains(a.preset.id) ? 1 : 0;
@@ -653,7 +670,7 @@ String? _stripTagRun(
 
   for (final c in candidates) {
     final wantPos = _splitTags(c.preset.positive);
-    final wantNeg = _splitTags(c.preset.negative);
+    final wantNeg = fixedNegative ?? _splitTags(c.preset.negative);
     // 正面**两端都试**,先试这条预设声明的那一端。
     //
     // 位置会变:heavy/light 历史上拼在句首,1.0.7 起改成句尾(与官方对齐)。

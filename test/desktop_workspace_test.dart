@@ -17,6 +17,7 @@ import 'package:plana_app/features/assistant/custom_endpoint.dart';
 import 'package:plana_app/features/gallery/albums/album_state.dart';
 import 'package:plana_app/features/gallery/gallery_state.dart';
 import 'package:plana_app/features/generate/generate_state.dart';
+import 'package:plana_app/features/generate/models.dart';
 import 'package:plana_app/features/shell/shell_state.dart';
 import 'package:plana_app/features/inpaint/inpaint_overlay.dart';
 import 'package:plana_app/main.dart';
@@ -912,6 +913,53 @@ void main() {
     await tester.pump(const Duration(seconds: 1));
     await drainWrites(tester);
   });
+
+  testWidgets(
+    'V5 Full effort toggle simplifies settings and restores High drafts',
+    (tester) async {
+      final notifier = c.read(generateProvider.notifier);
+      notifier.applyParams(
+        const GenParams(
+          model: 'NAI 5.0 Full',
+          steps: 35,
+          sampler: 'Euler',
+          cfgRescale: .6,
+        ),
+      );
+      notifier.setPrompts(positive: 'blue sky', negative: 'saved negative');
+      await mount(tester, const Size(1280, 900));
+      await tester.tap(key('desktop-prompt-negative-tab'));
+      await tester.pumpAndSettle();
+      await tester.tap(key('nai-effort-medium'));
+      await tester.pumpAndSettle();
+      expect(c.read(generateProvider).params.activeSteps, 14);
+      expect(key('desktop-steps'), findsNothing);
+      expect(key('desktop-rescale'), findsNothing);
+      expect(find.text('采样器'), findsNothing);
+      expect(key('desktop-guidance'), findsOneWidget);
+      expect(key('desktop-seed'), findsOneWidget);
+      expect(key('desktop-prompt-negative-tab'), findsNothing);
+      expect(c.read(generateProvider).negativePrompt, 'saved negative');
+      await screenshot(tester, 'nai5-medium');
+      await tester.tap(key('nai-effort-high'));
+      await tester.pumpAndSettle();
+      expect(c.read(generateProvider).params.activeSteps, 35);
+      expect(c.read(generateProvider).params.sampler, 'Euler');
+      expect(c.read(generateProvider).params.cfgRescale, .6);
+      expect(key('desktop-steps'), findsOneWidget);
+      expect(key('desktop-rescale'), findsOneWidget);
+      await tester.tap(key('desktop-prompt-negative-tab'));
+      await tester.pumpAndSettle();
+      expect(find.text('saved negative'), findsOneWidget);
+      notifier.setModel('NAI 5.0 Curated');
+      await tester.pumpAndSettle();
+      expect(key('nai-effort-medium'), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump(const Duration(seconds: 1));
+      await drainWrites(tester);
+    },
+  );
 
   testWidgets('桌面提示词直接编辑真实生成状态，切页保留', (tester) async {
     await mount(tester, const Size(1280, 800));

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -17,6 +18,7 @@ import 'package:plana_app/features/generate/generate_state.dart';
 import 'package:plana_app/features/generate/generation_controller.dart';
 import 'package:plana_app/features/generate/loop_controller.dart';
 import 'package:plana_app/features/generate/models.dart';
+import 'package:plana_app/features/generate/prompt_presets.dart';
 import 'package:plana_app/features/shell/shell_state.dart';
 
 class _Auth extends AuthModeNotifier {
@@ -56,9 +58,11 @@ class _Client extends NaiClient {
 }
 
 class _LoopClient extends _Client {
-  _LoopClient(this.bytes);
+  _LoopClient(this.bytes, {this.steps = 28});
 
   final Uint8List bytes;
+  final int steps;
+  final bodies = <Map<String, dynamic>>[];
   final requests = List.generate(4, (_) => Completer<void>());
   final finish = List.generate(4, (_) => Completer<void>());
   int count = 0;
@@ -70,14 +74,90 @@ class _LoopClient extends _Client {
     GenAbort? abort,
   }) async* {
     final index = count++;
+    bodies.add(body);
     requests[index].complete();
     await finish[index].future;
-    yield (step: 28, isFinal: true, bytes: bytes);
+    yield (step: steps, isFinal: true, bytes: bytes);
   }
 }
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  test('Medium keeps its effort through save and regenerate', () async {
+    final stores = AppStores.ephemeral();
+    final client = _LoopClient(
+      await File('assets/app_icon.png').readAsBytes(),
+      steps: 14,
+    );
+    final c = ProviderContainer(
+      overrides: [
+        appStoresProvider.overrideWithValue(stores),
+        desktopModeProvider.overrideWithValue(true),
+        authModeProvider.overrideWith(_Auth.new),
+        naiKeysStoreProvider.overrideWith(_Keys.new),
+        naiClientProvider.overrideWith((ref, base) => client),
+      ],
+    );
+    try {
+      await c.read(authModeProvider.future);
+      await c.read(naiKeysStoreProvider.future);
+      var input = GenerateState.initial().copyWith(
+        prompt: 'blue sky',
+        negativePrompt: 'saved High negative',
+        params: const GenParams(
+          model: 'NAI 5.0 Full',
+          naiEffort: NaiEffort.medium,
+          steps: 35,
+          sampler: 'Euler',
+          cfgRescale: .6,
+          seed: '123',
+        ),
+      );
+      // The workbench stays High; regenerating a saved Medium result uses its
+      // own snapshot rather than the current workbench selection.
+      expect(c.read(generateProvider).params.naiEffort, NaiEffort.high);
+      for (var i = 0; i < 2; i++) {
+        final work = c.read(generationProvider.notifier).generate(using: input);
+        await client.requests[i].future.timeout(const Duration(seconds: 10));
+        expect(c.read(generationProvider).jobs.single.total, 14);
+        expect(client.bodies[i]['model'], 'nai-diffusion-5-full-medium');
+        expect((client.bodies[i]['parameters'] as Map)['steps'], 14);
+        client.finish[i].complete();
+        expect(await work, GenOutcome.ok);
+        await stores.gallery.idle;
+        final result = c.read(galleryProvider).results.first;
+        input = (await stores.gallery.readInput(result.id))!;
+        expect(input.params.naiEffort, NaiEffort.medium);
+        expect(input.params.steps, 35);
+        expect(input.params.sampler, 'Euler');
+        expect(input.params.cfgRescale, .6);
+        expect(input.negativePrompt, 'saved High negative');
+      }
+      final sidecars = await stores.desktopOutput.root
+          .list(recursive: true)
+          .where((f) => f.path.endsWith('.json'))
+          .toList();
+      expect(sidecars, hasLength(2));
+      for (final f in sidecars) {
+        final m = jsonDecode(await File(f.path).readAsString()) as Map;
+        expect(m['naiEffort'], 'medium');
+        expect(m['steps'], 14);
+        expect(m['sampler'], 'Euler Ancestral');
+        expect(m['cfgRescale'], 0);
+        expect(
+          m['negativePrompt'],
+          kDefaultPromptPresets
+              .firstWhere((p) => p.id == 'v5-standard')
+              .negative,
+        );
+      }
+    } finally {
+      c.dispose();
+      stores.flushNow();
+      await stores.gallery.idle;
+      await stores.albums.idle;
+    }
+  });
   for (final scenario in [
     (desktop: true, stop: false),
     (desktop: false, stop: false),

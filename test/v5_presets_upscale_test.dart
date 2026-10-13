@@ -270,6 +270,42 @@ void main() {
   // 导入时认档只是顺带,正题是**把预设文本剥回去** —— 不剥的话当前档下次生成
   // 会再拼一遍。所以判据只有一条:能不能干净剥掉。
   group('detectPromptPreset', () {
+    for (final preset in [_p('v5-standard'), _p('v5-light'), _custom]) {
+      test('Medium 固定负面下剥离 ${preset.id}，不重复正面预设', () {
+        final baked = applyPromptPreset(preset, 'blue sky', '');
+        final negative = _p('v5-standard').negative;
+        final hints = promptPresetTagHints(preset.id);
+        final hit = detectPromptPreset(
+          _all,
+          baked.positive,
+          negative,
+          hintQt: hints.qt,
+          hintUcPreset: 0,
+          naiMedium: true,
+        );
+        expect(hit?.preset.id, preset.id);
+        expect(hit?.positive, 'blue sky');
+        expect(hit?.negative, '');
+        expect(
+          applyPromptPreset(hit!.preset, hit.positive, '').positive,
+          baked.positive,
+        );
+        // High still requires the original paired negative; even Medium needs
+        // the fixed negative as evidence before stripping positive text.
+        if (preset.id != 'v5-standard') {
+          expect(detectPromptPreset(_all, baked.positive, negative), isNull);
+        }
+        expect(
+          detectPromptPreset(
+            _all,
+            baked.positive,
+            'unmatched negative',
+            naiMedium: true,
+          ),
+          isNull,
+        );
+      });
+    }
     ({String pos, String neg}) baked(PromptPreset p, String u, String n) {
       final r = applyPromptPreset(p, u, n);
       return (pos: r.positive, neg: r.negative);
@@ -682,6 +718,40 @@ low contrast, simple background''';
     test('模型换过去了', () {
       final out = retargetModel(rich('NAI 4.5 Full'), 'NAI 5.0 Full');
       expect(out.params.model, 'NAI 5.0 Full');
+    });
+
+    test('重绘放大采用当前档位，保留快照的 High 参数', () {
+      final original = rich('NAI 5.0 Full').copyWith(
+        params: const GenParams(
+          model: 'NAI 5.0 Full',
+          steps: 35,
+          sampler: 'Euler',
+          cfgRescale: .6,
+        ),
+      );
+      final medium = retargetModel(
+        original,
+        'NAI 5.0 Full',
+        naiEffort: NaiEffort.medium,
+      );
+      expect(
+        buildNaiPayload(medium, presetId: 'none').body['model'],
+        'nai-diffusion-5-full-medium',
+      );
+      expect(medium.params.activeSteps, 14);
+      expect(medium.params.steps, 35);
+      final high = retargetModel(
+        medium,
+        'NAI 5.0 Full',
+        naiEffort: NaiEffort.high,
+      );
+      expect(
+        buildNaiPayload(high, presetId: 'none').body['model'],
+        'nai-diffusion-5-full',
+      );
+      expect(high.params.activeSteps, 35);
+      expect(high.params.activeNaiSampler, 'Euler');
+      expect(high.params.activeNaiCfgRescale, .6);
     });
 
     test('V5 不支持的模块整组去掉', () {

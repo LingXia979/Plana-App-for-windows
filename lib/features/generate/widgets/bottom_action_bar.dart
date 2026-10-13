@@ -182,7 +182,11 @@ class _BottomActionBarState extends ConsumerState<BottomActionBar> {
                           tooltip: item.$1 == GenerationSettingTarget.seed
                               ? '清空种子，改为每次随机'
                               : null,
-                          onTap: item.$1 == GenerationSettingTarget.seed
+                          onTap:
+                              p.isNaiMedium &&
+                                  item.$1 == GenerationSettingTarget.steps
+                              ? null
+                              : item.$1 == GenerationSettingTarget.seed
                               ? () => ref
                                     .read(generateProvider.notifier)
                                     .applyParams(
@@ -768,6 +772,9 @@ class _StepsChip extends ConsumerWidget {
       generateProvider.select((s) => s.params.activeSteps),
     );
     final pill = ref.watch(floatingPillProvider);
+    final fixed = ref.watch(
+      generateProvider.select((s) => s.params.isNaiMedium),
+    );
     final open = pill.isOpen(FloatingPill.steps);
     return _ReadoutChip(
       caption: '步数',
@@ -775,8 +782,11 @@ class _StepsChip extends ConsumerWidget {
       active: open,
       // 拖动时逐帧换数,再叠淡入淡出只会糊成一团
       animateValue: !open,
-      onTap: () =>
-          ref.read(floatingPillProvider.notifier).toggle(FloatingPill.steps),
+      onTap: fixed
+          ? null
+          : () => ref
+                .read(floatingPillProvider.notifier)
+                .toggle(FloatingPill.steps),
     );
   }
 }
@@ -839,10 +849,15 @@ class FloatingPillOverlay extends ConsumerWidget {
     // 不收的话下次切回来它会自己冒出来,像见了鬼。
     // (只在这儿判「还该不该画」,真正把状态清掉交给下面那次 listen。)
     final okFor = switch (which) {
+      FloatingPill.steps => !p.isNaiMedium,
       FloatingPill.batch => p.batchable && p.effectiveBatch == p.batchCount,
       _ => true,
     };
     if (!okFor) which = FloatingPill.none;
+    ref.listen<bool>(
+      sentParamsProvider.select((x) => x.isNaiMedium),
+      (_, _) => ref.read(floatingPillProvider.notifier).close(),
+    );
     ref.listen<bool>(
       sentParamsProvider.select(
         (x) => x.batchable && x.effectiveBatch == x.batchCount,
@@ -1108,7 +1123,7 @@ class _ReadoutChip extends StatelessWidget {
 
   /// 数值变化是否走淡入淡出。逐帧变的值要关掉,否则一堆数字叠着糊。
   final bool animateValue;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {

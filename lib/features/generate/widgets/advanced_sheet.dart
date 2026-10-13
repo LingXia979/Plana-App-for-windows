@@ -113,22 +113,24 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
             padding: const EdgeInsets.fromLTRB(20, 4, 20, 16),
             children: [
               // 预设选择即时生效(全局偏好,不随「恢复默认/确认」走草稿)。
-              _SectionLabel('提示词预设'),
-              const SizedBox(height: 10),
-              _PresetRow(model: draft.model),
-              const SizedBox(height: 4),
-              Text(
-                '生成时自动拼进正/负提示词,不占用输入框。V5 与 4.5 各有一套档。',
-                style: context.texts.labelSmall!.copyWith(
-                  color: scheme.outline,
+              if (!draft.isNaiMedium) ...[
+                _SectionLabel('提示词预设'),
+                const SizedBox(height: 10),
+                _PresetRow(model: draft.model),
+                const SizedBox(height: 4),
+                Text(
+                  '生成时自动拼进正/负提示词,不占用输入框。V5 与 4.5 各有一套档。',
+                  style: context.texts.labelSmall!.copyWith(
+                    color: scheme.outline,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 18),
-              Divider(
-                color: scheme.outlineVariant.withValues(alpha: .5),
-                height: 1,
-              ),
-              const SizedBox(height: 14),
+                const SizedBox(height: 18),
+                Divider(
+                  color: scheme.outlineVariant.withValues(alpha: .5),
+                  height: 1,
+                ),
+                const SizedBox(height: 14),
+              ],
               _SectionLabel('采样'),
               const SizedBox(height: 10),
               if (isAnima) ...[
@@ -302,6 +304,17 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                     icon: Icons.warning_amber_rounded,
                   ),
                 ],
+              ] else if (draft.isNaiMedium) ...[
+                ParamSlider(
+                  label: '提示词引导 CFG',
+                  help: Help.cfg,
+                  value: draft.cfg,
+                  min: 0,
+                  max: 25,
+                  divisions: 250,
+                  valueText: draft.cfg.toStringAsFixed(1),
+                  onChanged: (v) => _set(draft.copyWith(cfg: v)),
+                ),
               ] else ...[
                 ParamSlider(
                   label: '步数 Steps',
@@ -491,7 +504,7 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                 ],
               ),
               // CFG Rescale 是 NAI 独有的;两个 Modal 渠道都没有这个参数
-              if (!isAnima && !isKrea) ...[
+              if (!isAnima && !isKrea && !draft.isNaiMedium) ...[
                 const SizedBox(height: 14),
                 ParamSlider(
                   label: 'CFG Rescale',
@@ -522,10 +535,13 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                   onPressed: () {
                     var next = const GenParams().copyWith(
                       model: draft.model,
+                      naiEffort: draft.naiEffort,
                       width: draft.width,
                       height: draft.height,
                     );
-                    if (isAnima) {
+                    if (draft.isNaiMedium) {
+                      next = draft.copyWith(cfg: 5.5, seed: '');
+                    } else if (isAnima) {
                       // anima 默认 = 当前档位的推荐采样参数
                       final d = animaTierDefaults(animaTierOf(draft.model));
                       next = next.copyWith(

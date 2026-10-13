@@ -64,6 +64,14 @@ void main() {
   }
 
   group('顶栏来源模型:档次要写出来', () {
+    test('V5 Medium 官方指纹保留 Full 和 Medium 档位', () async {
+      for (final hash in ['93F4BD30', '70AB5786']) {
+        expect(
+          await sourceOf('NovelAI Diffusion V5 $hash'),
+          'NovelAI V5 Full Medium',
+        );
+      }
+    });
     test('V5 白名单指纹 → Full', () async {
       expect(
         await sourceOf('NovelAI Diffusion V5 657484A5'),

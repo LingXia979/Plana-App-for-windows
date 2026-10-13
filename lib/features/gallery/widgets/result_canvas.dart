@@ -1141,11 +1141,12 @@ class _ActionRailState extends ConsumerState<ResultActions> {
         source.input ??
         (source.hasInput ? await store.readInput(source.id) : null);
     if (!context.mounted) return;
-    final curModel = ref.read(generateProvider).params.model;
+    final currentParams = ref.read(generateProvider).params;
+    final curModel = currentParams.model;
     // 换了模型的快照要按新模型的能力面重新裁一遍(V5 没有 Vibe / 角色参考)
     final redrawInput = snapshot == null
         ? null
-        : retargetModel(snapshot, curModel);
+        : retargetModel(snapshot, curModel, naiEffort: currentParams.naiEffort);
     final scales = redrawInput == null || isModalModel(curModel)
         ? const <EnhanceScale>[]
         : enhanceScaleOptions(w, h, curModel);

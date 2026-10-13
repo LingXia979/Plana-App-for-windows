@@ -8,7 +8,24 @@ import 'package:plana_app/core/store/app_stores.dart';
 import 'package:plana_app/core/theme/app_theme.dart';
 import 'package:plana_app/core/util/png_meta.dart';
 import 'package:plana_app/features/generate/generate_state.dart';
+import 'package:plana_app/features/generate/models.dart';
+import 'package:plana_app/features/generate/prompt_presets.dart';
 import 'package:plana_app/features/import/import_panel.dart';
+
+class _Presets extends PromptPresetsNotifier {
+  @override
+  Future<PromptPresetsState> build() async => const PromptPresetsState(
+    presets: kDefaultPromptPresets,
+    activeId: 'v5-light',
+  );
+
+  @override
+  Future<void> setActive(String id) async {
+    state = AsyncData(
+      PromptPresetsState(presets: state.requireValue.presets, activeId: id),
+    );
+  }
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -66,6 +83,7 @@ void main() {
       overrides: [
         appStoresProvider.overrideWithValue(stores),
         desktopModeProvider.overrideWithValue(desktop),
+        promptPresetsProvider.overrideWith(_Presets.new),
       ],
     );
     container
@@ -109,6 +127,70 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     await tester.pump(const Duration(seconds: 1));
     expect(tester.takeException(), isNull);
+  }
+
+  for (final presetId in ['v5-light', 'v5-standard']) {
+    testWidgets(
+      'Medium PNG import selects effort without replacing High sampling: $presetId',
+      (tester) async {
+        final preset = kDefaultPromptPresets.firstWhere(
+          (p) => p.id == presetId,
+        );
+        final heavy = kDefaultPromptPresets.firstWhere(
+          (p) => p.id == 'v5-standard',
+        );
+        metadata = (await tester.runAsync(
+          () => writeImageMetadataPng(
+            plain,
+            source: 'NovelAI Diffusion V5 93F4BD30',
+            comment: {
+              'prompt': applyPromptPreset(preset, 'blue sky', '').positive,
+              'uc': heavy.negative,
+              'tag_hint_qt': promptPresetTagHints(presetId).qt,
+              'tag_hint_uc_preset': 0,
+              'seed': 123,
+              'steps': 14,
+              'scale': 5.5,
+              'sampler': 'k_euler_ancestral',
+              'cfg_rescale': 0,
+            },
+          ),
+        ))!;
+        await mount(tester);
+        await drain(
+          tester,
+          () => container.read(promptPresetsProvider).hasValue,
+        );
+        container
+            .read(generateProvider.notifier)
+            .applyParams(
+              const GenParams(
+                model: 'NAI 5.0 Full',
+                steps: 35,
+                sampler: 'Euler',
+                cfgRescale: .6,
+              ),
+            );
+        await tester.tap(key('desktop-import-confirm'));
+        await drain(
+          tester,
+          () => find.byType(ImportImagePanel).evaluate().isEmpty,
+        );
+        final p = container.read(generateProvider).params;
+        expect(p.model, 'NAI 5.0 Full');
+        expect(p.activeSteps, 14);
+        expect(p.steps, 35);
+        expect(p.sampler, 'Euler');
+        expect(p.cfgRescale, .6);
+        expect(container.read(generateProvider).prompt, 'blue sky');
+        expect(
+          container.read(generateProvider).negativePrompt,
+          'keep negative',
+        );
+        expect(container.read(promptPresetsProvider).value?.activeId, presetId);
+        await finish(tester);
+      },
+    );
   }
 
   testWidgets(

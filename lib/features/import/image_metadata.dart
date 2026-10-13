@@ -259,6 +259,16 @@ _PngTextChunks _extractPngTextChunks(Uint8List bytes) {
 
 /// V5 Full 的两个权重指纹(取自 NAI 官方前端白名单)。
 const _v5FullHashes = ['657484a5', '0adf9ab7'];
+const _v5MediumHashes = ['93f4bd30', '70ab5786'];
+
+/// Official V5 Medium generation and inpainting fingerprints (2026-10-08).
+bool naiSourceIsV5Medium(String source) {
+  final s = source.toLowerCase();
+  return _v5MediumHashes.any(s.contains) ||
+      ((s.contains('v5') || s.contains('nai-diffusion-5')) &&
+          s.contains('full') &&
+          s.contains('medium'));
+}
 
 /// 这串 Source 是不是 V5 Full。
 ///
@@ -273,7 +283,7 @@ bool naiSourceIsV5Full(String source) {
   final s = source.toLowerCase();
   if (s.contains('curated')) return false;
   if (s.contains('full')) return true;
-  return _v5FullHashes.any(s.contains);
+  return _v5FullHashes.any(s.contains) || naiSourceIsV5Medium(source);
 }
 
 /// 模型指纹 → 展示名(取自 NAI 官方前端源码)。
@@ -455,7 +465,8 @@ ImageMetadata? _parseNai(Map<String, dynamic> data) {
           // 它的 Source 串里根本没有档次字样,不显式补上的话顶栏只会显示光秃秃
           // 一个「NovelAI V5」—— 而 V4/V4.5 那边有指纹表,一直是带档次的。
           final full = naiSourceIsV5Full(rawSource);
-          source = 'NovelAI V$ver ${full ? 'Full' : 'Curated'}';
+          final effort = naiSourceIsV5Medium(rawSource) ? ' Medium' : '';
+          source = 'NovelAI V$ver ${full ? 'Full' : 'Curated'}$effort';
         } else {
           // 其余版本只能靠字面找 curated。**认不出就不写档次** —— 指纹表
           // (_naiModelNameMap)已经覆盖了官方在用的那批,落到这里的是没见过的

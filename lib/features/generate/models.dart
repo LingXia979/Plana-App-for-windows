@@ -381,6 +381,11 @@ const nai5Models = <String>['NAI 5.0 Full', 'NAI 5.0 Curated'];
 
 bool isNai5Model(String displayModel) => displayModel.startsWith('NAI 5.0');
 
+/// V5 Full's distilled Medium model uses fixed sampling settings.
+enum NaiEffort { medium, high }
+
+bool naiSupportsEffort(String displayModel) => displayModel == 'NAI 5.0 Full';
+
 /// 角色参考(Director/Precise Reference)仅 4.5 系模型支持(对齐 web 门槛)。
 /// 载荷构造 / 成本预估 / 卡片提示共用此判定,入参为 UI 展示名。
 /// NAI 5 是否支持官方未公布,预载期按不支持处理(startsWith 天然排除)。
@@ -918,6 +923,7 @@ const noiseSchedules = <String>['karras', 'exponential', 'polyexponential'];
 class GenParams {
   const GenParams({
     this.model = 'NAI 4.5 Full',
+    this.naiEffort = NaiEffort.high,
     this.width = 832,
     this.height = 1216,
     this.steps = 28,
@@ -946,6 +952,12 @@ class GenParams {
   });
 
   final String model;
+  // Keep the editable High settings intact while Medium is selected.
+  final NaiEffort naiEffort;
+  bool get isNaiMedium =>
+      naiSupportsEffort(model) && naiEffort == NaiEffort.medium;
+  String get activeNaiSampler => isNaiMedium ? 'Euler Ancestral' : sampler;
+  double get activeNaiCfgRescale => isNaiMedium ? 0 : cfgRescale;
   final int width;
   final int height;
   final int steps;
@@ -1025,14 +1037,14 @@ class GenParams {
   int get activeSteps => switch (providerOfModel(model)) {
     GenProvider.anima => animaSteps,
     GenProvider.krea => kreaSteps,
-    GenProvider.nai => steps,
+    GenProvider.nai => isNaiMedium ? 14 : steps,
   };
 
   /// 写回当前模型那份步数(步数滑杆/输入框共用,免得每处都再判一次父类)。
   GenParams withActiveSteps(int v) => switch (providerOfModel(model)) {
     GenProvider.anima => copyWith(animaSteps: v),
     GenProvider.krea => copyWith(kreaSteps: v),
-    GenProvider.nai => copyWith(steps: v),
+    GenProvider.nai => isNaiMedium ? this : copyWith(steps: v),
   };
 
   /// 当前生效的那套 Modal 采样参数(NAI 下这两组都不参与出图,取 anima 那组
@@ -1084,6 +1096,7 @@ class GenParams {
 
   GenParams copyWith({
     String? model,
+    NaiEffort? naiEffort,
     int? width,
     int? height,
     int? steps,
@@ -1110,6 +1123,7 @@ class GenParams {
   }) {
     return GenParams(
       model: model ?? this.model,
+      naiEffort: naiEffort ?? this.naiEffort,
       width: width ?? this.width,
       height: height ?? this.height,
       steps: steps ?? this.steps,

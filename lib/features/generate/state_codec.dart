@@ -198,6 +198,7 @@ Future<EncodedState> encodeGenerateState(
       },
     'params': {
       'model': p.model,
+      'naiEffort': p.naiEffort.name,
       'width': p.width,
       'height': p.height,
       'steps': p.steps,
@@ -526,6 +527,8 @@ Future<GenerateState> decodeGenerateState(
     }
     params = GenParams(
       model: e['model'] is String ? e['model'] as String : params.model,
+      naiEffort:
+          _enumByName(NaiEffort.values, e['naiEffort']) ?? NaiEffort.high,
       width: (e['width'] as num?)?.toInt() ?? params.width,
       height: (e['height'] as num?)?.toInt() ?? params.height,
       steps: (e['steps'] as num?)?.toInt() ?? params.steps,

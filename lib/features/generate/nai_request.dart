@@ -7,15 +7,15 @@ import 'auto_text.dart';
 import 'char_position.dart';
 import 'models.dart';
 import 'prompt_presets.dart'
-    show builtinPresetHasPositive, promptPresetTagHints, ucPresetValue;
+    show
+        builtinPresetHasPositive,
+        naiMediumNegativePrompt,
+        promptPresetTagHints,
+        ucPresetValue;
 
 /// UI 展示名 → NAI 模型 id
 const _modelMap = <String, String>{
-  // NAI 5 是按命名惯例猜的**占位 id**(官方未公布)。真实 id 不同也不用发版:
-  // 后端 convert_web_params_to_stream 的 model_map 本就是「别名 → 真实 id」
-  // 重写层(v4.5-full 就是这么映射的),上线时后端加一行把这俩改写掉即可。
-  // 千万别漏了这张表只加 models.nai5Models —— naiModelId 对未知名兜底 4.5,
-  // 那会静默生成错模型,是最难查的一类错。
+  // Official model IDs; Medium is resolved separately by naiModelId.
   'NAI 5.0 Full': 'nai-diffusion-5-full',
   'NAI 5.0 Curated': 'nai-diffusion-5-curated',
   'NAI 4.5 Full': 'nai-diffusion-4-5-full',
@@ -25,8 +25,15 @@ const _modelMap = <String, String>{
 };
 
 /// UI 展示名 → NAI 模型 id(编码 vibe 时也要用同一 id)。
-String naiModelId(String displayModel) =>
-    _modelMap[displayModel] ?? 'nai-diffusion-4-5-full';
+String naiModelId(String displayModel, {NaiEffort effort = NaiEffort.high}) =>
+    naiSupportsEffort(displayModel) && effort == NaiEffort.medium
+    ? 'nai-diffusion-5-full-medium'
+    : _modelMap[displayModel] ?? 'nai-diffusion-4-5-full';
+
+/// Medium fixes UC to the official V5 heavy preset, without user negatives.
+/// Apply at the request boundary so imports, loops and snapshot reruns agree.
+String naiNegativePrompt(GenerateState state) =>
+    state.params.isNaiMedium ? naiMediumNegativePrompt : state.negativePrompt;
 
 /// 生成模型 id → inpainting 模型 id(对齐 web 后端:v3 特例,其余直接拼接)。
 String inpaintModelId(String modelId) {
@@ -143,13 +150,14 @@ Map<String, double> _center(String? pos) {
 }) {
   final p = s.params;
   final inpaint = s.inpaint;
-  final model = naiModelId(p.model);
+  final model = naiModelId(p.model, effort: p.naiEffort);
+  final negative = naiNegativePrompt(s);
   // ⚠ **最终要发的** model,不是面板上选的:V5 Curated 的重绘会回退到 4.5
   //   Curated Inpainting。两处按能力分叉都得看它 —— 透明输出(transparency)、
   //   角色坐标要不要吸附到格心(freeformCharacterPosition)。载荷**结构**仍按
   //   底模判(下面的 isV4/isV5),那跟能力是两回事。
   final sendModel = inpaint != null ? inpaintModelId(model) : model;
-  final sampler = _samplerMap[p.sampler] ?? 'k_euler_ancestral';
+  final sampler = naiSamplerId(p.activeNaiSampler);
   final isV4 = model.startsWith('nai-diffusion-4');
   // V5 载荷与 V4/V4.5 同构:仍用 v4_prompt/v4_negative_prompt 结构化提示词,
   // 仅 params_version 3→4(见下)。二者共用同一套结构化提示词分支。
@@ -212,14 +220,14 @@ Map<String, double> _center(String? pos) {
     'height': p.height,
     'scale': p.cfg,
     'sampler': sampler,
-    'steps': p.steps,
+    'steps': p.activeSteps,
     'n_samples': 1,
     // 下标按**最终要发的**模型算(重绘会换模型,数组长度可能跟着变);
     // 预设正/负前缀已在 controller 拼进 s
-    'ucPreset': ucPresetValue(presetId, sendModel),
+    'ucPreset': p.isNaiMedium ? 0 : ucPresetValue(presetId, sendModel),
     'qualityToggle': qualityToggle ?? builtinPresetHasPositive(presetId),
     'tag_hint_qt': tagHints.qt,
-    'tag_hint_uc_preset': tagHints.ucPreset,
+    'tag_hint_uc_preset': p.isNaiMedium ? 0 : tagHints.ucPreset,
     // Max ✨ 放大重绘:只有为真时才发。非 Max 路径带一个 false 会让官方按普通
     // img2img 处理,而这字段对老模型本就无意义,干脆不发。
     if (img2img?.upscaledEnhance == true) 'upscaled_enhance': true,
@@ -235,7 +243,7 @@ Map<String, double> _center(String? pos) {
     'controlnet_strength': 1,
     'legacy': false,
     'add_original_image': true,
-    'cfg_rescale': p.cfgRescale,
+    'cfg_rescale': p.activeNaiCfgRescale,
     // 官方能力表里 V5 的 noiseSchedule / cfgDelay 都是 false:请求清洗会先删掉
     // noise_schedule 再硬写回 karras,skip_cfg_above_sigma 直接删。照它来 ——
     // 用户切到 V5 之前留下的值不该被带进来(bot 线由后端兜同一道)。
@@ -248,7 +256,7 @@ Map<String, double> _center(String? pos) {
     'inpaintImg2ImgStrength': 1,
     'seed': seed,
     'legacy_uc': false,
-    'negative_prompt': s.negativePrompt,
+    'negative_prompt': negative,
     'deliberate_euler_ancestral_bug': false,
     'prefer_brownian': true,
     'image_format': 'png',
@@ -274,14 +282,14 @@ Map<String, double> _center(String? pos) {
     };
     params['v4_negative_prompt'] = {
       'caption': {
-        'base_caption': s.negativePrompt,
+        'base_caption': negative,
         // 每个角色一条,没写负向的发空串 —— 必须与正向等长(同官方)。
         // 早先只收负向非空的,NAI 现在会直接 400:「V4 positive and negative
         // character prompts must have the same length.」
         'char_captions': [
           for (var i = 0; i < chars.length; i++)
             {
-              'char_caption': chars[i].negative.trim(),
+              'char_caption': p.isNaiMedium ? '' : chars[i].negative.trim(),
               'centers': [sentCenters[i]],
             },
         ],
@@ -293,7 +301,7 @@ Map<String, double> _center(String? pos) {
         {
           'enabled': true,
           'prompt': chars[i].positive.trim(),
-          'uc': chars[i].negative.trim(),
+          'uc': p.isNaiMedium ? '' : chars[i].negative.trim(),
           'center': centers[i],
         },
     ];

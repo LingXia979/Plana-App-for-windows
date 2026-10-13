@@ -209,7 +209,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
     _notifier.load(
       positive: drafts.$1,
       negative: drafts.$2,
-      startPositive: positive,
+      startPositive: positive || ref.read(generateProvider).params.isNaiMedium,
       charId: widget.charId,
     );
   }
@@ -1496,6 +1496,12 @@ class _EditorPageState extends ConsumerState<EditorPage>
 
   @override
   Widget build(BuildContext context) {
+    ref.listen<bool>(generateProvider.select((s) => s.params.isNaiMedium), (
+      _,
+      medium,
+    ) {
+      if (medium && _loaded) _notifier.setActivePositive(true);
+    });
     if (widget.embedded) {
       ref.listen(generateProvider, (previous, next) {
         if (!_loaded || _notifier.isWritingBack || previous == null) return;

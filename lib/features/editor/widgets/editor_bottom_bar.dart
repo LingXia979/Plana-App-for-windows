@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/app_theme.dart';
+import '../../generate/generate_state.dart';
 import '../editor_state.dart';
 
 /// 底栏控件的统一高度:左侧正/负滑块与右侧两颗药丸共用一个数。
@@ -29,6 +30,9 @@ class EditorBottomBar extends ConsumerWidget {
     final scheme = context.scheme;
     final st = ref.watch(editorProvider);
     final notifier = ref.read(editorProvider.notifier);
+    final medium = ref.watch(
+      generateProvider.select((s) => s.params.isNaiMedium),
+    );
 
     return Material(
       color: scheme.surface,
@@ -36,10 +40,13 @@ class EditorBottomBar extends ConsumerWidget {
         padding: const EdgeInsets.fromLTRB(16, 6, 12, 6),
         child: Row(
           children: [
-            _PosNegToggle(
-              positive: st.activePositive,
-              onChanged: notifier.setActivePositive,
-            ),
+            if (medium)
+              const Text('正向提示词')
+            else
+              _PosNegToggle(
+                positive: st.activePositive,
+                onChanged: notifier.setActivePositive,
+              ),
             const Spacer(),
             // 文案/图标报的是**切过去**的那一头(和 web 那颗 Grid/AlignLeft
             // 同款语义),所以不做选中高亮 —— 高亮加文案会互相打架。

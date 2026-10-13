@@ -30,6 +30,9 @@ class InlineEditorChrome extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final scheme = context.scheme;
     final state = ref.watch(editorProvider);
+    final medium = ref.watch(
+      generateProvider.select((s) => s.params.isNaiMedium),
+    );
     final notifier = ref.read(editorProvider.notifier);
     final character = charId != null;
     final prefix = character ? 'desktop-character-$charId' : 'desktop-prompt';
@@ -99,8 +102,10 @@ class InlineEditorChrome extends ConsumerWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   tab(true, '提示', Icons.edit_outlined),
-                  const SizedBox(width: 4),
-                  tab(false, '排除', Icons.block),
+                  if (!medium) ...[
+                    const SizedBox(width: 4),
+                    tab(false, '排除', Icons.block),
+                  ],
                 ],
               ),
               Row(
@@ -134,6 +139,15 @@ class InlineEditorChrome extends ConsumerWidget {
           ),
         ),
         const SizedBox(height: 10),
+        if (medium) ...[
+          Text(
+            'Medium 使用固定负面预设，原负面词已保留',
+            style: context.texts.labelSmall!.copyWith(
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: 8),
+        ],
         child,
         const SizedBox(height: 10),
         ClipRRect(

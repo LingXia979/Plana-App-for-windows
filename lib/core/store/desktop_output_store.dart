@@ -6,7 +6,9 @@ import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
 
 import '../../features/gallery/models.dart';
-import '../../features/generate/models.dart' show isAnimaModel, isKreaModel;
+import '../../features/generate/models.dart'
+    show isAnimaModel, isKreaModel, isNai5Model, naiSupportsEffort;
+import '../../features/generate/nai_request.dart' show naiNegativePrompt;
 import 'date_album.dart';
 import 'atomic_file.dart';
 import 'desktop_output_location.dart';
@@ -123,8 +125,12 @@ class DesktopOutputStore {
           'height': result.height,
           'seed': result.seed,
           'model': p?.model,
+          if (p != null && naiSupportsEffort(p.model))
+            'naiEffort': p.naiEffort.name,
           'prompt': result.input?.prompt,
-          'negativePrompt': result.input?.negativePrompt,
+          'negativePrompt': result.input == null
+              ? null
+              : naiNegativePrompt(result.input!),
           'steps': p?.activeSteps,
           'cfg': anima
               ? p.animaCfg
@@ -135,13 +141,15 @@ class DesktopOutputStore {
               ? p.animaSampler
               : krea
               ? p.kreaSampler
-              : p?.sampler,
+              : p?.activeNaiSampler,
           'scheduler': anima
               ? p.animaScheduler
               : krea
               ? p.kreaScheduler
+              : p != null && isNai5Model(p.model)
+              ? 'karras'
               : p?.noiseSchedule,
-          'cfgRescale': p?.cfgRescale,
+          'cfgRescale': p?.activeNaiCfgRescale,
         };
         await writeStringAtomic(
           sidecar,

@@ -162,25 +162,27 @@ class _DesktopParametersState extends ConsumerState<_DesktopParameters> {
               padding: const EdgeInsets.fromLTRB(12, 4, 12, 14),
               child: Column(
                 children: [
-                  _setting(
-                    GenerationSettingTarget.steps,
-                    ParamSlider(
-                      key: const ValueKey('desktop-steps'),
-                      snapInputToDivisions: true,
-                      label: '步数',
-                      value: p.activeSteps.toDouble().clamp(
-                        minSteps.toDouble(),
-                        maxSteps.toDouble(),
+                  if (!p.isNaiMedium) ...[
+                    _setting(
+                      GenerationSettingTarget.steps,
+                      ParamSlider(
+                        key: const ValueKey('desktop-steps'),
+                        snapInputToDivisions: true,
+                        label: '步数',
+                        value: p.activeSteps.toDouble().clamp(
+                          minSteps.toDouble(),
+                          maxSteps.toDouble(),
+                        ),
+                        min: minSteps.toDouble(),
+                        max: maxSteps.toDouble(),
+                        divisions: maxSteps - minSteps,
+                        valueText: '${p.activeSteps}',
+                        dense: true,
+                        onChanged: (v) => apply(p.withActiveSteps(v.round())),
                       ),
-                      min: minSteps.toDouble(),
-                      max: maxSteps.toDouble(),
-                      divisions: maxSteps - minSteps,
-                      valueText: '${p.activeSteps}',
-                      dense: true,
-                      onChanged: (v) => apply(p.withActiveSteps(v.round())),
                     ),
-                  ),
-                  const SizedBox(height: 12),
+                    const SizedBox(height: 12),
+                  ],
                   _setting(
                     GenerationSettingTarget.guidance,
                     ParamSlider(
@@ -223,50 +225,52 @@ class _DesktopParametersState extends ConsumerState<_DesktopParameters> {
                       onChanged: (v) => apply(p.copyWith(seed: v)),
                     ),
                   ),
-                  const SizedBox(height: 14),
-                  DropdownButtonFormField<String>(
-                    key: ValueKey('desktop-sampler-${p.model}-$sampler'),
-                    initialValue: sampler,
-                    isExpanded: true,
-                    decoration: const InputDecoration(
-                      labelText: '采样器',
-                      isDense: true,
-                      border: OutlineInputBorder(),
+                  if (!p.isNaiMedium) ...[
+                    const SizedBox(height: 14),
+                    DropdownButtonFormField<String>(
+                      key: ValueKey('desktop-sampler-${p.model}-$sampler'),
+                      initialValue: sampler,
+                      isExpanded: true,
+                      decoration: const InputDecoration(
+                        labelText: '采样器',
+                        isDense: true,
+                        border: OutlineInputBorder(),
+                      ),
+                      items: options == null
+                          ? [
+                              for (final s in samplers)
+                                DropdownMenuItem(
+                                  value: s,
+                                  child: Text(
+                                    s,
+                                    style: const TextStyle(fontSize: 12),
+                                  ),
+                                ),
+                            ]
+                          : [
+                              for (final s in options)
+                                DropdownMenuItem(
+                                  value: s.id,
+                                  child: Text(
+                                    s.label,
+                                    style: const TextStyle(fontSize: 12),
+                                  ),
+                                ),
+                            ],
+                      onChanged: (v) {
+                        if (v != null) {
+                          apply(
+                            anima
+                                ? p.copyWith(animaSampler: v)
+                                : krea
+                                ? p.copyWith(kreaSampler: v)
+                                : p.copyWith(sampler: v),
+                          );
+                        }
+                      },
                     ),
-                    items: options == null
-                        ? [
-                            for (final s in samplers)
-                              DropdownMenuItem(
-                                value: s,
-                                child: Text(
-                                  s,
-                                  style: const TextStyle(fontSize: 12),
-                                ),
-                              ),
-                          ]
-                        : [
-                            for (final s in options)
-                              DropdownMenuItem(
-                                value: s.id,
-                                child: Text(
-                                  s.label,
-                                  style: const TextStyle(fontSize: 12),
-                                ),
-                              ),
-                          ],
-                    onChanged: (v) {
-                      if (v != null) {
-                        apply(
-                          anima
-                              ? p.copyWith(animaSampler: v)
-                              : krea
-                              ? p.copyWith(kreaSampler: v)
-                              : p.copyWith(sampler: v),
-                        );
-                      }
-                    },
-                  ),
-                  const SizedBox(height: 14),
+                    const SizedBox(height: 14),
+                  ],
                   if (modal)
                     DropdownButtonFormField<String>(
                       key: ValueKey(
@@ -300,7 +304,7 @@ class _DesktopParametersState extends ConsumerState<_DesktopParameters> {
                         }
                       },
                     ),
-                  if (!modal) ...[
+                  if (!modal && !p.isNaiMedium) ...[
                     const Divider(height: 1),
                     const SizedBox(height: 14),
                     ParamSlider(

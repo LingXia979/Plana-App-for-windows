@@ -65,71 +65,125 @@ class GenerateTopBar extends ConsumerWidget {
       // 右边那枚胶囊撑到多宽由它自己说了算(NAI 5 时点数+额度两个数并排),
       // 所以让模型名这边先让步:spaceBetween 把右胶囊钉在右边,模型胶囊拿余量
       // 且只在真放不下时才打省略号 —— 换成 Spacer 会跟 Flexible 对半分余量。
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // 模型选择
-          Flexible(
-            child: Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: ref.watch(desktopModeProvider)
-                  ? const _DesktopModelDropdown()
-                  : Material(
-                      color: scheme.surfaceContainerHigh,
-                      borderRadius: BorderRadius.circular(19),
-                      clipBehavior: Clip.antiAlias,
-                      child: InkWell(
-                        onTap: () => _pickModel(context, ref),
-                        child: Padding(
-                          padding: const EdgeInsets.only(left: 14, right: 8),
-                          child: SizedBox(
-                            height: 42,
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Flexible(
-                                  child: AnimatedSwitcher(
-                                    duration: Motion.fast,
-                                    child: Text(
-                                      state.params.model,
-                                      key: ValueKey(state.params.model),
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: context.texts.bodyMedium!.copyWith(
-                                        fontWeight: FontWeight.w600,
-                                        color: scheme.onSurface,
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              // 模型选择
+              Flexible(
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: ref.watch(desktopModeProvider)
+                      ? const _DesktopModelDropdown()
+                      : Material(
+                          color: scheme.surfaceContainerHigh,
+                          borderRadius: BorderRadius.circular(19),
+                          clipBehavior: Clip.antiAlias,
+                          child: InkWell(
+                            onTap: () => _pickModel(context, ref),
+                            child: Padding(
+                              padding: const EdgeInsets.only(
+                                left: 14,
+                                right: 8,
+                              ),
+                              child: SizedBox(
+                                height: 42,
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Flexible(
+                                      child: AnimatedSwitcher(
+                                        duration: Motion.fast,
+                                        child: Text(
+                                          state.params.model,
+                                          key: ValueKey(state.params.model),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: context.texts.bodyMedium!
+                                              .copyWith(
+                                                fontWeight: FontWeight.w600,
+                                                color: scheme.onSurface,
+                                              ),
+                                        ),
                                       ),
                                     ),
-                                  ),
+                                    const SizedBox(width: 2),
+                                    Icon(
+                                      Icons.expand_more,
+                                      size: 20,
+                                      color: scheme.outline,
+                                    ),
+                                  ],
                                 ),
-                                const SizedBox(width: 2),
-                                Icon(
-                                  Icons.expand_more,
-                                  size: 20,
-                                  color: scheme.outline,
-                                ),
-                              ],
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                    ),
-            ),
+                ),
+              ),
+              // 右侧那个位置给谁,看当前模型花的是哪种钱:
+              //  - Anima / Krea 不扣 Anlas,余额摆在那儿是个永远不动的死数 ——
+              //    换成算力来源(免费共享 / 独享实例,运行中直接报计时与费用);
+              //  - NAI 但实例还活着:那台在烧 ¥4/时,比余额紧急,也让位;
+              //  - 其余交给余额胶囊 —— 它自己再按模型分:NAI 5 花的是按时间回充的
+              //    额度电池,报百分比;别的报 Anlas。
+              // 单独取出来再判:写成 `isModal || rental.active` 会因为短路
+              // 让 NAI 之外的路径**不订阅** gpuRentalProvider —— 那样冷启动时
+              // 没人把它建起来,也就不会去问「我上次那台还在不在跑」。
+              if (m.isModalModel(state.params.model) || rentalActive)
+                const RentalSourceChip(height: 42)
+              else
+                // 余额 / NAI 5 额度(点开是「点数与额度」弹层)
+                const AnlasChip(height: 42),
+            ],
           ),
-          // 右侧那个位置给谁,看当前模型花的是哪种钱:
-          //  - Anima / Krea 不扣 Anlas,余额摆在那儿是个永远不动的死数 ——
-          //    换成算力来源(免费共享 / 独享实例,运行中直接报计时与费用);
-          //  - NAI 但实例还活着:那台在烧 ¥4/时,比余额紧急,也让位;
-          //  - 其余交给余额胶囊 —— 它自己再按模型分:NAI 5 花的是按时间回充的
-          //    额度电池,报百分比;别的报 Anlas。
-          // 单独取出来再判:写成 `isModal || rental.active` 会因为短路
-          // 让 NAI 之外的路径**不订阅** gpuRentalProvider —— 那样冷启动时
-          // 没人把它建起来,也就不会去问「我上次那台还在不在跑」。
-          if (m.isModalModel(state.params.model) || rentalActive)
-            const RentalSourceChip(height: 42)
-          else
-            // 余额 / NAI 5 额度(点开是「点数与额度」弹层)
-            const AnlasChip(height: 42),
+          if (m.naiSupportsEffort(state.params.model)) ...[
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Text('生成档位', style: context.texts.labelMedium),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: SegmentedButton<m.NaiEffort>(
+                    showSelectedIcon: false,
+                    style: SegmentedButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      textStyle: context.texts.labelMedium,
+                    ),
+                    segments: const [
+                      ButtonSegment(
+                        value: m.NaiEffort.medium,
+                        label: Text(
+                          'Medium',
+                          key: ValueKey('nai-effort-medium'),
+                        ),
+                      ),
+                      ButtonSegment(
+                        value: m.NaiEffort.high,
+                        label: Text('High', key: ValueKey('nai-effort-high')),
+                      ),
+                    ],
+                    selected: {state.params.naiEffort},
+                    onSelectionChanged: (value) => ref
+                        .read(generateProvider.notifier)
+                        .setNaiEffort(value.single),
+                  ),
+                ),
+              ],
+            ),
+            if (state.params.isNaiMedium) ...[
+              const SizedBox(height: 5),
+              Text(
+                'Medium · 固定 14 步 · Euler Ancestral',
+                style: context.texts.labelSmall!.copyWith(
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ],
         ],
       ),
     );

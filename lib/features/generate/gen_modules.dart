@@ -291,8 +291,14 @@ GenerateState stripHiddenModules(GenerateState s, GenModuleSettings ms) {
 /// **刻意不复用 [stripHiddenModules]**:那个还会按用户当前的模块显隐剥,而快照
 /// 该忠实执行自己的内容;更要命的是它会把 img2img 一起剥掉 —— 重绘放大的底图
 /// 正是 img2img,剥了就等于这次放大白跑。
-GenerateState retargetModel(GenerateState s, String model) {
-  var out = s.copyWith(params: s.params.copyWith(model: model));
+GenerateState retargetModel(
+  GenerateState s,
+  String model, {
+  NaiEffort? naiEffort,
+}) {
+  var out = s.copyWith(
+    params: s.params.copyWith(model: model, naiEffort: naiEffort),
+  );
   if (!vibeSupportsModel(model) && out.vibes.isNotEmpty) {
     out = out.copyWith(vibes: const []);
   }

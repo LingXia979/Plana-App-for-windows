@@ -747,6 +747,7 @@ class GenerateNotifier extends Notifier<GenerateState> {
   /// 调用方按**当前模型**的类别决定传哪组。
   void applyImportedSettings({
     String? model,
+    NaiEffort? naiEffort,
     int? width,
     int? height,
     int? steps,
@@ -769,19 +770,21 @@ class GenerateNotifier extends Notifier<GenerateState> {
     // 新档的:导入面板给了哪些字段就落哪些,没勾的项保持不动是这条路的本意。
     var cur = state.params;
     if (model != null && model != cur.model) cur = cur.rememberModalSampling();
+    final medium = cur.copyWith(model: model, naiEffort: naiEffort).isNaiMedium;
     state = state.copyWith(
       // 导入面板勾了模型这一项时也可能把槽位换小,同 setModel 一样收口。
       // 角色是在这之前落地的(导入面板先加角色再落设置),所以得在这儿再过一遍。
       characters: _capEnabled(state.characters, model ?? cur.model),
       params: cur.copyWith(
         model: model,
+        naiEffort: naiEffort,
         width: width,
         height: height,
-        steps: steps,
+        steps: medium ? null : steps,
         cfg: cfg,
-        cfgRescale: cfgRescale,
+        cfgRescale: medium ? null : cfgRescale,
         varietyPlus: varietyPlus,
-        sampler: sampler,
+        sampler: medium ? null : sampler,
         noiseSchedule: noiseSchedule,
         seed: seed,
         animaSteps: animaSteps,
@@ -826,6 +829,11 @@ class GenerateNotifier extends Notifier<GenerateState> {
       // 5 → 4/4.5 槽位从 32 掉到 6,超出的尾巴就地停用(见 [_capEnabled])
       characters: _capEnabled(state.characters, model),
     );
+  }
+
+  void setNaiEffort(NaiEffort effort) {
+    if (!naiSupportsEffort(state.params.model)) return;
+    state = state.copyWith(params: state.params.copyWith(naiEffort: effort));
   }
 
   void setLoop(LoopCount l) =>

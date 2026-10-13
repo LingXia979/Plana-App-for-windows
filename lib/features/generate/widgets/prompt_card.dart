@@ -143,37 +143,43 @@ class PromptCard extends ConsumerWidget {
                 ),
               ),
               // 负面:块标 + 单行(+N)+ 独立计数
-              InkWell(
-                onTap: () => _openEditor(context, positive: false),
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(15, 6, 15, 14),
-                  child: Row(
-                    children: [
-                      Icon(Icons.block, size: 17, color: scheme.error),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          _negPreview(state.negativePrompt),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: context.texts.bodyMedium!.copyWith(
-                            color: scheme.error,
+              if (state.params.isNaiMedium)
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(15, 6, 15, 14),
+                  child: Text('Medium 使用固定负面预设，原负面词已保留'),
+                )
+              else
+                InkWell(
+                  onTap: () => _openEditor(context, positive: false),
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(15, 6, 15, 14),
+                    child: Row(
+                      children: [
+                        Icon(Icons.block, size: 17, color: scheme.error),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _negPreview(state.negativePrompt),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: context.texts.bodyMedium!.copyWith(
+                              color: scheme.error,
+                            ),
                           ),
                         ),
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        '$negTokens',
-                        style: mono(
-                          context,
-                          size: 12,
-                          weight: FontWeight.w500,
-                        ).copyWith(color: scheme.outline),
-                      ),
-                    ],
+                        const SizedBox(width: 8),
+                        Text(
+                          '$negTokens',
+                          style: mono(
+                            context,
+                            size: 12,
+                            weight: FontWeight.w500,
+                          ).copyWith(color: scheme.outline),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
-              ),
             ],
           ),
         ],
