@@ -148,6 +148,20 @@ class AppStores {
     assistant.flush();
   }
 
+  /// 普通退出和更新退出都等待真正落盘，不能只触发队列后立即结束进程。
+  Future<void> flushForExit() async {
+    flushNow();
+    await Future.wait([
+      workspace.idle,
+      gallery.idle,
+      ledger.idle,
+      assistant.idle,
+      albums.idle,
+      desktopOutput.idle,
+      prefs.idle,
+    ]);
+  }
+
   /// 启动后台维护(避开首帧,延迟几秒):清选图器缓存垃圾 + 远端图缓存裁剪
   /// + blob GC。
   void postBootMaintenance() {

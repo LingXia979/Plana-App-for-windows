@@ -1,5 +1,7 @@
 import 'package:flutter/foundation.dart';
 
+import 'runtime_diagnostics.dart';
+
 /// 诊断日志。**只在 debug/profile 输出,release 静默。**
 ///
 /// 为什么不直接用 `debugPrint`:它名字里有 debug,实际却不是 debug-only ——
@@ -18,5 +20,6 @@ void logd(String message) {
 /// 完成/失败/取消、状态机转移),给装机排障留现场;禁止进热路径或带
 /// 提示词/路径/凭据等内容 —— 那些走 [logd]。
 void logi(String message) {
+  RuntimeDiagnostics.current?.event('lifecycle', message);
   debugPrint(message);
 }

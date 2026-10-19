@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/store/app_stores.dart';
+import '../../core/store/storage_lifecycle.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/theme/editor_theme.dart';
 import '../generate/generate_state.dart';
@@ -145,13 +146,11 @@ class _EditorPageState extends ConsumerState<EditorPage>
     super.initState();
     _tabAnim = AnimationController(vsync: this, duration: Motion.medium)
       ..value = 1;
-    _lifecycle = AppLifecycleListener(
-      onStateChange: (s) {
+    _lifecycle = createStorageLifecycleListener(
+      ref.read(appStoresProvider),
+      beforeFlush: () {
         if (!mounted || !_loaded) return;
-        if (s == AppLifecycleState.inactive || s == AppLifecycleState.paused) {
-          _notifier.flushWriteBack();
-          ref.read(appStoresProvider).flushNow();
-        }
+        _notifier.flushWriteBack();
       },
     );
     _controller.addListener(_onCtrl);

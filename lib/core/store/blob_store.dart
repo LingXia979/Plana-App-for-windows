@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -21,6 +22,7 @@ class BlobStore {
 
   int _referenceRevision = 0;
   int _activePuts = 0;
+  final _pendingPuts = <String, Future<void>>{};
 
   /// A cleanup plan is valid only while no reference producer has changed.
   int get referenceRevision => _referenceRevision;
@@ -77,12 +79,31 @@ class BlobStore {
     _activePuts++;
     try {
       final h = await hashOf(bytes, known: known);
-      final f = _fileOf(h);
-      if (!await f.exists()) await writeBytesAtomic(f, bytes);
+      final pending = _pendingPuts[h];
+      if (pending != null) {
+        await pending;
+        return h;
+      }
+      // Workspace and gallery snapshots can save the same reference together.
+      // Share its write so their atomic commits cannot race over one .tmp file.
+      final write = _writeIfMissing(h, bytes);
+      _pendingPuts[h] = write;
+      try {
+        await write;
+      } finally {
+        if (identical(_pendingPuts[h], write)) {
+          unawaited(_pendingPuts.remove(h));
+        }
+      }
       return h;
     } finally {
       _activePuts--;
     }
+  }
+
+  Future<void> _writeIfMissing(String hash, Uint8List bytes) async {
+    final file = _fileOf(hash);
+    if (!await file.exists()) await writeBytesAtomic(file, bytes);
   }
 
   Future<int> sizeOfHashes(Set<String> hashes) async {

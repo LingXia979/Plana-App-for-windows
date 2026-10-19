@@ -84,8 +84,29 @@ void main() {
     ).writeAsString('{"length":999,"sha256":"invalid"}');
     expect(await recoverPendingWrites(root), 0);
     expect(jsonDecode(await target.readAsString()), {'version': 1});
-    expect(await File('${target.path}.tmp').exists(), isTrue);
+    expect(await File('${target.path}.tmp').exists(), isFalse);
+    expect(await File('${target.path}.pending').exists(), isFalse);
+    expect(await root.list().length, 4); // 正式文件与隔离后的三个诊断文件。
   });
+
+  for (final missingContents in [false, true]) {
+    test('回退旧日志后成功保存的新值不会在重启时回滚，缺少临时内容=$missingContents', () async {
+      final target = File('${root.path}/state.json');
+      await target.writeAsString('{');
+      if (!missingContents) {
+        await File('${target.path}.tmp').writeAsString('corrupt');
+      }
+      await File('${target.path}.bak').writeAsString('{"version":1}');
+      await File(
+        '${target.path}.pending',
+      ).writeAsString('{"length":999,"sha256":"invalid"}');
+      await recoverPendingWrites(root);
+      expect(jsonDecode(await target.readAsString()), {'version': 1});
+      await writeStringAtomic(target, '{"version":2}');
+      await recoverPendingWrites(root);
+      expect(jsonDecode(await target.readAsString()), {'version': 2});
+    });
+  }
 
   test('索引已有旧记录时补回遗漏的完整图片，后续编号不覆盖它', () async {
     final png = await File('assets/app_icon.png').readAsBytes();

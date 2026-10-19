@@ -86,6 +86,9 @@ Future<bool> _recoverJournal(File target) async {
   final backup = File('${target.path}.bak');
   try {
     final record = jsonDecode(await journal.readAsString());
+    if (!await tmp.exists()) {
+      throw const FormatException('Missing pending write contents');
+    }
     final bytes = await tmp.readAsBytes();
     if (record is! Map ||
         record['length'] != bytes.length ||
@@ -94,10 +97,11 @@ Future<bool> _recoverJournal(File target) async {
     }
     await _copyVerified(target, bytes);
   } on FormatException {
-    // 不采纳损坏的待写内容；有旧版本备份时恢复旧版本，残留文件供排查。
+    // 恢复旧版本后隔离整组工件，避免旧日志覆盖之后成功保存的新版本。
     if (await backup.exists()) {
       await _copyVerified(target, await backup.readAsBytes());
     }
+    await _quarantineJournal([tmp, backup, journal]);
     return false;
   } on FileSystemException {
     if (await backup.exists()) {
@@ -105,11 +109,18 @@ Future<bool> _recoverJournal(File target) async {
     }
     rethrow;
   }
-  await _removeIfPresent(journal);
-  if (await journal.exists()) return true;
+  // 后续写入前必须撤销日志；失败时阻止新提交复用它的 .tmp。
+  await journal.delete();
   await _removeIfPresent(tmp);
   await _removeIfPresent(backup);
   return true;
+}
+
+Future<void> _quarantineJournal(List<File> files) async {
+  final suffix = '.invalid-${DateTime.now().microsecondsSinceEpoch}';
+  for (final file in files) {
+    if (await file.exists()) await file.rename('${file.path}$suffix');
+  }
 }
 
 /// 在索引载入之前恢复。旧版没有日志，仅接纳目标缺失且验证完整的 JSON /

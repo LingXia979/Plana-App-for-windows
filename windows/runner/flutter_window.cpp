@@ -4,6 +4,7 @@
 #include <flutter/standard_method_codec.h>
 
 #include "flutter/generated_plugin_registrant.h"
+#include "runtime_diagnostics.h"
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
@@ -11,6 +12,7 @@ FlutterWindow::FlutterWindow(const flutter::DartProject& project)
 FlutterWindow::~FlutterWindow() {}
 
 bool FlutterWindow::OnCreate() {
+  RecordRuntimeEvent("window-create");
   if (!Win32Window::OnCreate()) {
     return false;
   }
@@ -23,8 +25,10 @@ bool FlutterWindow::OnCreate() {
       frame.right - frame.left, frame.bottom - frame.top, project_);
   // Ensure that basic setup of the controller was successful.
   if (!flutter_controller_->engine() || !flutter_controller_->view()) {
+    RecordRuntimeEvent("engine-create-failed");
     return false;
   }
+  RecordRuntimeEvent("engine-ready");
   RegisterPlugins(flutter_controller_->engine());
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
   clipboard_channel_ = std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
@@ -53,6 +57,7 @@ bool FlutterWindow::OnCreate() {
   }
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
+    RecordRuntimeEvent("first-frame");
     this->Show();
   });
 
@@ -65,6 +70,7 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  RecordRuntimeEvent("window-destroy");
   image_clipboard_.reset();
   clipboard_channel_.reset();
   if (image_drop_target_) {
@@ -84,6 +90,7 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
+  if (message == WM_CLOSE) RecordRuntimeEvent("window-close-request");
   // Give Flutter, including plugins, an opportunity to handle window messages.
   if (flutter_controller_) {
     std::optional<LRESULT> result =

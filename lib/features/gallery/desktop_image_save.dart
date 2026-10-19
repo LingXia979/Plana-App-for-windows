@@ -26,6 +26,11 @@ class DesktopSaveDirectory extends Notifier<String?> {
   }
 }
 
+String desktopImageName(ResultImage image) {
+  final id = image.id.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
+  return 'plana_${id}_${image.seed}';
+}
+
 /// Manual export is separate from automatic gallery archiving. Reserve a new
 /// name for each click; repeated saves never replace an earlier export.
 Future<File> saveDesktopImage({
@@ -39,8 +44,7 @@ Future<File> saveDesktopImage({
     throw FileSystemException('保存文件夹不存在，请重新选择', directory);
   }
   final output = await processForSave(bytes, settings);
-  final id = image.id.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
-  final stem = 'plana_${id}_${image.seed}';
+  final stem = desktopImageName(image);
   for (var i = 0; i < 10000; i++) {
     final suffix = i == 0 ? '' : '_${i + 1}';
     final file = File('${folder.path}/$stem$suffix.${settings.format.name}');

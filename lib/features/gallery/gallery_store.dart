@@ -389,24 +389,21 @@ class GalleryStore {
   /// 索引由调用方随后 scheduleIndex 重写。
   void deleteResultFiles(List<String> ids) {
     if (ids.isEmpty) return;
-    _enqueue(() async {
-      for (final id in ids) {
-        for (final f in [
-          _imageFile(id),
-          _thumbFile(id),
-          _thumbSourceFile(id),
-          _inputFile(id),
-        ]) {
-          try {
-            if (await f.exists()) await f.delete();
-          } catch (_) {}
-        }
+    unawaited(deleteResultFilesVerified(ids));
+  }
+
+  Future<void> _deleteRecoveryFiles(File target) async {
+    for (final suffix in ['.pending', '.tmp', '.bak']) {
+      final recovery = File('${target.path}$suffix');
+      if (await FileSystemEntity.type(recovery.path, followLinks: false) !=
+          FileSystemEntityType.notFound) {
+        await recovery.delete();
       }
-    });
+    }
   }
 
   /// Export cleanup must preserve records whose original file cannot be
-  /// removed. Delete the original first, then remove only its auxiliary files.
+  /// removed. Revoke recovery, delete the original, then remove auxiliary files.
   Future<Set<String>> deleteResultFilesVerified(
     List<String> ids, {
     bool Function(String id)? canDelete,
@@ -415,6 +412,17 @@ class GalleryStore {
     for (final id in ids.toSet()) {
       final original = _imageFile(id);
       try {
+        if (canDelete?.call(id) == false) continue;
+        // Revoke recovery before unlinking the original. A failed cleanup keeps
+        // the image and its index entry available for a later retry.
+        for (final file in [
+          original,
+          _thumbFile(id),
+          _thumbSourceFile(id),
+          _inputFile(id),
+        ]) {
+          await _deleteRecoveryFiles(file);
+        }
         final type = await FileSystemEntity.type(
           original.path,
           followLinks: false,
@@ -442,7 +450,7 @@ class GalleryStore {
         }
         deleted.add(id);
       } catch (error) {
-        logd('[gallery-store] 原图未能删除 $id: $error');
+        logd('[gallery-store] 原图或恢复文件未能删除 $id: $error');
         continue;
       }
       for (final file in [

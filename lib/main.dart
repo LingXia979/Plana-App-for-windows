@@ -6,6 +6,7 @@ import 'core/auth/auth_mode.dart';
 import 'core/platform/desktop.dart';
 import 'core/store/app_stores.dart';
 import 'core/store/gen_settings.dart';
+import 'core/store/storage_lifecycle.dart';
 import 'core/theme/app_theme.dart';
 import 'core/theme/theme_settings.dart';
 import 'core/ui/input_focus_guard.dart';
@@ -14,10 +15,21 @@ import 'features/import/desktop_image_drop.dart';
 import 'features/onboarding/welcome_page.dart';
 import 'features/shell/app_shell.dart';
 import 'core/util/haptics.dart';
+import 'core/util/runtime_diagnostics.dart';
 import 'features/editor/data/local_tag_db.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  final diagnostics = RuntimeDiagnostics.initialize();
+  try {
+    await _startApplication();
+  } catch (error, stack) {
+    diagnostics?.error('startup-error', error, stack);
+    rethrow;
+  }
+}
+
+Future<void> _startApplication() async {
   // 离线词库索引与存档并行读:它不压缩存、引擎直接 mmap,几毫秒就好。装好后
   // 注音 / 热度反查从第一帧起就是同步可用的,不再有开机「灌注」这一步。
   final tagDb = LocalTagDb();
@@ -25,7 +37,9 @@ Future<void> main() async {
   // 启动装载持久化状态(工作台存档 + 图库索引 + 设置;失败按首启空档降级)。
   // 外观预读(首帧不闪色)现在直接取内存态 —— 设置已随 AppStores 一次读全,
   // 不再需要第二笔 I/O,也不必再解一次 Keystore。
+  RuntimeDiagnostics.current?.event('boot-stores');
   final stores = await AppStores.open();
+  RuntimeDiagnostics.current?.event('boot-stores-ready');
   await tagDbReady;
   final themeInit = loadThemeSettings(stores.prefs);
   runApp(
@@ -39,14 +53,9 @@ Future<void> main() async {
     ),
   );
   // 注册即挂到 binding 观察者列表(强引用,不会被 GC):
-  // 退后台/失焦即刻把防抖窗口里的工作台/图库索引落盘,进程被杀不丢。
-  AppLifecycleListener(
-    onStateChange: (s) {
-      if (s == AppLifecycleState.inactive || s == AppLifecycleState.paused) {
-        stores.flushNow();
-      }
-    },
-  );
+  // 退后台/失焦即刻冲刷防抖存档，桌面正常退出还会等待所有存储写入完成。
+  createStorageLifecycleListener(stores);
+  RuntimeDiagnostics.current?.event('app-started');
   stores.postBootMaintenance(); // 选图器缓存清扫 + blob GC(延迟后台跑)
 }
 

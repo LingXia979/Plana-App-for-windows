@@ -27,6 +27,9 @@ class PrefsStore {
 
   Future<void> _chain = Future.value();
 
+  /// Wait for settings already queued before closing the application.
+  Future<void> get idle => _chain;
+
   /// 需要从 secure storage 迁出的键。
   ///
   /// **新增非机密设置项时必须登记在这里** —— 漏登记的后果是老用户升级后

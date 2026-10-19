@@ -1,14 +1,17 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gal/gal.dart';
 
+import '../../../core/platform/desktop.dart';
 import '../../../core/store/storage_stats.dart' show fmtBytes;
 import '../../../core/theme/app_theme.dart';
 import '../../../core/ui/param_input.dart';
 import '../../generate/widgets/common.dart' show hintSnack;
+import '../desktop_image_save.dart';
 import '../save_pipeline.dart';
 import '../models.dart';
 import '../phone_gallery_save.dart';
@@ -77,13 +80,16 @@ class _SaveSheetState extends ConsumerState<_SaveSheet> {
     _debounce = Timer(const Duration(milliseconds: 250), () async {
       try {
         final settings = _current;
+        final desktop = ref.read(desktopModeProvider);
         final out = await processForSave(widget.bytes, settings);
-        final dated = withPhoneCaptureDate(
-          out,
-          widget.image.createdAt,
-          settings.format,
-        );
-        if (mounted && seq == _seq) setState(() => _size = dated.length);
+        final saved = desktop
+            ? out
+            : withPhoneCaptureDate(
+                out,
+                widget.image.createdAt,
+                settings.format,
+              );
+        if (mounted && seq == _seq) setState(() => _size = saved.length);
       } catch (_) {
         if (mounted && seq == _seq) setState(() => _size = null);
       }
@@ -96,6 +102,33 @@ class _SaveSheetState extends ConsumerState<_SaveSheet> {
     final settings = _current;
     setState(() => _saving = true);
     try {
+      if (ref.read(desktopModeProvider)) {
+        var directory = ref.read(desktopSaveDirectoryProvider);
+        if (directory == null) {
+          directory = await FilePicker.platform.getDirectoryPath(
+            dialogTitle: '选择作品保存文件夹',
+          );
+          if (!mounted || directory == null) return;
+          await ref
+              .read(desktopSaveDirectoryProvider.notifier)
+              .select(directory);
+          if (!mounted) return;
+        }
+        final file = await saveDesktopImage(
+          directory: directory,
+          image: widget.image,
+          bytes: widget.bytes,
+          settings: settings,
+        );
+        if (!mounted) return;
+        hintSnack(
+          context,
+          '已保存到 ${file.path}',
+          icon: Icons.check_circle_outline,
+        );
+        Navigator.of(context).pop();
+        return;
+      }
       final ok = await Gal.hasAccess() || await Gal.requestAccess();
       if (!ok) {
         if (mounted) hintSnack(context, '未获相册权限', icon: Icons.error_outline);
@@ -132,6 +165,10 @@ class _SaveSheetState extends ConsumerState<_SaveSheet> {
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
+    final desktop = ref.watch(desktopModeProvider);
+    final name = desktop
+        ? desktopImageName(widget.image)
+        : phoneGalleryImageName(widget.image);
     final ext = _s.format == SaveFormat.jpg ? 'jpg' : 'png';
     return SafeArea(
       child: Padding(
@@ -164,7 +201,7 @@ class _SaveSheetState extends ConsumerState<_SaveSheet> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          '${phoneGalleryImageName(widget.image)}.$ext',
+                          '$name.$ext',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: context.texts.bodyMedium!.copyWith(
@@ -228,7 +265,7 @@ class _SaveSheetState extends ConsumerState<_SaveSheet> {
                       _set(_s.copyWith(quality: v.roundToDouble() / 100)),
                 ),
                 Text(
-                  'JPG 不保留生成参数；保存时保留生成日期',
+                  desktop ? 'JPG 不保留生成参数' : 'JPG 不保留生成参数；保存时保留生成日期',
                   style: context.texts.labelSmall!.copyWith(
                     color: scheme.outline,
                   ),
@@ -249,7 +286,8 @@ class _SaveSheetState extends ConsumerState<_SaveSheet> {
                           contentPadding: EdgeInsets.zero,
                           title: Text(switch (m) {
                             SaveMeta.original => '保留原始元数据',
-                            SaveMeta.clean => '清除生成信息（保留生成日期）',
+                            SaveMeta.clean =>
+                              desktop ? '清除生成信息' : '清除生成信息（保留生成日期）',
                             SaveMeta.custom => '自定义提示词',
                           }, style: context.texts.bodyMedium),
                         ),
