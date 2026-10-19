@@ -2,6 +2,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
@@ -69,6 +70,17 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  Future<void> scroll(
+    WidgetTester tester,
+    Offset position,
+    double delta,
+  ) async {
+    await tester.sendEventToBinding(
+      PointerScrollEvent(position: position, scrollDelta: Offset(0, delta)),
+    );
+    await tester.pump();
+  }
+
   Future<void> drag(WidgetTester tester, Offset from, Offset delta) async {
     final gesture = await tester.startGesture(
       point(tester, from),
@@ -127,6 +139,95 @@ void main() {
     await tester.pumpAndSettle();
     expect(key('inpaint-editor-canvas'), findsOneWidget);
   }
+
+  testWidgets(
+    'desktop wheel zoom anchors the image and keeps painting coordinates and undo correct',
+    (tester) async {
+      await mount(tester);
+      await draw(tester, const Offset(128, 256));
+      final previousMask = mask(tester);
+      final originalScale = painter(tester).scale as double;
+      final sourceImage = painter(tester).image;
+      const pixel = Offset(320, 300);
+      final anchor = point(tester, pixel);
+      await scroll(tester, anchor, -120);
+      expect(painter(tester).scale, greaterThan(originalScale));
+      expect((point(tester, pixel) - anchor).distance, lessThan(.001));
+      expect(painter(tester).image, same(sourceImage));
+      expect(mask(tester), previousMask);
+      await draw(tester, pixel);
+      expect(mask(tester).any((rect) => rect.contains(pixel)), isTrue);
+      await tap(tester, 'inpaint-undo');
+      expect(mask(tester), previousMask);
+      await scroll(tester, anchor, 120);
+      expect(painter(tester).scale, closeTo(originalScale, .00001));
+      expect((point(tester, pixel) - anchor).distance, lessThan(.001));
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'wheel zoom works in paint, expand and censor with finite bounds',
+    (tester) async {
+      await mount(tester);
+      for (final mode in ['涂抹', '扩图', '打码']) {
+        await tester.tap(find.text(mode));
+        await tester.pumpAndSettle();
+        final scale = painter(tester).scale as double;
+        const pixel = Offset(256, 384);
+        final anchor = point(tester, pixel);
+        await scroll(tester, anchor, -80);
+        expect(painter(tester).scale, greaterThan(scale), reason: mode);
+        expect((point(tester, pixel) - anchor).distance, lessThan(.001));
+        expect(mask(tester), isEmpty);
+      }
+      await tester.tap(find.text('涂抹'));
+      await tester.pumpAndSettle();
+      final center = tester.getCenter(key('inpaint-editor-canvas'));
+      for (var i = 0; i < 6; i++) {
+        await scroll(tester, center, -400);
+      }
+      final max = painter(tester).scale as double;
+      await scroll(tester, center, -400);
+      expect(painter(tester).scale, max);
+      for (var i = 0; i < 6; i++) {
+        await scroll(tester, center, 400);
+      }
+      final min = painter(tester).scale as double;
+      await scroll(tester, center, 400);
+      expect(painter(tester).scale, min);
+      expect(max / min, closeTo(20, .00001));
+      await scroll(tester, tester.getCenter(key('inpaint-tool-fill')), -120);
+      expect(painter(tester).scale, min);
+      final gesture = await tester.startGesture(
+        center,
+        kind: ui.PointerDeviceKind.mouse,
+      );
+      await scroll(tester, center, -120);
+      expect(
+        painter(tester).scale,
+        min,
+        reason: 'Do not move a stroke while a button is held',
+      );
+      await gesture.up();
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('phone does not claim mouse wheel scrolling', (tester) async {
+    container.updateOverrides([
+      appStoresProvider.overrideWithValue(stores),
+      desktopModeProvider.overrideWithValue(false),
+    ]);
+    await mount(tester, size: const Size(414, 700));
+    final scale = painter(tester).scale as double;
+    await scroll(tester, tester.getCenter(key('inpaint-editor-canvas')), -120);
+    expect(painter(tester).scale, scale);
+    expect(mask(tester), isEmpty);
+    stores.flushNow();
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets(
     'desktop brush stays at pointer, circular strokes, fill and redo preserve edits',

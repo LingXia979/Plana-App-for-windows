@@ -22,6 +22,9 @@ import 'package:plana_app/features/gallery/gallery_state.dart';
 import 'package:plana_app/features/gallery/models.dart';
 import 'package:plana_app/features/generate/generate_state.dart';
 import 'package:plana_app/features/generate/models.dart';
+import 'package:plana_app/features/shell/shell_state.dart';
+
+import 'support/pump_until.dart';
 
 class _Canvas extends GenerateNotifier {
   @override
@@ -159,6 +162,7 @@ void main() {
     WidgetTester tester, {
     bool embedded = false,
     double sidebarWidth = 400,
+    TargetPlatform platform = TargetPlatform.windows,
     ValueNotifier<bool>? visibility,
   }) async {
     tester.view.physicalSize = const Size(1200, 840);
@@ -196,7 +200,7 @@ void main() {
       UncontrolledProviderScope(
         container: container,
         child: MaterialApp(
-          theme: ThemeData(platform: TargetPlatform.windows),
+          theme: ThemeData(platform: platform),
           builder: (_, child) => DesktopImageDropHost(child: child!),
           home: Scaffold(
             body: ImageDropRegion(
@@ -504,11 +508,174 @@ void main() {
       expect(key('assistant-message-image-multi-0'), findsOneWidget);
       expect(key('assistant-message-image-multi-1'), findsOneWidget);
       expect(find.byType(Image), findsNWidgets(3));
+      for (final (id, index, bytes) in [
+        ('legacy', 0, pngA),
+        ('multi', 0, pngA),
+        ('multi', 1, pngB),
+      ]) {
+        await tester.tap(key('assistant-message-image-$id-$index'));
+        await tester.pumpAndSettle();
+        expect(key('reference-image-preview'), findsOneWidget);
+        expect(
+          (tester.widget<Image>(key('reference-preview-image')).image
+                  as MemoryImage)
+              .bytes,
+          orderedEquals(bytes),
+        );
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await tester.pumpAndSettle();
+        expect(key('reference-image-preview'), findsNothing);
+      }
       expect(tester.takeException(), isNull);
     },
   );
 
   for (final embedded in [false, true]) {
+    for (final platform in [TargetPlatform.windows, TargetPlatform.macOS]) {
+      testWidgets(
+        'sent attachment previews the original and preserves the draft and state, embedded=$embedded, platform=$platform',
+        (tester) async {
+          final hashes = (await tester.runAsync(
+            () => stores.assistant.putImages([pngA, pngB]),
+          ))!;
+          recorder().seed(
+            AssistantState(
+              msgs: [
+                AssistantMsg(
+                  id: 'sent',
+                  role: MsgRole.user,
+                  text: '参考这些图片',
+                  at: 1,
+                  imageHashes: hashes,
+                ),
+              ],
+            ),
+          );
+          await mount(
+            tester,
+            embedded: embedded,
+            sidebarWidth: 330,
+            platform: platform,
+          );
+          await pumpUntil(
+            tester,
+            () => find.byType(Image).evaluate().length == 2,
+            reason: 'Both stored attachments must finish loading',
+          );
+          final input = find.widgetWithText(TextField, '想画什么、想改哪里…');
+          await tester.enterText(input, '保留这份草稿');
+          final conversation = container.read(assistantProvider);
+          final canvas = container.read(generateProvider);
+          final gallery = container.read(galleryProvider);
+          final tab = container.read(shellIndexProvider);
+          for (final (index, bytes) in [(0, pngA), (1, pngB)]) {
+            await tester.tap(key('assistant-message-image-sent-$index'));
+            await tester.pumpAndSettle();
+            expect(key('reference-image-preview'), findsOneWidget);
+            final preview = tester.widget<Image>(
+              key('reference-preview-image'),
+            );
+            expect(preview.image, isA<MemoryImage>());
+            expect((preview.image as MemoryImage).bytes, orderedEquals(bytes));
+            expect(find.byType(InteractiveViewer), findsOneWidget);
+            await tester.tap(find.byTooltip('关闭预览'));
+            await tester.pumpAndSettle();
+            expect(key('reference-image-preview'), findsNothing);
+          }
+          expect(container.read(assistantProvider), same(conversation));
+          expect(container.read(generateProvider), same(canvas));
+          expect(container.read(galleryProvider), same(gallery));
+          expect(container.read(shellIndexProvider), tab);
+          expect(tester.widget<TextField>(input).controller!.text, '保留这份草稿');
+          expect(recorder().sent, isEmpty);
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+
+    testWidgets(
+      'rapid attachment clicks open one preview and allow reopening, embedded=$embedded',
+      (tester) async {
+        final hash = await tester.runAsync(
+          () => stores.assistant.putImage(pngA),
+        );
+        recorder().seed(
+          AssistantState(
+            msgs: [
+              AssistantMsg(
+                id: 'sent',
+                role: MsgRole.user,
+                text: '查看附图',
+                at: 1,
+                imageHash: hash,
+              ),
+            ],
+          ),
+        );
+        await mount(tester, embedded: embedded);
+        await pumpUntil(tester, () => find.byType(Image).evaluate().isNotEmpty);
+        final attachment = key('assistant-message-image-sent-0');
+        await tester.tap(attachment);
+        await tester.tapAt(tester.getCenter(attachment));
+        await tester.pumpAndSettle();
+        expect(key('reference-image-preview'), findsOneWidget);
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await tester.pumpAndSettle();
+        expect(key('reference-image-preview'), findsNothing);
+        await tester.tap(attachment);
+        await tester.pumpAndSettle();
+        expect(key('reference-image-preview'), findsOneWidget);
+        await tester.tapAt(const Offset(5, 5));
+        await tester.pumpAndSettle();
+        expect(key('reference-image-preview'), findsNothing);
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'a missing attachment leaves the other original available, embedded=$embedded',
+      (tester) async {
+        final hash = await tester.runAsync(
+          () => stores.assistant.putImage(pngB),
+        );
+        recorder().seed(
+          AssistantState(
+            msgs: [
+              AssistantMsg(
+                id: 'sent',
+                role: MsgRole.user,
+                text: '附图缺失',
+                at: 1,
+                imageHashes: ['missing-image', hash!],
+              ),
+            ],
+          ),
+        );
+        await mount(tester, embedded: embedded);
+        await pumpUntil(
+          tester,
+          () =>
+              find.byTooltip('图片暂时无法读取').evaluate().isNotEmpty &&
+              find.byType(Image).evaluate().isNotEmpty,
+        );
+        await tester.tap(key('assistant-message-image-sent-0'));
+        await tester.pumpAndSettle();
+        expect(key('reference-image-preview'), findsNothing);
+        await tester.tap(key('assistant-message-image-sent-1'));
+        await tester.pumpAndSettle();
+        expect(key('reference-image-preview'), findsOneWidget);
+        expect(
+          (tester.widget<Image>(key('reference-preview-image')).image
+                  as MemoryImage)
+              .bytes,
+          orderedEquals(pngB),
+        );
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+      },
+    );
+
     testWidgets(
       'history appends two original images to the draft without selecting or sending, embedded=$embedded',
       (tester) async {

@@ -5,6 +5,7 @@ import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -1110,6 +1111,31 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
 
   // ---------- 手势 ----------
 
+  void _onPointerSignal(PointerSignalEvent event) {
+    if (!_desktop ||
+        event is! PointerScrollEvent ||
+        _rawPointers > 0 ||
+        !event.scrollDelta.dy.isFinite ||
+        event.scrollDelta.dy == 0) {
+      return;
+    }
+    GestureBinding.instance.pointerSignalResolver.register(event, (signal) {
+      final scroll = signal as PointerScrollEvent;
+      final anchor = scroll.localPosition;
+      final imagePoint = _toImg(anchor);
+      final factor = math.exp(
+        -scroll.scrollDelta.dy.clamp(-400.0, 400.0) / 200,
+      );
+      final next = (_scale * factor).clamp(_fitScale * 0.5, _fitScale * 10.0);
+      if (next == _scale) return;
+      setState(() {
+        _scale = next;
+        _offset = anchor - imagePoint * next;
+        _hoverPoint = _insideImage(imagePoint) ? imagePoint : null;
+      });
+    });
+  }
+
   void _onScaleStart(ScaleStartDetails d) {
     _lastPointers = d.pointerCount;
     _cropDismissOrigin = null;
@@ -1741,6 +1767,7 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
                                     fit: StackFit.expand,
                                     children: [
                                       Listener(
+                                        onPointerSignal: _onPointerSignal,
                                         // raw 层手指计数:标记双指会话(其
                                         // 余波单指重启不算涂抹),全离手复位
                                         onPointerDown: (_) {
