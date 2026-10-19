@@ -5,15 +5,19 @@ import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart' show compute;
 import 'package:image/image.dart' as img;
 
-/// 解码图片像素尺寸 (宽, 高)。
+import 'image_resources.dart';
+
+/// Read dimensions without allocating a full decoded pixel frame.
 Future<(int, int)> decodeImageSize(Uint8List bytes) async {
-  final codec = await ui.instantiateImageCodec(bytes);
-  final frame = await codec.getNextFrame();
-  final img = frame.image;
-  final size = (img.width, img.height);
-  img.dispose();
-  codec.dispose();
-  return size;
+  final buffer = await ui.ImmutableBuffer.fromUint8List(bytes);
+  ui.ImageDescriptor? descriptor;
+  try {
+    descriptor = await ui.ImageDescriptor.encoded(buffer);
+    return (descriptor.width, descriptor.height);
+  } finally {
+    descriptor?.dispose();
+    buffer.dispose();
+  }
 }
 
 /// img2img 目标分辨率(与 web `setImg2imgWithAutoRes` 一致):
@@ -46,42 +50,34 @@ Future<Uint8List> coverResizePng(
   double alignX = 0,
   double alignY = 0,
 }) async {
-  final codec = await ui.instantiateImageCodec(src);
-  final frame = await codec.getNextFrame();
-  final img = frame.image;
+  return withDecodedImage(src, (img) async {
+    final iw = img.width.toDouble();
+    final ih = img.height.toDouble();
+    final tw = targetW.toDouble();
+    final th = targetH.toDouble();
+    final scale = math.max(tw / iw, th / ih); // cover
+    final sw = iw * scale;
+    final sh = ih * scale;
+    final dx = (tw - sw) * (alignX.clamp(-1.0, 1.0) + 1) / 2;
+    final dy = (th - sh) * (alignY.clamp(-1.0, 1.0) + 1) / 2;
 
-  final iw = img.width.toDouble();
-  final ih = img.height.toDouble();
-  final tw = targetW.toDouble();
-  final th = targetH.toDouble();
-  final scale = math.max(tw / iw, th / ih); // cover
-  final sw = iw * scale;
-  final sh = ih * scale;
-  final dx = (tw - sw) * (alignX.clamp(-1.0, 1.0) + 1) / 2;
-  final dy = (th - sh) * (alignY.clamp(-1.0, 1.0) + 1) / 2;
-
-  final recorder = ui.PictureRecorder();
-  final canvas = ui.Canvas(recorder, ui.Rect.fromLTWH(0, 0, tw, th));
-  if (!keepAlpha) {
-    canvas.drawRect(
-      ui.Rect.fromLTWH(0, 0, tw, th),
-      ui.Paint()..color = const ui.Color(0xFF000000),
+    final recorder = ui.PictureRecorder();
+    final canvas = ui.Canvas(recorder, ui.Rect.fromLTWH(0, 0, tw, th));
+    if (!keepAlpha) {
+      canvas.drawRect(
+        ui.Rect.fromLTWH(0, 0, tw, th),
+        ui.Paint()..color = const ui.Color(0xFF000000),
+      );
+    }
+    canvas.drawImageRect(
+      img,
+      ui.Rect.fromLTWH(0, 0, iw, ih),
+      ui.Rect.fromLTWH(dx, dy, sw, sh),
+      ui.Paint()..filterQuality = ui.FilterQuality.high,
     );
-  }
-  canvas.drawImageRect(
-    img,
-    ui.Rect.fromLTWH(0, 0, iw, ih),
-    ui.Rect.fromLTWH(dx, dy, sw, sh),
-    ui.Paint()..filterQuality = ui.FilterQuality.high,
-  );
-  final picture = recorder.endRecording();
-  final out = await picture.toImage(targetW, targetH);
-  final data = await out.toByteData(format: ui.ImageByteFormat.png);
-
-  img.dispose();
-  out.dispose();
-  picture.dispose();
-  return data!.buffer.asUint8List();
+    final picture = recorder.endRecording();
+    return pictureToPng(picture, targetW, targetH);
+  });
 }
 
 /// Krea 风格参考预处理,复刻 web `applyKreaStyleRefFile`:长边缩到
@@ -126,52 +122,44 @@ Uint8List _styleRefResizeJpg((Uint8List, int, int) arg) {
 /// contain(整图可见、按比例缩放)+ 黑边居中填充,输出 PNG。
 /// 方形(0.8≤AR≤1.25)→1472²;横图→1536×1024;竖图→1024×1536。
 Future<Uint8List> crResizePng(Uint8List src) async {
-  final codec = await ui.instantiateImageCodec(src);
-  final frame = await codec.getNextFrame();
-  final img = frame.image;
+  return withDecodedImage(src, (img) async {
+    final iw = img.width.toDouble();
+    final ih = img.height.toDouble();
+    final ar = iw / ih;
 
-  final iw = img.width.toDouble();
-  final ih = img.height.toDouble();
-  final ar = iw / ih;
+    int cw, ch;
+    if (ar >= 0.8 && ar <= 1.25) {
+      cw = 1472;
+      ch = 1472;
+    } else if (iw > ih) {
+      cw = 1536;
+      ch = 1024;
+    } else {
+      cw = 1024;
+      ch = 1536;
+    }
 
-  int cw, ch;
-  if (ar >= 0.8 && ar <= 1.25) {
-    cw = 1472;
-    ch = 1472;
-  } else if (iw > ih) {
-    cw = 1536;
-    ch = 1024;
-  } else {
-    cw = 1024;
-    ch = 1536;
-  }
+    final twd = cw.toDouble();
+    final thd = ch.toDouble();
+    final scale = math.min(twd / iw, thd / ih); // contain
+    final sw = iw * scale;
+    final sh = ih * scale;
+    final dx = (twd - sw) / 2;
+    final dy = (thd - sh) / 2;
 
-  final twd = cw.toDouble();
-  final thd = ch.toDouble();
-  final scale = math.min(twd / iw, thd / ih); // contain
-  final sw = iw * scale;
-  final sh = ih * scale;
-  final dx = (twd - sw) / 2;
-  final dy = (thd - sh) / 2;
-
-  final recorder = ui.PictureRecorder();
-  final canvas = ui.Canvas(recorder, ui.Rect.fromLTWH(0, 0, twd, thd));
-  canvas.drawRect(
-    ui.Rect.fromLTWH(0, 0, twd, thd),
-    ui.Paint()..color = const ui.Color(0xFF000000),
-  );
-  canvas.drawImageRect(
-    img,
-    ui.Rect.fromLTWH(0, 0, iw, ih),
-    ui.Rect.fromLTWH(dx, dy, sw, sh),
-    ui.Paint()..filterQuality = ui.FilterQuality.high,
-  );
-  final picture = recorder.endRecording();
-  final out = await picture.toImage(cw, ch);
-  final data = await out.toByteData(format: ui.ImageByteFormat.png);
-
-  img.dispose();
-  out.dispose();
-  picture.dispose();
-  return data!.buffer.asUint8List();
+    final recorder = ui.PictureRecorder();
+    final canvas = ui.Canvas(recorder, ui.Rect.fromLTWH(0, 0, twd, thd));
+    canvas.drawRect(
+      ui.Rect.fromLTWH(0, 0, twd, thd),
+      ui.Paint()..color = const ui.Color(0xFF000000),
+    );
+    canvas.drawImageRect(
+      img,
+      ui.Rect.fromLTWH(0, 0, iw, ih),
+      ui.Rect.fromLTWH(dx, dy, sw, sh),
+      ui.Paint()..filterQuality = ui.FilterQuality.high,
+    );
+    final picture = recorder.endRecording();
+    return pictureToPng(picture, cw, ch);
+  });
 }

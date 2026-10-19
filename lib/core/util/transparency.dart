@@ -1,6 +1,8 @@
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'image_resources.dart';
+
 /// 透明背景(NAI V5 的 transparency 能力)的公共判定与像素工具。
 ///
 /// 透明**不是**一个开关,是模型能力:提示词里带 `transparent background`,V5 就
@@ -58,19 +60,15 @@ void clearAlphaLsb(Uint8List rgba) {
 /// 解不开时返回 false(当不透明处理):拿不准就走旧行为,别把一条正常路径掐掉。
 Future<bool> pngHasAlpha(Uint8List png) async {
   try {
-    final codec = await ui.instantiateImageCodec(
+    return await withDecodedImage(
       png,
+      (image) async {
+        final data = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+        return data != null && rgbaHasAlpha(data.buffer.asUint8List());
+      },
       targetWidth: 96,
       allowUpscaling: false,
     );
-    final frame = await codec.getNextFrame();
-    final data = await frame.image.toByteData(
-      format: ui.ImageByteFormat.rawRgba,
-    );
-    frame.image.dispose();
-    codec.dispose();
-    if (data == null) return false;
-    return rgbaHasAlpha(data.buffer.asUint8List());
   } catch (_) {
     return false;
   }

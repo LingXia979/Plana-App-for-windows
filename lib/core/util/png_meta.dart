@@ -34,10 +34,13 @@ Future<Uint8List> encodePngFromRgba(Uint8List rgba, int w, int h) async {
   final c = Completer<ui.Image>();
   ui.decodeImageFromPixels(rgba, w, h, ui.PixelFormat.rgba8888, c.complete);
   final img = await c.future;
-  final data = await img.toByteData(format: ui.ImageByteFormat.png);
-  img.dispose();
-  if (data == null) throw StateError('PNG 编码失败');
-  return data.buffer.asUint8List();
+  try {
+    final data = await img.toByteData(format: ui.ImageByteFormat.png);
+    if (data == null) throw StateError('PNG 编码失败');
+    return data.buffer.asUint8List();
+  } finally {
+    img.dispose();
+  }
 }
 
 /// 清除元数据:抹掉 alpha 最低位的隐写载荷后重编码(见 [clearAlphaLsb])。

@@ -27,6 +27,7 @@ import 'censor_ops.dart';
 import 'inpaint_ops.dart';
 import 'expand_canvas_dialog.dart';
 import '../../core/util/haptics.dart';
+import '../../core/util/image_resources.dart';
 
 /// 内容层功能色(画在图片上,与 app 主题无关):
 /// 遮罩紫与 web 一致;裁切青取深档保证浅色底上可读。
@@ -324,19 +325,17 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
   /// 「底色/加载圈 → 图突现」的闪烁。解码失败直接退出会话(防锁死)。
   Future<void> _decode() async {
     try {
-      final codec = await ui.instantiateImageCodec(widget.session.imageBytes);
-      final frame = await codec.getNextFrame();
-      codec.dispose();
+      final decoded = await decodeFirstImage(widget.session.imageBytes);
       if (!mounted) {
-        frame.image.dispose();
+        decoded.dispose();
         return;
       }
       setState(() {
-        _img = frame.image;
-        _grid = MaskGrid(frame.image.width, frame.image.height);
+        _img = decoded;
+        _grid = MaskGrid(decoded.width, decoded.height);
       });
       _restoreMask();
-      _restoreMode(frame.image);
+      _restoreMode(decoded);
       unawaited(_ac.forward());
     } catch (_) {
       if (mounted) ref.read(inpaintSessionProvider.notifier).close();
@@ -1376,16 +1375,15 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
         block: block,
       );
       if (!mounted) return;
-      final codec = await ui.instantiateImageCodec(png);
-      final frame = await codec.getNextFrame();
+      final decoded = await decodeFirstImage(png);
       // 等这一趟的功夫用户又拖了滑杆 —— 这张已经过期,直接扔
       if (!mounted || _censorBlock != block) {
-        frame.image.dispose();
+        decoded.dispose();
         return;
       }
       final old = _censorPreview;
       setState(() {
-        _censorPreview = frame.image;
+        _censorPreview = decoded;
         _censorPreviewBlock = block;
       });
       // 旧底片延到下一帧再放:当场 dispose 有可能砍掉一张还没光栅化的

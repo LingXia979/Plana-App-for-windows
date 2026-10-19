@@ -15,6 +15,7 @@ import 'package:flutter/foundation.dart' show compute;
 import 'package:image/image.dart' as image_lib;
 
 import '../../core/store/app_stores.dart';
+import '../../core/util/image_resources.dart';
 import '../generate/models.dart';
 import '../generate/char_position.dart';
 import 'dart:ui' as ui;
@@ -513,37 +514,26 @@ Future<Uint8List> maskToPng(MaskGrid g, {IntRect? region}) async {
     canvas.drawRect(shifted, white);
   }
   final picture = recorder.endRecording();
-  final img = await picture.toImage(w, h);
-  final data = await img.toByteData(format: ui.ImageByteFormat.png);
-  img.dispose();
-  picture.dispose();
-  return data!.buffer.asUint8List();
+  return pictureToPng(picture, w, h);
 }
 
 /// 从 PNG 裁出子区(像素精确),输出 PNG。
 Future<Uint8List> cropPng(Uint8List src, IntRect rect) async {
-  final codec = await ui.instantiateImageCodec(src);
-  final frame = await codec.getNextFrame();
-  final img = frame.image;
-
-  final recorder = ui.PictureRecorder();
-  final canvas = ui.Canvas(
-    recorder,
-    ui.Rect.fromLTWH(0, 0, rect.w * 1.0, rect.h * 1.0),
-  );
-  canvas.drawImageRect(
-    img,
-    ui.Rect.fromLTWH(rect.x * 1.0, rect.y * 1.0, rect.w * 1.0, rect.h * 1.0),
-    ui.Rect.fromLTWH(0, 0, rect.w * 1.0, rect.h * 1.0),
-    ui.Paint(),
-  );
-  final picture = recorder.endRecording();
-  final out = await picture.toImage(rect.w, rect.h);
-  final data = await out.toByteData(format: ui.ImageByteFormat.png);
-  img.dispose();
-  out.dispose();
-  picture.dispose();
-  return data!.buffer.asUint8List();
+  return withDecodedImage(src, (img) async {
+    final recorder = ui.PictureRecorder();
+    final canvas = ui.Canvas(
+      recorder,
+      ui.Rect.fromLTWH(0, 0, rect.w * 1.0, rect.h * 1.0),
+    );
+    canvas.drawImageRect(
+      img,
+      ui.Rect.fromLTWH(rect.x * 1.0, rect.y * 1.0, rect.w * 1.0, rect.h * 1.0),
+      ui.Rect.fromLTWH(0, 0, rect.w * 1.0, rect.h * 1.0),
+      ui.Paint(),
+    );
+    final picture = recorder.endRecording();
+    return pictureToPng(picture, rect.w, rect.h);
+  });
 }
 
 /// 扩图发送底图(对齐 web 桌面端 handleGenerate 扩图分支):
@@ -555,36 +545,32 @@ Future<Uint8List> buildExpandImage(
   required int padR,
   required int padB,
 }) async {
-  final codec = await ui.instantiateImageCodec(src);
-  final img = (await codec.getNextFrame()).image;
-  codec.dispose();
-  final error = expansionError(img.width, img.height, (
-    left: padL,
-    top: padT,
-    right: padR,
-    bottom: padB,
-  ));
-  if (error != null) {
-    img.dispose();
-    throw ArgumentError(error);
-  }
-  final w = img.width + padL + padR;
-  final h = img.height + padT + padB;
+  return withDecodedImage(src, (img) async {
+    final error = expansionError(img.width, img.height, (
+      left: padL,
+      top: padT,
+      right: padR,
+      bottom: padB,
+    ));
+    if (error != null) {
+      throw ArgumentError(error);
+    }
+    final w = img.width + padL + padR;
+    final h = img.height + padT + padB;
 
-  final recorder = ui.PictureRecorder();
-  final canvas = ui.Canvas(recorder, ui.Rect.fromLTWH(0, 0, w * 1.0, h * 1.0));
-  canvas.drawRect(
-    ui.Rect.fromLTWH(0, 0, w * 1.0, h * 1.0),
-    ui.Paint()..color = const ui.Color(0xFFFFFFFF),
-  );
-  canvas.drawImage(img, ui.Offset(padL * 1.0, padT * 1.0), ui.Paint());
-  final picture = recorder.endRecording();
-  final out = await picture.toImage(w, h);
-  final data = await out.toByteData(format: ui.ImageByteFormat.png);
-  img.dispose();
-  out.dispose();
-  picture.dispose();
-  return data!.buffer.asUint8List();
+    final recorder = ui.PictureRecorder();
+    final canvas = ui.Canvas(
+      recorder,
+      ui.Rect.fromLTWH(0, 0, w * 1.0, h * 1.0),
+    );
+    canvas.drawRect(
+      ui.Rect.fromLTWH(0, 0, w * 1.0, h * 1.0),
+      ui.Paint()..color = const ui.Color(0xFFFFFFFF),
+    );
+    canvas.drawImage(img, ui.Offset(padL * 1.0, padT * 1.0), ui.Paint());
+    final picture = recorder.endRecording();
+    return pictureToPng(picture, w, h);
+  });
 }
 
 /// 扩图 mask:全白(新增区=重绘),原图覆盖区黑(保留)。
@@ -629,11 +615,7 @@ Future<Uint8List> buildExpandMask({
     canvas.restore();
   }
   final picture = recorder.endRecording();
-  final out = await picture.toImage(w, h);
-  final data = await out.toByteData(format: ui.ImageByteFormat.png);
-  out.dispose();
-  picture.dispose();
-  return data!.buffer.asUint8List();
+  return pictureToPng(picture, w, h);
 }
 
 /// Select only painted cells inside the context border. With no interior
@@ -996,39 +978,35 @@ Future<Uint8List> pasteBack({
   required IntRect send,
   required IntRect tight,
 }) async {
-  final baseCodec = await ui.instantiateImageCodec(original);
-  final base = (await baseCodec.getNextFrame()).image;
-  final patchCodec = await ui.instantiateImageCodec(patch);
-  final patchImg = (await patchCodec.getNextFrame()).image;
-
-  final w = base.width, h = base.height;
-  final recorder = ui.PictureRecorder();
-  final canvas = ui.Canvas(recorder, ui.Rect.fromLTWH(0, 0, w * 1.0, h * 1.0));
-  canvas.drawImage(base, ui.Offset.zero, ui.Paint());
-  canvas.drawImageRect(
-    patchImg,
-    ui.Rect.fromLTWH(
-      (tight.x - send.x) * 1.0,
-      (tight.y - send.y) * 1.0,
-      tight.w * 1.0,
-      tight.h * 1.0,
-    ),
-    ui.Rect.fromLTWH(
-      tight.x * 1.0,
-      tight.y * 1.0,
-      tight.w * 1.0,
-      tight.h * 1.0,
-    ),
-    ui.Paint(),
-  );
-  final picture = recorder.endRecording();
-  final out = await picture.toImage(w, h);
-  final data = await out.toByteData(format: ui.ImageByteFormat.png);
-  base.dispose();
-  patchImg.dispose();
-  out.dispose();
-  picture.dispose();
-  return data!.buffer.asUint8List();
+  return withDecodedImage(original, (base) async {
+    return withDecodedImage(patch, (patchImg) async {
+      final w = base.width, h = base.height;
+      final recorder = ui.PictureRecorder();
+      final canvas = ui.Canvas(
+        recorder,
+        ui.Rect.fromLTWH(0, 0, w * 1.0, h * 1.0),
+      );
+      canvas.drawImage(base, ui.Offset.zero, ui.Paint());
+      canvas.drawImageRect(
+        patchImg,
+        ui.Rect.fromLTWH(
+          (tight.x - send.x) * 1.0,
+          (tight.y - send.y) * 1.0,
+          tight.w * 1.0,
+          tight.h * 1.0,
+        ),
+        ui.Rect.fromLTWH(
+          tight.x * 1.0,
+          tight.y * 1.0,
+          tight.w * 1.0,
+          tight.h * 1.0,
+        ),
+        ui.Paint(),
+      );
+      final picture = recorder.endRecording();
+      return pictureToPng(picture, w, h);
+    });
+  });
 }
 
 /// 重绘编辑器的工具偏好。

@@ -6,6 +6,7 @@ import 'package:archive/archive.dart';
 import 'package:flutter/foundation.dart' show visibleForTesting;
 
 import '../../core/util/prompt_convert.dart' show stripInlineTags;
+import '../../core/util/image_resources.dart';
 
 /// 图片元数据解析。移植自 web 桌面端 `utils/imageMetadata.ts`:
 /// 支持 PNG tEXt/iTXt 块(NovelAI Comment / SD parameters / ComfyUI prompt)、
@@ -1168,12 +1169,14 @@ class _LsbExtractor {
 
 Future<Map<String, dynamic>?> _extractLsb(Uint8List bytes) async {
   try {
-    final codec = await ui.instantiateImageCodec(bytes);
-    final frame = await codec.getNextFrame();
-    final img = frame.image;
-    final bd = await img.toByteData(format: ui.ImageByteFormat.rawRgba);
-    final w = img.width, h = img.height;
-    img.dispose();
+    final (bd, w, h) = await withDecodedImage(
+      bytes,
+      (image) async => (
+        await image.toByteData(format: ui.ImageByteFormat.rawRgba),
+        image.width,
+        image.height,
+      ),
+    );
     if (bd == null) return null;
     final rgba = bd.buffer.asUint8List();
 
