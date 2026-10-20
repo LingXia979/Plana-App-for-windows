@@ -663,6 +663,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
   /// `+`=连续插入不关闭,抓手/底部/下滑=关闭。关闭后唤回键盘。
   Future<void> _expand() async {
     if (_sheetOpen || _query.isEmpty || _result.isEmpty) return;
+    final result = _result;
     _sheetOpen = true;
     (_chipMode ? _inputFocus : _focus).unfocus();
     final size = MediaQuery.of(context).size;
@@ -675,7 +676,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
       builder: (ctx) => Theme(
         data: editorTheme(ctx),
         child: CompletionPanel(
-          result: _result,
+          result: result,
           maxHeight: size.height * 0.5,
           onPick: (s) {
             Navigator.of(ctx).pop();
@@ -1577,7 +1578,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
           },
           onFocusChange: (focused) {
             setState(() => _inlineHasFocus = focused);
-            if (!focused) _clearSuggest();
+            if (!focused && !_sheetOpen) _clearSuggest();
           },
           child: Listener(
             onPointerDown: (_) {
@@ -1923,18 +1924,22 @@ class _EditorPageState extends ConsumerState<EditorPage>
       }
     }
     if (_query.isNotEmpty) {
-      return CompletionBar(
-        key: const ValueKey('dock-completion'),
-        query: _query,
-        result: _result,
-        loading: _loading,
-        translating: _translating,
-        onPick: _pick,
-        // 一个都没匹配上时的「直接添加」:文本模式里字已经在正文里了,
-        // 收起补全即可;芯片模式还躺在输入框里,得落成一枚 chip。
-        onAddRaw: _chipMode ? _commitInput : _clearSuggest,
-        onExpand: _expand,
-        onClose: _clearSuggest,
+      // Suggestions are part of the text field interaction: a mouse press must
+      // keep focus until the suggestion's onTap commits the replacement.
+      return TextFieldTapRegion(
+        child: CompletionBar(
+          key: const ValueKey('dock-completion'),
+          query: _query,
+          result: _result,
+          loading: _loading,
+          translating: _translating,
+          onPick: _pick,
+          // 一个都没匹配上时的「直接添加」:文本模式里字已经在正文里了,
+          // 收起补全即可;芯片模式还躺在输入框里,得落成一枚 chip。
+          onAddRaw: _chipMode ? _commitInput : _clearSuggest,
+          onExpand: _expand,
+          onClose: _clearSuggest,
+        ),
       );
     }
     if (_panelTok != null) {

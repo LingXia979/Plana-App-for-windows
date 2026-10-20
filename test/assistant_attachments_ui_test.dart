@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
+import 'package:plana_app/core/platform/clipboard_image.dart';
 import 'package:plana_app/core/platform/desktop.dart';
 import 'package:plana_app/core/store/app_stores.dart';
 import 'package:plana_app/core/ui/image_drop.dart';
@@ -870,5 +871,70 @@ void main() {
     expect(key('assistant-pending-images'), findsNothing);
     expect(recorder().sent, isEmpty);
     expect(tester.takeException(), isNull);
+  });
+
+  group('Windows explicit image paste', () {
+    late Map<String, Object?> clipboard;
+    setUp(() {
+      clipboard = {'image': pngB, 'format': 'png', 'text': 'mixed text'};
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(DesktopClipboard.channel, (call) async {
+            return call.method == 'read' ? clipboard : true;
+          });
+    });
+    tearDown(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(DesktopClipboard.channel, null);
+    });
+    for (final embedded in [false, true]) {
+      testWidgets('explicit paste appends images without sending ($embedded)', (
+        tester,
+      ) async {
+        await mount(tester, embedded: embedded);
+        await tester.tap(key('assistant-paste-image'));
+        await settle(tester);
+        await tester.tap(key('assistant-paste-image'));
+        await settle(tester);
+        await tester.pumpAndSettle();
+        expect(find.text('已添加 2 张图片'), findsOneWidget);
+        expect(recorder().sent, isEmpty);
+        expect(tester.takeException(), isNull);
+      });
+    }
+    testWidgets('empty and oversized clipboard leave attachments unchanged', (
+      tester,
+    ) async {
+      await mount(tester, embedded: true);
+      clipboard = {'text': 'text only'};
+      await tester.tap(key('assistant-paste-image'));
+      await settle(tester);
+      expect(find.text('剪贴板里没有图片'), findsOneWidget);
+      expect(key('assistant-pending-images'), findsNothing);
+      clipboard = {'error': 'too_many_images'};
+      await tester.tap(key('assistant-paste-image'));
+      await settle(tester);
+      expect(find.text('一次最多粘贴 64 张图片'), findsOneWidget);
+      expect(key('assistant-pending-images'), findsNothing);
+      expect(recorder().sent, isEmpty);
+      expect(tester.takeException(), isNull);
+    });
+    testWidgets('copied image files append as one batch', (tester) async {
+      clipboard = {
+        'images': [
+          {'image': pngA, 'name': 'first.png'},
+          {'image': pngB, 'name': 'second.png'},
+        ],
+        'fromFile': true,
+        'text': 'file names',
+      };
+      await mount(tester, embedded: true);
+      await tester.tap(key('assistant-paste-image'));
+      await settle(tester);
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('移除图片 1：first.png'), findsOneWidget);
+      expect(find.byTooltip('移除图片 2：second.png'), findsOneWidget);
+      expect(recorder().sent, isEmpty);
+      expect(tester.takeException(), isNull);
+    });
   });
 }

@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
+import 'package:plana_app/core/platform/clipboard_image.dart';
 import 'package:plana_app/core/platform/desktop.dart';
 import 'package:plana_app/core/store/app_stores.dart';
 import 'package:plana_app/core/theme/app_theme.dart';
@@ -14,6 +15,7 @@ import 'package:plana_app/features/gallery/models.dart';
 import 'package:plana_app/features/generate/models.dart';
 import 'package:plana_app/features/gallery/widgets/result_canvas.dart';
 import 'package:plana_app/features/inpaint/inpaint_ops.dart';
+import 'package:plana_app/features/inpaint/inpaint_overlay.dart';
 import 'package:plana_app/features/shell/shell_state.dart';
 
 void main() {
@@ -105,6 +107,7 @@ void main() {
     WidgetTester tester, {
     bool diskInputs = false,
     bool comparison = false,
+    double textScale = 1,
   }) async {
     tester.view.physicalSize = const Size(1200, 800);
     tester.view.devicePixelRatio = 1;
@@ -121,6 +124,12 @@ void main() {
         container: container,
         child: MaterialApp(
           theme: AppTheme.light(),
+          builder: (context, child) => MediaQuery(
+            data: MediaQuery.of(
+              context,
+            ).copyWith(textScaler: TextScaler.linear(textScale)),
+            child: child!,
+          ),
           home: Scaffold(
             body: Builder(
               builder: (context) => TextButton(
@@ -166,6 +175,27 @@ void main() {
     await tester.tap(find.text('打开'));
     await expectFrame(tester, 0);
     await tester.pumpAndSettle();
+  }
+
+  for (final initialTab in [kTabCreate, kTabGallery]) {
+    testWidgets('inpaint closes the viewer from tab $initialTab', (
+      tester,
+    ) async {
+      container.read(shellIndexProvider.notifier).select(initialTab);
+      await mount(tester, comparison: true);
+      await tester.tap(find.text('重绘'));
+      await tester.pumpAndSettle();
+      final session = container.read(inpaintSessionProvider);
+      expect(session, isNotNull);
+      expect(session!.sourceId, 'gen0');
+      expect(session.imageBytes, pixels[0]);
+      expect(container.read(shellIndexProvider), kTabCreate);
+      expect(key('desktop-image-viewer'), findsNothing);
+      expect(find.text('打开'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      stores.flushNow();
+      await tester.pumpWidget(const SizedBox());
+    });
   }
 
   testWidgets(
@@ -245,57 +275,62 @@ void main() {
     },
   );
 
-  testWidgets(
-    'long, short, empty and missing prompts keep controls fixed and reset text scroll',
-    (tester) async {
-      await mount(tester, diskInputs: true);
-      final panel = tester.element(key('desktop-image-info'));
-      final actions = tester.getRect(key('desktop-image-import'));
-      final viewport = tester.getRect(key('desktop-image-prompts'));
-      final long = List.filled(300, 'long prompt, forest, sky').join(', ');
-      reads[1].complete(pixels[1]);
-      inputReads[1].complete(GenerateState.initial().copyWith(prompt: long));
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
-      await expectFrame(tester, 1, prompt: long);
-      expect(tester.getRect(key('desktop-image-import')), actions);
-      expect(tester.getRect(key('desktop-image-prompts')), viewport);
-      final scroll = tester
-          .widget<SingleChildScrollView>(key('desktop-image-prompts'))
-          .controller!;
-      scroll.jumpTo(250);
-      await tester.pump();
-      expect(scroll.offset, 250);
-      for (final i in [2, 3, 4]) {
-        reads[i].complete(pixels[i]);
-        inputReads[i].complete(
-          i == 3
-              ? null
-              : GenerateState.initial().copyWith(
-                  prompt: i == 2 ? '' : 'prompt-4',
-                ),
-        );
+  for (final textScale in [1.0, 1.4]) {
+    testWidgets(
+      'long, short, empty and missing prompts keep controls fixed and reset text scroll, textScale=$textScale',
+      (tester) async {
+        await mount(tester, diskInputs: true, textScale: textScale);
+        final panel = tester.element(key('desktop-image-info'));
+        final actions = tester.getRect(key('desktop-image-import'));
+        final viewport = tester.getRect(key('desktop-image-prompts'));
+        final long = List.filled(300, 'long prompt, forest, sky').join(', ');
+        reads[1].complete(pixels[1]);
+        inputReads[1].complete(GenerateState.initial().copyWith(prompt: long));
         await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
-        await expectFrame(
-          tester,
-          i,
-          prompt: i == 2
-              ? '未填写正面提示词'
-              : i == 3
-              ? '这张作品没有保存参数快照，可通过导入读取图片元数据。'
-              : null,
-        );
-        expect(tester.element(key('desktop-image-info')), same(panel));
+        await expectFrame(tester, 1, prompt: long);
         expect(tester.getRect(key('desktop-image-import')), actions);
         expect(tester.getRect(key('desktop-image-prompts')), viewport);
-        expect(scroll.offset, 0);
-      }
-      tester.view.physicalSize = const Size(900, 600);
-      await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull);
-      expect(tester.getRect(key('desktop-image-import')).bottom, lessThan(600));
-      await tester.pumpWidget(const SizedBox());
-    },
-  );
+        final scroll = tester
+            .widget<SingleChildScrollView>(key('desktop-image-prompts'))
+            .controller!;
+        scroll.jumpTo(250);
+        await tester.pump();
+        expect(scroll.offset, 250);
+        for (final i in [2, 3, 4]) {
+          reads[i].complete(pixels[i]);
+          inputReads[i].complete(
+            i == 3
+                ? null
+                : GenerateState.initial().copyWith(
+                    prompt: i == 2 ? '' : 'prompt-4',
+                  ),
+          );
+          await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+          await expectFrame(
+            tester,
+            i,
+            prompt: i == 2
+                ? '未填写正面提示词'
+                : i == 3
+                ? '这张作品没有保存参数快照，可通过导入读取图片元数据。'
+                : null,
+          );
+          expect(tester.element(key('desktop-image-info')), same(panel));
+          expect(tester.getRect(key('desktop-image-import')), actions);
+          expect(tester.getRect(key('desktop-image-prompts')), viewport);
+          expect(scroll.offset, 0);
+        }
+        tester.view.physicalSize = const Size(900, 600);
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        expect(
+          tester.getRect(key('desktop-image-import')).bottom,
+          lessThan(600),
+        );
+        await tester.pumpWidget(const SizedBox());
+      },
+    );
+  }
 
   testWidgets(
     'keeps decoded pixels and metadata while loading, and prefetches neighbours',
@@ -372,4 +407,34 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     },
   );
+
+  testWidgets('看图浮层能把当前这张复制到系统剪贴板', (tester) async {
+    final writes = <Uint8List>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(DesktopClipboard.channel, (call) async {
+          if (call.method == 'write') {
+            final args = (call.arguments as Map).cast<String, Object?>();
+            writes.add(args['image']! as Uint8List);
+            return true;
+          }
+          return null;
+        });
+    addTearDown(
+      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(DesktopClipboard.channel, null),
+    );
+
+    // comparison 那一版才把字节随身带着(其余几张故意留空,好验懒读),
+    // 复制要的正是「内存里就有」这条路径。
+    await mount(tester, comparison: true);
+    await tester.tap(key('desktop-image-copy-image'));
+    await advance(tester);
+    await tester.pumpAndSettle();
+
+    // 内存里本来就有字节:交出去的就是原样那份,不重新编码。
+    expect(writes, [pixels[0]]);
+    expect(find.text('图片已复制到剪贴板'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
 }

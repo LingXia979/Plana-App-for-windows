@@ -14,6 +14,9 @@ struct ClipboardImage {
   bool bitmap = false;
   std::vector<uint8_t> bytes;
   std::vector<std::string> paths;
+  std::string text;
+  bool has_text = false;
+  bool from_file = false;
   std::string error;
   POINT position = {};
 };
@@ -21,6 +24,7 @@ struct ClipboardImage {
 // Clipboard DIBs omit the BMP file header. Validate their bounds before adding
 // that header; Flutter will decode and convert the bitmap to a portable PNG.
 std::vector<uint8_t> ClipboardBitmapFile(const std::vector<uint8_t>& dib);
+std::wstring ClipboardUnicodeText(const void* data, size_t byte_length);
 ClipboardImage ReadClipboardImage(HWND owner);
 
 class ImageClipboard {

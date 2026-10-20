@@ -24,6 +24,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../gallery/gallery_state.dart'
     show galleryImageProvider, galleryProvider, galleryThumbProvider;
 import '../../gallery/models.dart' show ResultImage;
+import '../../gallery/result_clipboard.dart' show copyResultToClipboard;
 import '../../generate/gen_jobs.dart' show GenJob;
 import '../../generate/generation_controller.dart' show generationProvider;
 import '../../generate/widgets/common.dart' show StripeThumb, hintSnack;
@@ -154,6 +155,26 @@ class _Done extends ConsumerStatefulWidget {
 class _DoneState extends ConsumerState<_Done> {
   bool _previewOpen = false;
 
+  Future<void> _menu(Offset position) async {
+    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+    final action = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromRect(
+        Rect.fromLTWH(position.dx, position.dy, 0, 0),
+        Offset.zero & overlay.size,
+      ),
+      items: const [
+        PopupMenuItem(value: 'open', child: Text('打开大图')),
+        PopupMenuItem(value: 'copy', child: Text('复制图片')),
+      ],
+    );
+    if (!mounted) return;
+    if (action == 'open') await _openImage();
+    if (action == 'copy') {
+      await copyResultToClipboard(context, ref, widget.result);
+    }
+  }
+
   Future<void> _openImage() async {
     if (!ref.read(desktopModeProvider)) {
       ref.read(galleryProvider.notifier).select(widget.result.id);
@@ -195,7 +216,11 @@ class _DoneState extends ConsumerState<_Done> {
     final size = _box(result.width, result.height, widget.maxW);
     final bytes = _bytesOf(ref, result);
     return GestureDetector(
+      key: ValueKey('assistant-inline-image-${result.id}'),
       onTap: _openImage,
+      onSecondaryTapUp: ref.watch(desktopModeProvider)
+          ? (details) => _menu(details.globalPosition)
+          : null,
       child: _frame(context, size, [
         if (bytes != null)
           _Bitmap(bytes: bytes, size: size)

@@ -21,6 +21,7 @@ import 'package:flutter/services.dart';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/platform/clipboard_image.dart';
 import '../../core/platform/desktop.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/ui/image_drop.dart';
@@ -211,6 +212,31 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
     } finally {
       if (mounted) setState(() => _choosingHistory = false);
     }
+  }
+
+  Future<void> _pasteImage() async {
+    List<ClipboardImageBytes> images;
+    try {
+      images = await DesktopClipboard.readImages(preferImage: true);
+    } catch (error) {
+      if (mounted) {
+        hintSnack(
+          context,
+          error is FormatException ? error.message : '无法读取剪贴板图片',
+          icon: Icons.error_outline,
+        );
+      }
+      return;
+    }
+    if (!mounted) return;
+    if (images.isEmpty) {
+      hintSnack(context, '剪贴板里没有图片', icon: Icons.error_outline);
+      return;
+    }
+    _addImages([
+      for (final image in images)
+        PickedImage(image.name ?? kClipboardImageName, image.bytes),
+    ]);
   }
 
   void _addImages(List<PickedImage> images) {
@@ -953,6 +979,12 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
       onPressed: !enabled || running || _choosingHistory ? null : _pickHistory,
       icon: const Icon(Icons.photo_library_outlined),
     );
+    final pasteAttachment = IconButton(
+      key: const ValueKey('assistant-paste-image'),
+      tooltip: '从剪贴板粘贴图片 (Ctrl+V)',
+      onPressed: !enabled || running ? null : _pasteImage,
+      icon: const Icon(Icons.content_paste),
+    );
     final input = TextField(
       controller: _input,
       focusNode: _inputFocus,
@@ -1081,6 +1113,7 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
                       children: [
                         attachment,
                         historyAttachment,
+                        pasteAttachment,
                         Expanded(
                           child: Align(
                             alignment: Alignment.centerRight,
@@ -1107,6 +1140,7 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
               children: [
                 attachment,
                 historyAttachment,
+                if (ref.watch(desktopModeProvider)) pasteAttachment,
                 const SizedBox(width: 1),
                 Expanded(child: input),
                 const SizedBox(width: 8),

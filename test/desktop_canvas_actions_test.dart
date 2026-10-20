@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
+import 'package:plana_app/core/platform/clipboard_image.dart';
 import 'package:plana_app/core/store/app_stores.dart';
 import 'package:plana_app/core/store/prefs_store.dart';
 import 'package:plana_app/core/theme/app_theme.dart';
@@ -38,6 +39,8 @@ void main() {
   late ProviderContainer container;
   late _FolderPicker picker;
   late ResultImage result;
+  late List<Uint8List> clipboardWrites;
+  var clipboardAccepts = true;
   Finder key(String value) => find.byKey(ValueKey(value));
 
   setUp(() {
@@ -60,8 +63,21 @@ void main() {
         img.encodePng(img.Image(width: 32, height: 48)),
       ),
     );
+    clipboardWrites = [];
+    clipboardAccepts = true;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(DesktopClipboard.channel, (call) async {
+          if (call.method == 'write') {
+            final args = (call.arguments as Map).cast<String, Object?>();
+            clipboardWrites.add(args['image']! as Uint8List);
+            return clipboardAccepts;
+          }
+          return null;
+        });
   });
   tearDown(() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(DesktopClipboard.channel, null);
     container.dispose();
     stores.flushNow();
     temp.deleteSync(recursive: true);
@@ -326,4 +342,26 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     },
   );
+
+  testWidgets('画布顶栏能把这张图复制到系统剪贴板', (tester) async {
+    await mount(tester);
+    await tester.tap(key('canvas-copy-image'));
+    await tester.pumpAndSettle();
+
+    expect(clipboardWrites, [result.bytes]);
+    expect(find.text('图片已复制到剪贴板'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('系统写不进剪贴板时如实报错,不谎报成功', (tester) async {
+    clipboardAccepts = false;
+    await mount(tester);
+    await tester.tap(key('canvas-copy-image'));
+    await tester.pumpAndSettle();
+
+    expect(clipboardWrites, [result.bytes]);
+    expect(find.text('图片已复制到剪贴板'), findsNothing);
+    expect(find.textContaining('复制失败'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 }

@@ -414,6 +414,17 @@ class _DesktopImageDropHostState extends State<DesktopImageDropHost> {
       (args['y'] as num).toDouble() / scale,
     );
     if (call.method == 'paste') {
+      final text = args['text'] as String?;
+      if (text != null && text.trim().isNotEmpty && args['fromFile'] != true) {
+        final focus = FocusManager.instance.primaryFocus?.context;
+        if (focus != null && focus.mounted) {
+          Actions.maybeInvoke(
+            focus,
+            const PasteTextIntent(SelectionChangedCause.keyboard),
+          );
+        }
+        return;
+      }
       final target = _pasteAt(point);
       if (target == null || !target._enabled) return;
       // Region-local busy state prevents duplicates without locking a newly

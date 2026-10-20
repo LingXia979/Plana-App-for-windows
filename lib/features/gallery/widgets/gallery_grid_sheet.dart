@@ -35,6 +35,7 @@ import '../gallery_search.dart';
 import '../gallery_state.dart';
 import '../models.dart';
 import '../phone_gallery_save.dart';
+import '../result_clipboard.dart';
 import '../save_pipeline.dart';
 import '../save_settings.dart';
 import '../share_pipeline.dart';
@@ -1786,6 +1787,11 @@ class GalleryGridContentState extends ConsumerState<GalleryGridContent>
         await _importOne(id);
       case 'save':
         await _downloadPicked(only: {id});
+      case 'clipboard':
+        final result = _resultOf(id);
+        if (result != null && mounted) {
+          await copyResultToClipboard(context, ref, result);
+        }
       case 'share':
         await _sharePicked(only: {id});
       case 'move':
@@ -2894,6 +2900,10 @@ class _LiftedThumb extends ConsumerWidget {
           const SizedBox(height: 8),
           _item(context, Icons.input, '导入', 'import'),
           _item(context, Icons.download, '保存', 'save'),
+          // 「复制到剪贴板」和下面那颗「复制」(复制进别的图库)是两回事,
+          // 名字得分开写 —— 挨着排已经够近了,再同名就只能靠试。
+          if (desktop)
+            _item(context, Icons.content_copy, '复制到剪贴板', 'clipboard'),
           if (desktop) ...[
             _item(context, Icons.drive_file_move_outline, '移动', 'move'),
             _item(context, Icons.copy_outlined, '复制', 'copy'),
