@@ -37,7 +37,7 @@ import '../result_clipboard.dart';
 import '../save_settings.dart';
 import '../desktop_image_save.dart';
 import '../upscale_model.dart';
-import '../upscale_nai.dart';
+import '../super_resolution.dart';
 import 'save_sheet.dart';
 
 /// 持久大图层:有字节 → `Image.memory`(gaplessPlayback);否则画一个目标尺寸的空画框。
@@ -1270,73 +1270,22 @@ class _ActionRailState extends ConsumerState<ResultActions> {
     GallerySaveTarget target,
     int selectionRevision,
   ) async {
-    // Capture the original and long-lived providers before awaiting. A gallery
-    // selection or a replaced preview must not change this request's metadata.
     final store = ref.read(appStoresProvider).gallery;
-    final gallery = ref.read(galleryProvider.notifier);
-    final run = ref.read(naiUpscaleRunnerProvider);
-    final refresh = ref.read(anlasProvider.notifier).refresh;
     final input =
         source.input ??
         (source.hasInput ? await store.readInput(source.id) : null);
     if (!context.mounted) return;
-    final stage = ValueNotifier<String>('准备…');
-    final navigator = Navigator.of(context, rootNavigator: true);
-    final progress = DialogRoute<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => PopScope(
-        canPop: false,
-        child: _UpscaleProgressDialog(
-          key: const ValueKey('upscale-progress'),
-          method: UpscaleMethod.naiV5,
-          stage: stage,
-        ),
-      ),
+    await superResolveImage(
+      context,
+      ref,
+      png: bytes,
+      width: source.width,
+      height: source.height,
+      seed: source.seed,
+      input: input,
+      target: target,
+      selectionRevision: selectionRevision,
     );
-    unawaited(navigator.push(progress));
-
-    try {
-      final r = await run(
-        bytes,
-        width: source.width,
-        height: source.height,
-        onStage: (s) => stage.value = s,
-      );
-      final png = r.png;
-      final outW = r.width;
-      final outH = r.height;
-      // 入库:新条目 + 放大角标,沿用原图 seed/输入参数(快照懒读补齐)
-      await gallery.addResultToGallery(
-        target: target,
-        canSelect: () => gallery.selectionRevision == selectionRevision,
-        bytes: png,
-        width: outW,
-        height: outH,
-        seed: source.seed,
-        badge: ResultBadge.upscaled2x,
-        input: input,
-      );
-      unawaited(refresh());
-      if (context.mounted) {
-        hintSnack(
-          context,
-          '超分辨率完成 $outW×$outH,已存入图库',
-          icon: Icons.check_circle_outline,
-        );
-      }
-    } catch (e) {
-      if (context.mounted) {
-        hintSnack(context, '超分失败: $e', icon: Icons.error_outline);
-      }
-    } finally {
-      // Remove only this request's dialog, even if its caller was replaced.
-      if (navigator.mounted && progress.isActive) {
-        navigator.removeRoute(progress);
-      }
-      await progress.completed;
-      stage.dispose();
-    }
   }
 
   /// 重绘放大:img2img 重新生成(走生成管线,结果画布流式 + 自动入库)。
@@ -2128,60 +2077,4 @@ class _UpscalePanelState extends ConsumerState<_UpscalePanel> {
 
   TextStyle _pill(Color fg) =>
       TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: fg);
-}
-
-/// 超分进度对话框。三条路都是远程一次性调用,拿不到逐步进度 ——
-/// 只有阶段文案 + 不确定动画。
-class _UpscaleProgressDialog extends StatelessWidget {
-  const _UpscaleProgressDialog({
-    super.key,
-    required this.method,
-    required this.stage,
-  });
-
-  final UpscaleMethod method;
-  final ValueNotifier<String> stage;
-
-  IconData get _icon => switch (method) {
-    UpscaleMethod.naiV5 => Icons.blur_on,
-    UpscaleMethod.redraw => Icons.auto_fix_high,
-  };
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = context.scheme;
-    return AlertDialog(
-      title: Row(
-        children: [
-          Icon(_icon, size: 20, color: scheme.primary),
-          const SizedBox(width: 8),
-          Text(
-            '${method.label} · ${method.badge}',
-            style: const TextStyle(fontSize: 16),
-          ),
-        ],
-      ),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          ValueListenableBuilder<String>(
-            valueListenable: stage,
-            builder: (_, s, _) => Text(
-              s,
-              style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant),
-            ),
-          ),
-          const SizedBox(height: 16),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(4),
-            child: LinearProgressIndicator(
-              minHeight: 8,
-              backgroundColor: scheme.surfaceContainerHighest,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
 }

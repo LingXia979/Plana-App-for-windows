@@ -129,6 +129,18 @@ void main() {
     expect(tester.takeException(), isNull);
   }
 
+  testWidgets('clicking the import backdrop closes without changing the draft', (
+    tester,
+  ) async {
+    await mount(tester);
+    final before = container.read(generateProvider);
+    await tester.tapAt(const Offset(5, 5));
+    await tester.pumpAndSettle();
+    expect(find.byType(ImportImagePanel), findsNothing);
+    expect(container.read(generateProvider), same(before));
+    await finish(tester);
+  });
+
   for (final presetId in ['v5-light', 'v5-standard']) {
     testWidgets(
       'Medium PNG import selects effort without replacing High sampling: $presetId',

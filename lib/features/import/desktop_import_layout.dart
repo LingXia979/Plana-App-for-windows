@@ -33,138 +33,156 @@ class DesktopImportLayout extends StatelessWidget {
         autofocus: true,
         child: Scaffold(
           backgroundColor: scheme.surfaceContainerLow,
-          body: SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Center(
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(
-                    maxWidth: 1240,
-                    maxHeight: 820,
-                  ),
-                  child: Material(
-                    key: const ValueKey('desktop-import-window'),
-                    color: scheme.surface,
-                    elevation: 2,
-                    borderRadius: BorderRadius.circular(18),
-                    clipBehavior: Clip.antiAlias,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(22, 12, 12, 12),
-                          child: Row(
-                            children: [
-                              Icon(
-                                Icons.input,
-                                color: scheme.primary,
-                                size: 22,
+          body: Stack(
+            fit: StackFit.expand,
+            children: [
+              ModalBarrier(
+                key: const ValueKey('desktop-import-backdrop'),
+                dismissible: true,
+                onDismiss: onClose,
+              ),
+              SafeArea(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(
+                        maxWidth: 1240,
+                        maxHeight: 820,
+                      ),
+                      child: Material(
+                        key: const ValueKey('desktop-import-window'),
+                        color: scheme.surface,
+                        elevation: 2,
+                        borderRadius: BorderRadius.circular(18),
+                        clipBehavior: Clip.antiAlias,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(
+                                22,
+                                12,
+                                12,
+                                12,
                               ),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: Text(
-                                  title,
-                                  style: Theme.of(context).textTheme.titleLarge,
-                                ),
-                              ),
-                              IconButton(
-                                key: const ValueKey('desktop-import-close'),
-                                tooltip: '关闭导入',
-                                onPressed: onClose,
-                                icon: const Icon(Icons.close),
-                              ),
-                            ],
-                          ),
-                        ),
-                        const Divider(height: 1),
-                        Expanded(
-                          child: LayoutBuilder(
-                            builder: (context, bounds) {
-                              if (bounds.maxWidth < 840 ||
-                                  bounds.maxHeight < 360) {
-                                return Column(
-                                  children: [
-                                    Padding(
-                                      padding: const EdgeInsets.all(12),
-                                      child: Row(
-                                        children: [
-                                          SizedBox(
-                                            width: 76,
-                                            height: 94,
-                                            child: _image(),
-                                          ),
-                                          const SizedBox(width: 14),
-                                          Expanded(child: _info(context)),
-                                        ],
-                                      ),
-                                    ),
-                                    Padding(
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 12,
-                                      ),
-                                      child: referenceActions,
-                                    ),
-                                    Expanded(child: details),
-                                  ],
-                                );
-                              }
-                              return Row(
-                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                              child: Row(
                                 children: [
-                                  SizedBox(
-                                    width: (bounds.maxWidth * .30).clamp(
-                                      260,
-                                      350,
-                                    ),
-                                    child: Padding(
-                                      padding: const EdgeInsets.all(18),
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.stretch,
-                                        children: [
-                                          Expanded(child: _image()),
-                                          const SizedBox(height: 14),
-                                          _info(context),
-                                          const SizedBox(height: 12),
-                                          referenceActions,
-                                        ],
-                                      ),
+                                  Icon(
+                                    Icons.input,
+                                    color: scheme.primary,
+                                    size: 22,
+                                  ),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: Text(
+                                      title,
+                                      style: Theme.of(
+                                        context,
+                                      ).textTheme.titleLarge,
                                     ),
                                   ),
-                                  const VerticalDivider(width: 1),
-                                  Expanded(child: details),
+                                  IconButton(
+                                    key: const ValueKey('desktop-import-close'),
+                                    tooltip: '关闭导入',
+                                    onPressed: onClose,
+                                    icon: const Icon(Icons.close),
+                                  ),
                                 ],
-                              );
-                            },
-                          ),
-                        ),
-                        const Divider(height: 1),
-                        Padding(
-                          key: const ValueKey('desktop-import-footer'),
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 20,
-                            vertical: 12,
-                          ),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.end,
-                            children: [
-                              TextButton(
-                                onPressed: onClose,
-                                child: const Text('取消'),
                               ),
-                              if (confirm != null) ...[
-                                const SizedBox(width: 12),
-                                confirm!,
-                              ],
-                            ],
-                          ),
+                            ),
+                            const Divider(height: 1),
+                            Expanded(
+                              child: LayoutBuilder(
+                                builder: (context, bounds) {
+                                  if (bounds.maxWidth < 840 ||
+                                      bounds.maxHeight < 360) {
+                                    return Column(
+                                      children: [
+                                        Padding(
+                                          padding: const EdgeInsets.all(12),
+                                          child: Row(
+                                            children: [
+                                              SizedBox(
+                                                width: 76,
+                                                height: 94,
+                                                child: _image(),
+                                              ),
+                                              const SizedBox(width: 14),
+                                              Expanded(child: _info(context)),
+                                            ],
+                                          ),
+                                        ),
+                                        Padding(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 12,
+                                          ),
+                                          child: referenceActions,
+                                        ),
+                                        Expanded(child: details),
+                                      ],
+                                    );
+                                  }
+                                  return Row(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.stretch,
+                                    children: [
+                                      SizedBox(
+                                        width: (bounds.maxWidth * .30).clamp(
+                                          260,
+                                          350,
+                                        ),
+                                        child: Padding(
+                                          padding: const EdgeInsets.all(18),
+                                          child: Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.stretch,
+                                            children: [
+                                              Expanded(child: _image()),
+                                              const SizedBox(height: 14),
+                                              _info(context),
+                                              const SizedBox(height: 12),
+                                              referenceActions,
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                      const VerticalDivider(width: 1),
+                                      Expanded(child: details),
+                                    ],
+                                  );
+                                },
+                              ),
+                            ),
+                            const Divider(height: 1),
+                            Padding(
+                              key: const ValueKey('desktop-import-footer'),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 20,
+                                vertical: 12,
+                              ),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.end,
+                                children: [
+                                  TextButton(
+                                    onPressed: onClose,
+                                    child: const Text('取消'),
+                                  ),
+                                  if (confirm != null) ...[
+                                    const SizedBox(width: 12),
+                                    confirm!,
+                                  ],
+                                ],
+                              ),
+                            ),
+                          ],
                         ),
-                      ],
+                      ),
                     ),
                   ),
                 ),
               ),
-            ),
+            ],
           ),
         ),
       ),

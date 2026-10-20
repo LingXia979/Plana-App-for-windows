@@ -264,6 +264,11 @@ void main() {
     );
     await spinUntil(tester, () => done);
     await tester.pumpAndSettle();
+    // Settling the widget tree can enqueue its final search-index write.
+    // Pump both clocks while flushing it before teardown deletes the fixture.
+    done = false;
+    unawaited(stores.flushForExit().then((_) => done = true));
+    await spinUntil(tester, () => done);
     expect(tester.takeException(), isNull);
   }
 

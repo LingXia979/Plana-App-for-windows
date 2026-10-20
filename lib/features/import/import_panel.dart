@@ -16,11 +16,14 @@ import '../../core/auth/bot_session_store.dart';
 import '../../core/net/backend_client.dart';
 import '../../core/net/remote_image.dart';
 import '../../core/platform/desktop.dart';
+import '../../core/store/app_stores.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/util/image_ops.dart';
 import '../../core/util/image_pick.dart';
 import '../../core/util/prompt_convert.dart' show convertSdToNai;
 import '../char_library/char_library.dart';
+import '../gallery/gallery_state.dart';
+import '../gallery/super_resolution.dart';
 import '../generate/auto_text.dart';
 import '../generate/char_position.dart';
 import '../generate/gen_modules.dart';
@@ -109,7 +112,7 @@ Future<void> openImportPanel(BuildContext context) async {
 }
 
 /// 导入图片面板(全屏)。3a 导入主页:解析元数据、逐项勾选导入到生成页,
-/// 或把整张图「用作」图生图 / 风格 / 角色参考 / 反推。无元数据时退化为纯「用作」。
+/// 或把整张图「用作」图生图 / 风格 / 角色参考 / 反推,桌面另有固定 2× 超分。无元数据时退化为纯「用作」。
 class ImportImagePanel extends ConsumerStatefulWidget {
   const ImportImagePanel({
     super.key,
@@ -131,6 +134,7 @@ class ImportImagePanel extends ConsumerStatefulWidget {
 class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   ImportAlbumChoice _albumChoice = const ImportAlbumChoice();
   bool _loading = true;
+  bool _upscaling = false;
   ImageMetadata? _meta;
 
   /// 上一次导入用过的偏好([_parse] 里取到,[_initSelections] 据此还原)。
@@ -1094,6 +1098,42 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     );
   }
 
+  /// 外部图片直接走 NAI 固定 2× 超分,不修改创作页的提示词或图生图状态。
+  Future<void> _superResolve() async {
+    if (_loading || _upscaling) return;
+    setState(() => _upscaling = true);
+    final target = ref.read(gallerySaveTargetProvider);
+    final gallery = ref.read(galleryProvider.notifier);
+    final selectionRevision = gallery.selectionRevision;
+    final sourceId = widget.origin?.imageId;
+    final source = ref.read(galleryProvider).results
+        .where((r) => r.id == sourceId).firstOrNull;
+    final store = ref.read(appStoresProvider).gallery;
+    final seed = source?.seed ?? int.tryParse(_meta?.seed ?? '') ?? 0;
+    try {
+      final image = await prepareSuperResolutionImage(widget.bytes);
+      if (!mounted) return;
+      final input = source?.input ??
+          (source?.hasInput == true ? await store.readInput(source!.id) : null);
+      if (!mounted) return;
+      await superResolveImage(
+        context,
+        ref,
+        png: image.png,
+        width: image.width,
+        height: image.height,
+        seed: seed,
+        input: input,
+        target: target,
+        selectionRevision: selectionRevision,
+      );
+    } catch (e) {
+      if (mounted) hintSnack(context, '超分失败: $e', icon: Icons.error_outline);
+    } finally {
+      if (mounted) setState(() => _upscaling = false);
+    }
+  }
+
   /// AI 反推:弹窗选模型 → 反推 → 成功后关弹窗,面板切到「反推结果」单条正向页。
   Future<void> _reverse() async {
     final tags = await showDialog<String>(
@@ -1165,7 +1205,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
                 onChanged: (v) => setState(() => _albumChoice = v),
               ),
               const SizedBox(height: 24),
-              const InfoNote('未在这张图里找到生成参数，可使用左侧按钮将图片用作参考，或反推提示词。'),
+              const InfoNote('未在这张图里找到生成参数，可使用图片操作按钮将图片用作参考、反推提示词或进行 2× 超分辨率。'),
             ],
           );
     return DesktopImportLayout(
@@ -1231,6 +1271,12 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
           action: _reverse,
           blocked: null,
         ),
+      (
+        label: '超分辨率',
+        icon: Icons.blur_on,
+        action: _superResolve,
+        blocked: _upscaling ? '正在超分辨率…' : null,
+      ),
     ];
     return Wrap(
       spacing: 6,
@@ -1238,8 +1284,13 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
       children: [
         for (final item in actions)
           Tooltip(
-            message: item.blocked ?? item.label,
+            message: item.blocked ?? (item.label == '超分辨率'
+                ? 'NAI 固定 2× · 1–4 点 · 保存到当前选定图库'
+                : item.label),
             child: OutlinedButton.icon(
+              key: item.label == '超分辨率'
+                  ? const ValueKey('desktop-import-upscale')
+                  : null,
               style: OutlinedButton.styleFrom(
                 padding: const EdgeInsets.symmetric(horizontal: 10),
                 visualDensity: VisualDensity.compact,
