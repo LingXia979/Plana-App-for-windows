@@ -8,8 +8,8 @@ library;
 /// `android:label` 一起改 —— 那个是桌面图标下的名字,读不到 Dart 常量。
 const kAppName = 'Plana app for windows';
 const kAppTagline = 'NovelAI 桌面创作端';
-const kAppVersion = '1.1.1-windows.47';
-const kAppBuild = '66';
+const kAppVersion = '1.1.1-windows.48';
+const kAppBuild = '67';
 
 /// 预发布版(版号带 `-`):关于页加内测标,免得测试反馈回来分不清版本。
 bool get kIsPrerelease => kAppVersion.contains('-');
