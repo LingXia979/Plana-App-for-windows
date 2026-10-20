@@ -8,6 +8,7 @@ import 'core/store/app_stores.dart';
 import 'core/store/gen_settings.dart';
 import 'core/store/storage_lifecycle.dart';
 import 'core/theme/app_theme.dart';
+import 'core/theme/app_text_scale.dart';
 import 'core/theme/theme_settings.dart';
 import 'core/ui/input_focus_guard.dart';
 import 'core/ui/image_drop.dart';
@@ -86,8 +87,8 @@ class PlanaApp extends ConsumerWidget {
               constraints: const BoxConstraints(maxWidth: 760),
             ),
           );
-    // 触感开关同步到全局出口:调用点在手势/绘制层,拿不到 ref,只能这样递。
-    Haptics.enabled = ts.haptics;
+    // 桌面关闭触感调用;移动端将触感设置同步到全局出口。
+    Haptics.enabled = !desktop && ts.haptics;
     return MaterialApp(
       title: kAppName,
       debugShowCheckedModeBanner: false,
@@ -95,8 +96,12 @@ class PlanaApp extends ConsumerWidget {
       darkTheme: adapt(AppTheme.dark(ts.seed.color)),
       themeMode: ts.mode,
       navigatorObservers: [_inputFocusGuard],
-      builder: (context, child) =>
-          desktop ? DesktopImageDropHost(child: child!) : child!,
+      builder: (context, child) => desktop
+          ? AppTextScale(
+              factor: ts.textScale,
+              child: DesktopImageDropHost(child: child!),
+            )
+          : child!,
       home: const _AuthGate(),
     );
   }

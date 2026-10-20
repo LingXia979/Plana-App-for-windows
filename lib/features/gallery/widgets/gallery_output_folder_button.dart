@@ -4,8 +4,8 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/store/app_stores.dart';
 import '../../../core/store/desktop_output_location.dart';
-import '../../../core/theme/app_theme.dart';
 import '../../generate/widgets/common.dart' show hintSnack;
+import 'gallery_toolbar_button.dart';
 
 /// The archive folder is shared by the library overview and its image browser.
 class GalleryOutputFolderButton extends ConsumerStatefulWidget {
@@ -53,18 +53,11 @@ class _GalleryOutputFolderButtonState
   @override
   Widget build(BuildContext context) => Tooltip(
     message: '自动保存：${ref.read(appStoresProvider).desktopOutput.root.path}',
-    child: TextButton.icon(
+    child: GalleryToolbarButton(
       key: const ValueKey('desktop-gallery-folder'),
-      style: TextButton.styleFrom(
-        backgroundColor: context.scheme.primary.withValues(alpha: .08),
-        shape: const StadiumBorder(),
-        padding: const EdgeInsets.symmetric(horizontal: 16),
-        minimumSize: const Size(0, 36),
-        visualDensity: VisualDensity.compact,
-      ),
       onPressed: _opening ? null : _open,
-      icon: const Icon(Icons.folder_open_outlined, size: 18),
-      label: Text(_opening ? '正在整理作品…' : '作品文件夹'),
+      icon: Icons.folder_open_outlined,
+      label: _opening ? '正在整理作品…' : '作品文件夹',
     ),
   );
 }

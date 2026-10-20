@@ -28,13 +28,17 @@ void main() {
     id: 'styles',
     type: CodexType.string,
     title: '画风词典',
+    author: '示例画师',
+    aliases: ['Painter styles'],
     entryCount: 12,
   );
   const other = CodexMeta(
     id: 'scenes',
     type: CodexType.composition,
     title: '场景法典',
+    author: '示例构图',
     entryCount: 1,
+    nsfw: true,
   );
   final entries = [
     for (var i = 0; i < 12; i++)
@@ -52,6 +56,8 @@ void main() {
   late Directory temp;
   late AppStores stores;
   late ProviderContainer container;
+  late bool desktop;
+  late List<CodexMeta> index;
   final capture = GlobalKey();
   Finder key(String value) => find.byKey(ValueKey(value));
 
@@ -64,12 +70,14 @@ void main() {
       (_) async => temp.path,
     );
     stores = AppStores.ephemeral();
+    desktop = true;
+    index = [meta, other];
     container = ProviderContainer(
       overrides: [
         appStoresProvider.overrideWithValue(stores),
-        desktopModeProvider.overrideWithValue(true),
+        desktopModeProvider.overrideWith((ref) => desktop),
         codexIntroProvider.overrideWith(_Acknowledged.new),
-        codexIndexProvider.overrideWith((ref) async => [meta, other]),
+        codexIndexProvider.overrideWith((ref) async => index),
         codexMediaProvider.overrideWith((ref) async => CodexMedia.fallback),
         codexDataProvider.overrideWith(
           (ref, id) async => id == meta.id
@@ -107,8 +115,14 @@ void main() {
     temp.deleteSync(recursive: true);
   });
 
-  Future<void> mount(WidgetTester tester) async {
-    tester.view.physicalSize = const Size(1500, 900);
+  Future<void> mount(
+    WidgetTester tester, {
+    Size size = const Size(1500, 900),
+    double textScale = 1,
+    TargetPlatform platform = TargetPlatform.windows,
+    Widget? home,
+  }) async {
+    tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
@@ -123,35 +137,43 @@ void main() {
           child: MaterialApp(
             debugShowCheckedModeBanner: false,
             theme: AppTheme.light().copyWith(
-              platform: TargetPlatform.windows,
+              platform: platform,
               textTheme: AppTheme.light().textTheme.apply(
                 fontFamily: 'Microsoft YaHei',
               ),
             ),
-            home: const Scaffold(
-              body: Column(
-                children: [
-                  Padding(
-                    padding: EdgeInsets.all(24),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            '灵感 · 法典',
-                            style: TextStyle(
-                              fontSize: 24,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                        CodexPickerButton(),
-                      ],
-                    ),
-                  ),
-                  Expanded(child: CodexView(desktop: true)),
-                ],
-              ),
+            builder: (context, child) => MediaQuery(
+              data: MediaQuery.of(
+                context,
+              ).copyWith(textScaler: TextScaler.linear(textScale)),
+              child: child!,
             ),
+            home:
+                home ??
+                const Scaffold(
+                  body: Column(
+                    children: [
+                      Padding(
+                        padding: EdgeInsets.all(24),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                '灵感 · 法典',
+                                style: TextStyle(
+                                  fontSize: 24,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                            CodexPickerButton(),
+                          ],
+                        ),
+                      ),
+                      Expanded(child: CodexView(desktop: true)),
+                    ],
+                  ),
+                ),
           ),
         ),
       ),
@@ -189,7 +211,21 @@ void main() {
       await captureDesktop(tester, capture, 'windows17-codex-compact');
       await tester.tap(find.byType(CodexPickerButton));
       await tester.pumpAndSettle();
-      expect(key('codex-desktop-dialog'), findsOneWidget);
+      expect(key('desktop-popover'), findsOneWidget);
+      expect(key('codex-desktop-dialog'), findsNothing);
+      expect(find.byType(BottomSheet), findsNothing);
+      expect(
+        tester.getRect(key('desktop-popover')).top,
+        closeTo(tester.getRect(key('codex-picker-button')).bottom + 8, 1),
+      );
+      expect(find.text('示例画师 · 12 条'), findsOneWidget);
+      expect(find.text('示例构图 · 1 条'), findsOneWidget);
+      expect(find.text('R18'), findsOneWidget);
+      expect(find.text('词典'), findsOneWidget);
+      expect(find.text('构图'), findsOneWidget);
+      await tester.enterText(key('codex-picker-search'), '示例构图');
+      await tester.pumpAndSettle();
+      expect(find.text('示例画师 · 12 条'), findsNothing);
       await tester.tap(find.text('场景法典'));
       await tester.pumpAndSettle();
       expect(key('desktop-codex-card-scene0'), findsOneWidget);
@@ -197,23 +233,179 @@ void main() {
         tester.widget<TextField>(key('desktop-codex-search')).controller!.text,
         isEmpty,
       );
+      await tester.tap(key('codex-picker-button'));
+      await tester.pumpAndSettle();
+      await tester.enterText(key('codex-picker-search'), 'PAINTER');
+      await tester.pumpAndSettle();
+      expect(find.text('示例构图 · 1 条'), findsNothing);
+      await tester.tap(find.text('画风词典'));
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<TextField>(key('desktop-codex-search')).controller!.text,
+        'sea',
+      );
+      expect(key('desktop-codex-card-style1'), findsOneWidget);
+      expect(key('desktop-codex-card-style7'), findsNothing);
       await tester.pumpWidget(const SizedBox());
       expect(tester.takeException(), isNull);
     },
   );
 
+  testWidgets('dismissing the dropdown preserves selection and entry search', (
+    tester,
+  ) async {
+    await mount(tester);
+    await tester.enterText(key('desktop-codex-search'), 'sea');
+    await tester.pumpAndSettle(const Duration(milliseconds: 300));
+    await tester.tap(key('codex-picker-button'));
+    await tester.pumpAndSettle();
+    await tester.enterText(key('codex-picker-search'), '不存在的法典');
+    await tester.pumpAndSettle();
+    expect(find.text('没有匹配的法典'), findsOneWidget);
+    await tester.tap(find.byTooltip('清空法典搜索'));
+    await tester.pumpAndSettle();
+    expect(find.text('示例画师 · 12 条'), findsOneWidget);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(key('desktop-popover'), findsNothing);
+    expect(container.read(selectedCodexProvider), isNull);
+    await tester.tap(key('codex-picker-button'));
+    await tester.pumpAndSettle();
+    await tester.tapAt(const Offset(10, 10));
+    await tester.pumpAndSettle();
+    expect(key('desktop-popover'), findsNothing);
+    expect(container.read(selectedCodexProvider), isNull);
+    expect(
+      tester.widget<TextField>(key('desktop-codex-search')).controller!.text,
+      'sea',
+    );
+    expect(key('desktop-codex-card-style1'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'embedded macOS picker uses window bounds with large text and a scrollable list',
+    (tester) async {
+      index = [
+        const CodexMeta(
+          id: 'styles',
+          type: CodexType.string,
+          title: 'NovelAI v4.5 画师词典与更多内容，长标题仍应截断',
+          nsfw: true,
+        ),
+        other,
+        for (var i = 0; i < 25; i++)
+          CodexMeta(
+            id: 'extra$i',
+            type: CodexType.codex,
+            title: '更多法典 $i',
+            entryCount: i,
+          ),
+      ];
+      container.read(selectedCodexProvider.notifier).select('styles');
+      await mount(
+        tester,
+        size: const Size(740, 700),
+        textScale: 1.4,
+        platform: TargetPlatform.macOS,
+        home: const Scaffold(
+          body: Align(
+            alignment: Alignment.topRight,
+            child: SizedBox(
+              width: 360,
+              child: MediaQuery(
+                data: MediaQueryData(
+                  size: Size(360, 700),
+                  textScaler: TextScaler.linear(1.4),
+                ),
+                child: Align(
+                  alignment: Alignment.topRight,
+                  child: Padding(
+                    padding: EdgeInsets.all(16),
+                    child: CodexPickerButton(),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      final anchor = tester.getRect(key('codex-picker-button'));
+      expect(anchor.width, lessThanOrEqualTo(320));
+      await tester.tap(key('codex-picker-button'));
+      await tester.pumpAndSettle();
+      final panel = tester.getRect(key('desktop-popover'));
+      expect(panel.width, 380);
+      expect(panel.top, closeTo(anchor.bottom + 8, 1));
+      expect(panel.right, closeTo(anchor.right, 1));
+      expect(panel.bottom, lessThanOrEqualTo(688));
+      expect(find.byType(BottomSheet), findsNothing);
+      final menuScrollable = find
+          .descendant(
+            of: key('desktop-popover'),
+            matching: find.byType(Scrollable),
+          )
+          .last;
+      await tester.scrollUntilVisible(
+        find.text('更多法典 24'),
+        200,
+        scrollable: menuScrollable,
+      );
+      await tester.tap(find.text('更多法典 24'));
+      await tester.pumpAndSettle();
+      expect(container.read(selectedCodexProvider), 'extra24');
+      expect(key('desktop-popover'), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets('mobile picker retains the bottom sheet and book selection', (
+    tester,
+  ) async {
+    desktop = false;
+    await mount(
+      tester,
+      size: const Size(400, 800),
+      platform: TargetPlatform.android,
+      home: const Scaffold(body: Center(child: CodexPickerButton())),
+    );
+    await tester.tap(key('codex-picker-button'));
+    await tester.pumpAndSettle();
+    expect(find.byType(BottomSheet), findsOneWidget);
+    expect(key('desktop-popover'), findsNothing);
+    expect(find.text('示例构图 · 1 条'), findsOneWidget);
+    await tester.tap(find.text('场景法典'));
+    await tester.pumpAndSettle();
+    expect(container.read(selectedCodexProvider), 'scenes');
+    expect(find.byType(BottomSheet), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets(
     'desktop favorites and random details keep all actions accessible',
     (tester) async {
       await mount(tester);
+      final favoriteButton = find.descendant(
+        of: key('desktop-codex-card-style0'),
+        matching: find.byTooltip('收藏'),
+      );
+      expect(favoriteButton.hitTestable(), findsOneWidget);
+      final onFavorite =
+          tester
+                  .widget<IconButton>(
+                    find.ancestor(
+                      of: favoriteButton,
+                      matching: find.byType(IconButton),
+                    ),
+                  )
+                  .onPressed!
+              as Future<void> Function();
       await tester.runAsync(() async {
-        await tester.tap(
-          find.descendant(
-            of: key('desktop-codex-card-style0'),
-            matching: find.byTooltip('收藏'),
-          ),
-        );
-        await Future<void>.delayed(const Duration(milliseconds: 100));
+        // Await persistence before the temporary directory can be removed.
+        await onFavorite();
       });
       await tester.pumpAndSettle();
       expect(container.read(codexFavKeysProvider), contains('styles/style0'));

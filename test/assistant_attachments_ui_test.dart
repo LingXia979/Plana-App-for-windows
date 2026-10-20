@@ -875,17 +875,62 @@ void main() {
 
   group('Windows explicit image paste', () {
     late Map<String, Object?> clipboard;
+    late List<Uint8List> copied;
     setUp(() {
       clipboard = {'image': pngB, 'format': 'png', 'text': 'mixed text'};
+      copied = [];
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(DesktopClipboard.channel, (call) async {
-            return call.method == 'read' ? clipboard : true;
+            if (call.method == 'read') return clipboard;
+            if (call.method == 'write') {
+              copied.add((call.arguments as Map)['image'] as Uint8List);
+              return true;
+            }
+            return null;
           });
     });
     tearDown(() {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(DesktopClipboard.channel, null);
     });
+    testWidgets(
+      'right-click copies the original without switching the canvas',
+      (tester) async {
+        stores.gallery.initialResults = [
+          ResultImage(id: 'gen7', width: 16, height: 24, seed: 7, bytes: pngA),
+        ];
+        recorder().seed(
+          const AssistantState(
+            msgs: [
+              AssistantMsg(
+                id: 'shot',
+                role: MsgRole.ai,
+                text: '画好了',
+                at: 3,
+                imageIds: ['gen7'],
+              ),
+            ],
+          ),
+        );
+        await mount(tester, embedded: true);
+        final before = container.read(galleryProvider).selectedId;
+        final tab = container.read(shellIndexProvider);
+        await tester.tap(
+          key('assistant-inline-image-gen7'),
+          buttons: kSecondaryMouseButton,
+          kind: PointerDeviceKind.mouse,
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('复制图片'));
+        await settle(tester);
+        await pumpUntil(tester, () => copied.isNotEmpty);
+        expect(copied, [pngA]);
+        expect(container.read(galleryProvider).selectedId, before);
+        expect(container.read(shellIndexProvider), tab);
+        expect(recorder().sent, isEmpty);
+        expect(tester.takeException(), isNull);
+      },
+    );
     for (final embedded in [false, true]) {
       testWidgets('explicit paste appends images without sending ($embedded)', (
         tester,

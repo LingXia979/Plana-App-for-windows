@@ -169,8 +169,9 @@ class _DoneState extends ConsumerState<_Done> {
       ],
     );
     if (!mounted) return;
-    if (action == 'open') await _openImage();
-    if (action == 'copy') {
+    if (action == 'open') {
+      await _openImage();
+    } else if (action == 'copy') {
       await copyResultToClipboard(context, ref, widget.result);
     }
   }

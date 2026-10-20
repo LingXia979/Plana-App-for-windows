@@ -27,6 +27,7 @@ import '../albums/album_organize_sheet.dart';
 import '../albums/gallery_transfer_dialog.dart';
 import 'gallery_date_sheet.dart';
 import 'gallery_output_folder_button.dart';
+import 'gallery_toolbar_button.dart';
 import 'gallery_export_dialog.dart';
 import 'gallery_drag_selection.dart';
 import 'gallery_image_tile.dart';
@@ -1051,55 +1052,52 @@ class GalleryGridContentState extends ConsumerState<GalleryGridContent>
             children: [
               SizedBox(
                 key: _dateAnchor,
-                child: OutlinedButton.icon(
+                child: GalleryToolbarButton(
                   key: const ValueKey('desktop-gallery-date'),
                   onPressed: _pickTimeFilter,
-                  icon: const Icon(Icons.calendar_month_outlined, size: 18),
-                  label: Text(
-                    _dateFilter.active ? _dateFilter.label(now) : '全部时间',
-                  ),
+                  icon: Icons.calendar_month_outlined,
+                  label: _dateFilter.active ? _dateFilter.label(now) : '全部时间',
+                  active: _dateFilter.active,
+                  dropdown: true,
                 ),
               ),
               const GalleryOutputFolderButton(),
             ],
           ),
           if (widget.browser == null)
-            _chip(
-              context.scheme,
+            GalleryToolbarButton(
               key: const ValueKey('quick-gallery-library'),
               label: '切换图库',
               active: _scope != null,
-              onTap: _chooseAlbum,
+              onPressed: _chooseAlbum,
+              dropdown: true,
             ),
-          _chip(
-            context.scheme,
+          GalleryToolbarButton(
             key: _groupAnchor,
             label: _groupBy.stacked ? _groupBy.label : '分组',
             active: _groupBy.stacked,
-            onTap: _pickGroupBy,
+            onPressed: _pickGroupBy,
+            dropdown: true,
           ),
-          _chip(
-            context.scheme,
+          GalleryToolbarButton(
             key: _modelAnchor,
             label: _modelFilter == null
                 ? '模型'
                 : (_modelFilter!.isEmpty ? '未知' : _modelFilter!),
             active: _modelFilter != null,
-            onTap: () => _pickModelFilter(results, search.byId),
+            onPressed: () => _pickModelFilter(results, search.byId),
+            dropdown: true,
           ),
-          FilterChip(
+          GalleryToolbarButton(
             key: const ValueKey('gallery-favorites-filter'),
-            avatar: Icon(
-              _favoritesOnly ? Icons.star : Icons.star_border,
-              size: 18,
-              color: _favoritesOnly ? Colors.amber.shade800 : null,
-            ),
-            label: const Text('收藏'),
-            selected: _favoritesOnly,
-            showCheckmark: false,
-            onSelected: (value) {
+            icon: _favoritesOnly
+                ? Icons.star_rounded
+                : Icons.star_border_rounded,
+            label: '收藏',
+            active: _favoritesOnly,
+            onPressed: () {
               _dragSelectionKey.currentState?.cancel();
-              setState(() => _favoritesOnly = value);
+              setState(() => _favoritesOnly = !_favoritesOnly);
             },
           ),
           if (search.building)

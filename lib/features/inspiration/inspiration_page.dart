@@ -528,7 +528,10 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
                 // 没有「别人」可筛。
                 suffixIcon: def.hasPublic
                     ? Builder(
-                        builder: (anchor) => _filterButton(scheme, anchor),
+                        builder: (anchor) => Semantics(
+                          container: true,
+                          child: _filterButton(scheme, anchor),
+                        ),
                       )
                     : null,
                 suffixIconConstraints: const BoxConstraints(
@@ -604,30 +607,19 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
       body: Column(
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(24, 22, 24, 16),
+            padding: const EdgeInsets.fromLTRB(24, 12, 24, 8),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Row(
                   children: [
                     Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            '灵感',
-                            style: context.texts.headlineSmall!.copyWith(
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            '遇见喜欢的角色、画风，和下一个好点子。',
-                            style: context.texts.bodySmall!.copyWith(
-                              color: scheme.onSurfaceVariant,
-                            ),
-                          ),
-                        ],
+                      child: Text(
+                        '灵感',
+                        style: context.texts.titleMedium!.copyWith(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
                     ),
                     if (!_codex) ...[
@@ -659,12 +651,12 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
                     ],
                   ],
                 ),
-                const SizedBox(height: 20),
+                const SizedBox(height: 10),
                 LayoutBuilder(
                   builder: (context, constraints) {
                     final categories = Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
+                      spacing: 6,
+                      runSpacing: 6,
                       children: [
                         for (final category in TagCategory.values)
                           _desktopCategory(
@@ -681,9 +673,14 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
                       key: ValueKey('tag-search-${_def.webId}'),
                       controller: _searchController,
                       onChanged: (value) => setState(() => _search = value),
+                      style: context.texts.bodyMedium,
                       decoration: InputDecoration(
                         hintText: '搜索名称 / 标签 / 提示词…',
                         prefixIcon: const Icon(Icons.search, size: 20),
+                        prefixIconConstraints: const BoxConstraints(
+                          minWidth: 36,
+                          minHeight: 36,
+                        ),
                         isDense: true,
                         filled: true,
                         fillColor: scheme.surfaceContainerLowest,
@@ -697,17 +694,17 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
                         ),
                         contentPadding: const EdgeInsets.symmetric(
                           horizontal: 12,
-                          vertical: 14,
+                          vertical: 8,
                         ),
                       ),
                     );
                     if (_codex) {
-                      if (constraints.maxWidth < 860) {
+                      if (constraints.maxWidth < 760) {
                         return Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             categories,
-                            const SizedBox(height: 12),
+                            const SizedBox(height: 8),
                             const CodexPickerButton(),
                           ],
                         );
@@ -715,19 +712,17 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
                       return Row(
                         children: [
                           Expanded(child: categories),
-                          const SizedBox(
-                            width: 300,
-                            child: CodexPickerButton(),
-                          ),
+                          const SizedBox(width: 12),
+                          const CodexPickerButton(),
                         ],
                       );
                     }
-                    if (constraints.maxWidth < 860) {
+                    if (constraints.maxWidth < 760) {
                       return Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
                           categories,
-                          const SizedBox(height: 12),
+                          const SizedBox(height: 8),
                           search,
                         ],
                       );
@@ -735,27 +730,29 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
                     return Row(
                       children: [
                         Expanded(child: categories),
-                        const SizedBox(width: 20),
+                        const SizedBox(width: 16),
                         SizedBox(width: 300, child: search),
                       ],
                     );
                   },
                 ),
                 if (!_codex) ...[
-                  const SizedBox(height: 16),
+                  const SizedBox(height: 8),
                   Row(
                     children: [
                       ChoiceChip(
                         key: const ValueKey('inspiration-scope-mine'),
                         padding: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 10,
+                          horizontal: 10,
+                          vertical: 4,
                         ),
                         labelStyle: const TextStyle(
-                          fontSize: 14,
+                          fontSize: 13,
                           fontWeight: FontWeight.w600,
                         ),
                         avatar: const Icon(Icons.bookmark_outline, size: 17),
+                        visualDensity: VisualDensity.compact,
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                         label: Text('我的 · ${mine.length}'),
                         selected: !public,
                         showCheckmark: false,
@@ -766,14 +763,17 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
                         ChoiceChip(
                           key: const ValueKey('inspiration-scope-public'),
                           padding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 10,
+                            horizontal: 10,
+                            vertical: 4,
                           ),
                           labelStyle: const TextStyle(
-                            fontSize: 14,
+                            fontSize: 13,
                             fontWeight: FontWeight.w600,
                           ),
                           avatar: const Icon(Icons.public, size: 17),
+                          visualDensity: VisualDensity.compact,
+                          materialTapTargetSize:
+                              MaterialTapTargetSize.shrinkWrap,
                           label: const Text('公共库'),
                           selected: public,
                           showCheckmark: false,
@@ -796,7 +796,10 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
                       if (_def.hasPublic) ...[
                         _sortButton(scheme),
                         Builder(
-                          builder: (anchor) => _filterButton(scheme, anchor),
+                          builder: (anchor) => Semantics(
+                            container: true,
+                            child: _filterButton(scheme, anchor),
+                          ),
                         ),
                       ],
                       if (public)
@@ -845,19 +848,20 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     ),
     onPressed: () => _onPickCat(category),
     style: TextButton.styleFrom(
-      minimumSize: const Size(82, 46),
-      padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 15),
+      minimumSize: const Size(68, 36),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
       backgroundColor: selected
-          ? context.scheme.primary
-          : context.scheme.surfaceContainerLowest,
+          ? context.scheme.primaryContainer
+          : Colors.transparent,
       foregroundColor: selected
-          ? context.scheme.onPrimary
+          ? context.scheme.onPrimaryContainer
           : context.scheme.onSurface,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
     ),
     child: Text(
       label,
-      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+      style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
     ),
   );
 
@@ -1368,15 +1372,16 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
                   ),
             selected: sel,
             onSelected: (_) => onTap(),
-            visualDensity: _desktopLibrary
-                ? VisualDensity.standard
-                : VisualDensity.compact,
+            visualDensity: VisualDensity.compact,
+            materialTapTargetSize: _desktopLibrary
+                ? MaterialTapTargetSize.shrinkWrap
+                : null,
             padding: _desktopLibrary
-                ? const EdgeInsets.symmetric(horizontal: 12, vertical: 10)
+                ? const EdgeInsets.symmetric(horizontal: 10, vertical: 4)
                 : null,
             shape: const StadiumBorder(),
             labelStyle: context.texts.labelMedium!.copyWith(
-              fontSize: _desktopLibrary ? 14 : null,
+              fontSize: _desktopLibrary ? 13 : null,
               fontWeight: FontWeight.w600,
               color: sel ? scheme.onPrimary : scheme.onSurfaceVariant,
             ),
@@ -1387,7 +1392,7 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
           ),
         );
     return SizedBox(
-      height: _desktopLibrary ? 58 : 48,
+      height: _desktopLibrary ? 40 : 48,
       child: Row(
         children: [
           Expanded(
@@ -2562,7 +2567,7 @@ class _TagCard extends StatelessWidget {
               ),
             ),
             Padding(
-              padding: const EdgeInsets.fromLTRB(14, 12, 14, 8),
+              padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
@@ -2583,24 +2588,37 @@ class _TagCard extends StatelessWidget {
                       color: scheme.onSurfaceVariant,
                     ),
                   ),
-                  const SizedBox(height: 4),
-                  TextButton(
-                    key: ValueKey('inspiration-detail-${entry.id}'),
-                    onPressed: onLongPress,
-                    style: TextButton.styleFrom(
-                      padding: EdgeInsets.zero,
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(6, 4, 6, 8),
+              child: TextButton(
+                key: ValueKey('inspiration-detail-${entry.id}'),
+                onPressed: onLongPress,
+                style:
+                    TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
                       minimumSize: const Size(0, 32),
                       alignment: Alignment.centerLeft,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                    ).copyWith(
+                      overlayColor: WidgetStateProperty.resolveWith((states) {
+                        if (states.contains(WidgetState.hovered)) {
+                          return scheme.primary.withValues(alpha: .12);
+                        }
+                        return null;
+                      }),
                     ),
-                    child: const Row(
-                      children: [
-                        Text('查看详情'),
-                        Spacer(),
-                        Icon(Icons.arrow_forward, size: 18),
-                      ],
-                    ),
-                  ),
-                ],
+                child: const Row(
+                  children: [
+                    Text('查看详情'),
+                    Spacer(),
+                    Icon(Icons.arrow_forward, size: 18),
+                  ],
+                ),
               ),
             ),
           ],

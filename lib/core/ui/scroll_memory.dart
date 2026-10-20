@@ -23,21 +23,43 @@ class ScrollMemory {
 
 /// 按 [memoKey] 落位、并持续记账的滚动控制器。
 ///
+/// 落位在**每次**挂上新列表时现读账本,不只构造那一下:列表被拆掉重建(换分段、
+/// 加载态换成内容、空结果换回列表)后照样回到原位。
+///
 /// 记账有个前提:**内容确实可滚动**。加载态 / 空列表的 maxScrollExtent 是 0,
 /// 这时候记账会把之前存的位置冲成 0,回来就白记了——所以这类帧一律跳过。
 class MemoScrollController extends ScrollController {
-  MemoScrollController(this.memoKey)
-    : super(initialScrollOffset: ScrollMemory.read(memoKey) ?? 0) {
+  MemoScrollController(String memoKey) : this.keyed(() => memoKey);
+
+  /// 账本 key 跟着子作用域变(灵感页的分类 + 分段、法典 id),每次读写现取。
+  /// 换作用域时让列表换 widget key 重建,新列表就从新作用域的账上落位。
+  MemoScrollController.keyed(this._keyOf, {super.onAttach, super.onDetach}) {
     addListener(_save);
   }
 
-  final String memoKey;
+  final String Function() _keyOf;
+
+  String get memoKey => _keyOf();
+
+  /// 眼下这张列表挂上时的作用域。作用域一换 [_keyOf] 当场就是新的,旧列表却要
+  /// 等下一次重建才换下;这中间它还在惯性滚,按新 key 记就把旧位置记进了新
+  /// 作用域(新作用域打开就停在旧位置,它自己的记忆也被冲掉)。
+  String? _attachedKey;
+
+  @override
+  double get initialScrollOffset => ScrollMemory.read(memoKey) ?? 0;
+
+  @override
+  void attach(ScrollPosition position) {
+    _attachedKey = _keyOf();
+    super.attach(position);
+  }
 
   void _save() {
     if (!hasClients || positions.length != 1) return;
     final p = position;
     if (!p.hasContentDimensions || p.maxScrollExtent <= 0) return;
-    ScrollMemory.write(memoKey, p.pixels);
+    ScrollMemory.write(_attachedKey ?? memoKey, p.pixels);
   }
 
   @override

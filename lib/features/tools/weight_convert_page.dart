@@ -23,6 +23,7 @@ class WeightConvertView extends ConsumerStatefulWidget {
 
 class _WeightConvertViewState extends ConsumerState<WeightConvertView> {
   final _input = TextEditingController();
+  final _resultScroll = ScrollController();
   _Dir _dir = _Dir.sd2nai;
   bool _stripLora = true;
   String? _output;
@@ -30,6 +31,7 @@ class _WeightConvertViewState extends ConsumerState<WeightConvertView> {
   @override
   void dispose() {
     _input.dispose();
+    _resultScroll.dispose();
     super.dispose();
   }
 
@@ -57,16 +59,229 @@ class _WeightConvertViewState extends ConsumerState<WeightConvertView> {
     ref.read(generateProvider.notifier).setPrompts(positive: out);
     hintSnack(context, '已导入提示词', icon: Icons.download_done);
     ref.read(shellIndexProvider.notifier).select(kTabCreate);
-    // On desktop this tool is the root of the persistent settings pane.
-    Navigator.of(context).maybePop();
+    if (!ref.read(desktopModeProvider)) Navigator.of(context).maybePop();
   }
+
+  Widget _directionSwitch() => SegmentedButton<_Dir>(
+    segments: const [
+      ButtonSegment(value: _Dir.sd2nai, label: Text('SD → NAI')),
+      ButtonSegment(value: _Dir.nai2sd, label: Text('NAI → SD')),
+    ],
+    selected: {_dir},
+    onSelectionChanged: (s) => setState(() {
+      _dir = s.first;
+      _output = null;
+    }),
+    showSelectedIcon: false,
+  );
+
+  Widget _panel({
+    required String title,
+    required Widget editor,
+    required Widget actions,
+  }) {
+    final scheme = context.scheme;
+    return Material(
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(color: scheme.outlineVariant),
+      ),
+      color: scheme.surfaceContainerLow,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(title, style: context.texts.titleSmall),
+            const SizedBox(height: 12),
+            editor,
+            const SizedBox(height: 12),
+            actions,
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _desktopView() => CallbackShortcuts(
+    bindings: {
+      const SingleActivator(LogicalKeyboardKey.enter, control: true): _convert,
+      const SingleActivator(LogicalKeyboardKey.enter, meta: true): _convert,
+    },
+    child: LayoutBuilder(
+      builder: (context, constraints) {
+        final scheme = context.scheme;
+        final scale = MediaQuery.textScalerOf(context).scale(14) / 14;
+        final height = (MediaQuery.sizeOf(context).height * .44).clamp(
+          240.0,
+          420.0,
+        );
+        final hasOutput = _output != null && _output!.isNotEmpty;
+        final input = _panel(
+          title: _dir == _Dir.sd2nai ? 'SD 提示词' : 'NAI 提示词',
+          editor: SizedBox(
+            height: height,
+            child: TextField(
+              key: const ValueKey('weight-convert-input'),
+              controller: _input,
+              expands: true,
+              minLines: null,
+              maxLines: null,
+              textAlignVertical: TextAlignVertical.top,
+              onChanged: (_) => setState(() => _output = null),
+              style: mono(context, size: 14, weight: FontWeight.w400),
+              decoration: InputDecoration(
+                hintText: _dir == _Dir.sd2nai
+                    ? '(masterpiece:1.2), (best quality), 1girl'
+                    : '1.2::masterpiece::, {best quality}, 1girl',
+                filled: true,
+                fillColor: scheme.surfaceContainerLowest,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: BorderSide.none,
+                ),
+                contentPadding: const EdgeInsets.all(14),
+              ),
+            ),
+          ),
+          actions: Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              Tooltip(
+                message: Theme.of(context).platform == TargetPlatform.macOS
+                    ? '⌘Enter 转换'
+                    : 'Ctrl+Enter 转换',
+                child: FilledButton.icon(
+                  key: const ValueKey('weight-convert-run'),
+                  onPressed: _input.text.trim().isEmpty ? null : _convert,
+                  icon: const Icon(Icons.swap_horiz, size: 18),
+                  label: const Text('转换'),
+                ),
+              ),
+              TextButton.icon(
+                onPressed: _input.text.isEmpty
+                    ? null
+                    : () => setState(() {
+                        _input.clear();
+                        _output = null;
+                      }),
+                icon: const Icon(Icons.clear, size: 18),
+                label: const Text('清空输入'),
+              ),
+            ],
+          ),
+        );
+        final output = _panel(
+          title: _dir == _Dir.sd2nai ? 'NAI 转换结果' : 'SD 转换结果',
+          editor: SizedBox(
+            height: height,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: scheme.surfaceContainerLowest,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: hasOutput
+                  ? Scrollbar(
+                      controller: _resultScroll,
+                      child: SingleChildScrollView(
+                        controller: _resultScroll,
+                        padding: const EdgeInsets.all(14),
+                        child: SelectableText.rich(
+                          key: const ValueKey('weight-convert-output'),
+                          TextSpan(
+                            style: mono(
+                              context,
+                              size: 14,
+                              weight: FontWeight.w400,
+                            ),
+                            children: _dir == _Dir.sd2nai
+                                ? _naiSpans(context, _output!)
+                                : _sdSpans(context, _output!),
+                          ),
+                        ),
+                      ),
+                    )
+                  : Center(
+                      child: Text(
+                        '转换结果会显示在这里',
+                        style: context.texts.bodySmall!.copyWith(
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+            ),
+          ),
+          actions: Wrap(
+            alignment: WrapAlignment.end,
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              if (_dir == _Dir.sd2nai)
+                FilledButton.tonalIcon(
+                  onPressed: hasOutput ? _import : null,
+                  icon: const Icon(Icons.download, size: 18),
+                  label: const Text('导入提示词'),
+                ),
+              FilledButton.icon(
+                onPressed: hasOutput ? _copy : null,
+                icon: const Icon(Icons.content_copy, size: 18),
+                label: const Text('复制结果'),
+              ),
+            ],
+          ),
+        );
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Wrap(
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: 16,
+              runSpacing: 8,
+              children: [
+                _directionSwitch(),
+                if (_dir == _Dir.sd2nai)
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Checkbox(
+                        value: _stripLora,
+                        onChanged: (value) => setState(() {
+                          _stripLora = value ?? true;
+                          _output = null;
+                        }),
+                      ),
+                      const Text('去除 LoRA'),
+                    ],
+                  ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            if (constraints.maxWidth >= 880 * scale)
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(child: input),
+                  const SizedBox(width: 16),
+                  Expanded(child: output),
+                ],
+              )
+            else ...[
+              input,
+              const SizedBox(height: 16),
+              output,
+            ],
+          ],
+        );
+      },
+    ),
+  );
 
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     final desktop = ref.watch(desktopModeProvider);
-    Widget sized({required int flex, required Widget child}) =>
-        desktop ? child : Expanded(flex: flex, child: child);
+    if (desktop) return _desktopView();
     return SafeArea(
       top: false,
       child: Padding(
@@ -76,26 +291,7 @@ class _WeightConvertViewState extends ConsumerState<WeightConvertView> {
           children: [
             Row(
               children: [
-                Expanded(
-                  child: SegmentedButton<_Dir>(
-                    segments: const [
-                      ButtonSegment(
-                        value: _Dir.sd2nai,
-                        label: Text('SD → NAI'),
-                      ),
-                      ButtonSegment(
-                        value: _Dir.nai2sd,
-                        label: Text('NAI → SD'),
-                      ),
-                    ],
-                    selected: {_dir},
-                    onSelectionChanged: (s) => setState(() {
-                      _dir = s.first;
-                      _output = null;
-                    }),
-                    showSelectedIcon: false,
-                  ),
-                ),
+                Expanded(child: _directionSwitch()),
                 if (_dir == _Dir.sd2nai) ...[
                   const SizedBox(width: 4),
                   Checkbox(
@@ -108,13 +304,12 @@ class _WeightConvertViewState extends ConsumerState<WeightConvertView> {
               ],
             ),
             const SizedBox(height: 10),
-            sized(
+            Expanded(
               flex: 2,
               child: TextField(
                 controller: _input,
-                expands: !desktop,
-                minLines: desktop ? 8 : null,
-                maxLines: desktop ? 14 : null,
+                expands: true,
+                maxLines: null,
                 textAlignVertical: TextAlignVertical.top,
                 style: mono(context, size: 13, weight: FontWeight.w400),
                 decoration: InputDecoration(
@@ -143,7 +338,7 @@ class _WeightConvertViewState extends ConsumerState<WeightConvertView> {
             ),
             if (_output != null) ...[
               const SizedBox(height: 12),
-              sized(
+              Expanded(
                 flex: 3,
                 child: Container(
                   width: double.infinity,

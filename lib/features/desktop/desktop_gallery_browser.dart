@@ -12,6 +12,7 @@ import '../gallery/gallery_state.dart';
 import '../gallery/widgets/gallery_date_sheet.dart';
 import '../gallery/widgets/gallery_grid_sheet.dart';
 import '../gallery/widgets/gallery_output_folder_button.dart';
+import '../gallery/widgets/gallery_toolbar_button.dart';
 import '../generate/generation_controller.dart';
 import 'desktop_album_menu.dart';
 import 'desktop_library_state.dart';
@@ -219,36 +220,21 @@ class _DesktopGalleryBrowserState extends ConsumerState<DesktopGalleryBrowser>
                       children: [
                         SizedBox(
                           key: _dateAnchor,
-                          child: OutlinedButton.icon(
+                          child: GalleryToolbarButton(
                             key: const ValueKey('desktop-gallery-date'),
                             onPressed: _pickDate,
-                            icon: const Icon(
-                              Icons.calendar_month_outlined,
-                              size: 18,
-                            ),
-                            label: Text(
-                              _date.active ? _date.label(now) : '全部时间',
-                            ),
+                            icon: Icons.calendar_month_outlined,
+                            label: _date.active ? _date.label(now) : '全部时间',
+                            active: _date.active,
+                            dropdown: true,
                           ),
                         ),
                         const GalleryOutputFolderButton(),
-                        TextButton.icon(
+                        GalleryToolbarButton(
                           key: const ValueKey('desktop-gallery-create'),
-                          style: TextButton.styleFrom(
-                            backgroundColor: context.scheme.primary.withValues(
-                              alpha: .08,
-                            ),
-                            shape: const StadiumBorder(),
-                            padding: const EdgeInsets.symmetric(horizontal: 16),
-                            minimumSize: const Size(0, 36),
-                            visualDensity: VisualDensity.compact,
-                          ),
                           onPressed: _createAlbum,
-                          icon: const Icon(
-                            Icons.create_new_folder_outlined,
-                            size: 18,
-                          ),
-                          label: const Text('新建图库'),
+                          icon: Icons.create_new_folder_outlined,
+                          label: '新建图库',
                         ),
                       ],
                     ),

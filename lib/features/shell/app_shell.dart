@@ -17,6 +17,7 @@ import '../assistant/assistant_state.dart';
 import '../desktop/desktop_workspace.dart';
 import '../desktop/desktop_gallery_page.dart';
 import '../desktop/desktop_profile_page.dart';
+import '../desktop/desktop_tools_page.dart';
 import '../gallery/gallery_page.dart';
 import '../gallery/gallery_state.dart';
 import '../gallery/albums/album_models.dart';
@@ -46,9 +47,7 @@ class AppShell extends ConsumerStatefulWidget {
 }
 
 class _AppShellState extends ConsumerState<AppShell> {
-  late final PageController _pc = PageController(
-    initialPage: ref.read(shellIndexProvider),
-  );
+  late final PageController _pc;
 
   static const _pages = [
     GeneratePage(),
@@ -58,19 +57,15 @@ class _AppShellState extends ConsumerState<AppShell> {
     ProfilePage(),
   ];
 
-  static const _desktopPages = [
-    DesktopWorkspace(),
-    DesktopGalleryPage(),
-    AssistantPage(),
-    InspirationPage(),
-    DesktopProfilePage(),
-  ];
+  final _toolsKey = GlobalKey(debugLabel: 'Shared desktop tools');
+  final _desktopVisited = <int>{kTabCreate};
 
   Timer? _updateTimer;
 
   @override
   void initState() {
     super.initState();
+    _pc = PageController(initialPage: ref.read(shellIndexProvider));
     // 预热鉴权/后端配置(懒加载 AsyncNotifier 的 storage 首读在此触发,
     // 否则冷启动后立刻点「生成」会在 loading 态被误判成未授权/没 token)。
     ref.read(tokenProvider);
@@ -132,18 +127,26 @@ class _AppShellState extends ConsumerState<AppShell> {
   Widget build(BuildContext context) {
     final index = ref.watch(shellIndexProvider);
     final desktop = ref.watch(desktopModeProvider);
-    // 底栏可以藏掉「AI」那一格(外观设置里)。**页面列表不跟着变**:
-    // PageView 五页照旧,跨页跳转用的还是 kTab* 那几个逻辑下标,
+    // 导航入口可配置，页面的逻辑下标保持固定：
+    // 移动端仍为五页，桌面工具箱追加为第六页，跨页跳转继续使用 kTab*。
     // 只在画底栏和读回点击时做一次映射 —— 把下标也跟着挪的话,
     // 「生成完跳图库」「缺 token 跳我的」这些调用点全得判一遍开关。
     final showAi = ref.watch(
       themeSettingsProvider.select((t) => t.showAssistant),
     );
+    final showTools =
+        desktop && ref.watch(themeSettingsProvider.select((t) => t.showTools));
+    if (desktop) {
+      _desktopVisited.add(index);
+      if (_toolsKey.currentState != null) _desktopVisited.add(kTabTools);
+      if (!showTools && index == kTabTools) _desktopVisited.add(kTabProfile);
+    }
     final tabs = [
       kTabCreate,
       kTabGallery,
       if (showAi) kTabAssistant,
       kTabInspiration,
+      if (showTools) kTabTools,
       kTabProfile,
     ];
     // 正停在 AI 页时被关掉(例如从别处恢复的状态):退回创作页,
@@ -153,9 +156,22 @@ class _AppShellState extends ConsumerState<AppShell> {
         if (mounted) ref.read(shellIndexProvider.notifier).select(kTabCreate);
       });
     }
+    if (desktop && !showTools && index == kTabTools) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted &&
+            !ref.read(themeSettingsProvider).showTools &&
+            ref.read(shellIndexProvider) == kTabTools) {
+          ref.read(shellIndexProvider.notifier).select(kTabProfile);
+        }
+      });
+    }
 
     // 索引变化(导航点按 / 生成后跳图库)→ 滑到对应页。
     ref.listen<int>(shellIndexProvider, (prev, next) {
+      if (desktop) {
+        FocusManager.instance.primaryFocus?.unfocus();
+        return;
+      }
       if (!_pc.hasClients) return;
       // 比精确页码,不比 round 过的:切页动画途中改点别的格,若途经页 round 出来
       // 恰好是新目标,会被当成「已经到了」,页面却继续滑向原目标、底栏对不上。
@@ -166,15 +182,11 @@ class _AppShellState extends ConsumerState<AppShell> {
         // (灵感页搜索框最容易中招),之后**在任何一页**切页都会把软键盘重新
         // 顶出来一下。放在动画开始前,不是切完再收 —— 否则过渡里照样闪一下。
         FocusManager.instance.primaryFocus?.unfocus();
-        if (desktop) {
-          _pc.jumpToPage(next);
-        } else {
-          _pc.animateToPage(
-            next,
-            duration: Motion.medium,
-            curve: Motion.emphasized,
-          );
-        }
+        _pc.animateToPage(
+          next,
+          duration: Motion.medium,
+          curve: Motion.emphasized,
+        );
       }
     });
 
@@ -242,13 +254,29 @@ class _AppShellState extends ConsumerState<AppShell> {
     });
 
     if (desktop) {
-      const labels = ['创作', '图库', 'AI 助手', '灵感', '我的'];
+      // Keep visited panes mounted so the tool navigator can move between the
+      // navigation and settings in the same frame, including its detail routes.
+      final pages = [
+        const DesktopWorkspace(),
+        const DesktopGalleryPage(),
+        const AssistantPage(),
+        const InspirationPage(),
+        DesktopProfilePage(
+          toolsKey: _toolsKey,
+          openTools: !showTools && index == kTabTools,
+        ),
+        showTools
+            ? DesktopToolsPage(key: _toolsKey, active: index == kTabTools)
+            : const SizedBox.shrink(),
+      ];
+      const labels = ['创作', '图库', 'AI 助手', '灵感', '我的', '工具箱'];
       const icons = [
         Icons.draw_outlined,
         Icons.photo_library_outlined,
         Icons.auto_awesome_outlined,
         Icons.lightbulb_outline,
         Icons.person_outline,
+        Icons.handyman_outlined,
       ];
       return Scaffold(
         body: Column(
@@ -256,7 +284,7 @@ class _AppShellState extends ConsumerState<AppShell> {
             Material(
               color: context.scheme.surfaceContainerLow,
               child: SizedBox(
-                height: 52,
+                height: 60,
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 14),
                   child: Row(
@@ -275,37 +303,56 @@ class _AppShellState extends ConsumerState<AppShell> {
                         ),
                       ),
                       const SizedBox(width: 24),
-                      for (final tab in tabs)
-                        Padding(
-                          padding: const EdgeInsets.only(right: 5),
-                          child: TextButton.icon(
-                            key: ValueKey('desktop-nav-$tab'),
-                            onPressed: () {
-                              if (tab == kTabGallery) {
-                                openDesktopGallery(ref);
-                              } else {
-                                ref
-                                    .read(shellIndexProvider.notifier)
-                                    .select(tab);
-                              }
-                              if (tab == kTabCreate) _onEnterCreate();
-                            },
-                            style: TextButton.styleFrom(
-                              backgroundColor: index == tab
-                                  ? context.scheme.primaryContainer
-                                  : null,
-                              foregroundColor: index == tab
-                                  ? context.scheme.primary
-                                  : context.scheme.onSurfaceVariant,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                            ),
-                            icon: Icon(icons[tab], size: 17),
-                            label: Text(labels[tab]),
+                      Expanded(
+                        child: SingleChildScrollView(
+                          scrollDirection: Axis.horizontal,
+                          primary: false,
+                          child: Row(
+                            children: [
+                              for (final tab in tabs)
+                                Padding(
+                                  padding: const EdgeInsets.only(right: 5),
+                                  child: TextButton.icon(
+                                    key: ValueKey('desktop-nav-$tab'),
+                                    onPressed: () {
+                                      if (tab == kTabGallery) {
+                                        openDesktopGallery(ref);
+                                      } else {
+                                        ref
+                                            .read(shellIndexProvider.notifier)
+                                            .select(tab);
+                                      }
+                                      if (tab == kTabCreate) _onEnterCreate();
+                                    },
+                                    style: TextButton.styleFrom(
+                                      minimumSize: const Size(0, 40),
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 16,
+                                        vertical: 10,
+                                      ),
+                                      visualDensity: VisualDensity.standard,
+                                      backgroundColor: index == tab
+                                          ? context.scheme.primaryContainer
+                                          : null,
+                                      foregroundColor: index == tab
+                                          ? context.scheme.primary
+                                          : context.scheme.onSurfaceVariant,
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(8),
+                                      ),
+                                    ),
+                                    icon: Icon(icons[tab], size: 20),
+                                    label: Text(
+                                      labels[tab],
+                                      maxLines: 1,
+                                      softWrap: false,
+                                    ),
+                                  ),
+                                ),
+                            ],
                           ),
                         ),
-                      const Spacer(),
+                      ),
                       Text(
                         'Windows',
                         style: TextStyle(
@@ -320,10 +367,21 @@ class _AppShellState extends ConsumerState<AppShell> {
             ),
             const Divider(height: 1),
             Expanded(
-              child: PageView(
-                controller: _pc,
-                physics: const NeverScrollableScrollPhysics(),
-                children: _desktopPages,
+              child: IndexedStack(
+                index: index,
+                sizing: StackFit.expand,
+                children: [
+                  for (var i = 0; i < pages.length; i++)
+                    _desktopVisited.contains(i)
+                        ? TickerMode(
+                            enabled: index == i,
+                            child: ExcludeFocus(
+                              excluding: index != i,
+                              child: pages[i],
+                            ),
+                          )
+                        : const SizedBox.shrink(),
+                ],
               ),
             ),
           ],

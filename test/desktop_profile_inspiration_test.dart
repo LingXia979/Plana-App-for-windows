@@ -10,6 +10,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:plana_app/core/platform/desktop.dart';
 import 'package:plana_app/core/store/app_stores.dart';
 import 'package:plana_app/core/theme/app_theme.dart';
+import 'package:plana_app/core/theme/theme_settings.dart';
 import 'package:plana_app/features/desktop/desktop_profile_page.dart';
 import 'package:plana_app/features/generate/generate_state.dart';
 import 'package:plana_app/features/inspiration/tag_editor_page.dart';
@@ -192,6 +193,9 @@ void main() {
   testWidgets(
     'profile keeps its sidebar, nested routes and tool drafts across categories and resize',
     (tester) async {
+      c
+          .read(themeSettingsProvider.notifier)
+          .patch((settings) => settings.copyWith(showTools: false));
       c.read(shellIndexProvider.notifier).select(kTabProfile);
       await mount(tester, const DesktopProfilePage());
       expect(find.byType(AccountPage), findsOneWidget);
@@ -243,7 +247,8 @@ void main() {
         tester.widget<TextField>(input).controller!.text,
         '(cat ears:1.2), solo',
       );
-      await tester.tap(find.text('转换'));
+      await tester.ensureVisible(key('weight-convert-run'));
+      await tester.tap(key('weight-convert-run'));
       await tester.pumpAndSettle();
       await tester.ensureVisible(find.text('导入提示词'));
       await tester.tap(find.text('导入提示词'));

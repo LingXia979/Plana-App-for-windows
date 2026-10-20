@@ -368,7 +368,12 @@ void main() {
       expect((create.center.dy - folder.center.dy).abs(), lessThan(3));
       expect(
         tester
-            .widget<TextButton>(key('desktop-gallery-create'))
+            .widget<TextButton>(
+              find.descendant(
+                of: key('desktop-gallery-create'),
+                matching: find.byType(TextButton),
+              ),
+            )
             .style!
             .shape!
             .resolve({}),

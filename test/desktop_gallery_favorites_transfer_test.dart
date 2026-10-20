@@ -10,6 +10,7 @@ import 'package:plana_app/core/platform/desktop.dart';
 import 'package:plana_app/core/store/app_stores.dart';
 import 'package:plana_app/core/store/ui_prefs.dart';
 import 'package:plana_app/core/theme/app_theme.dart';
+import 'package:plana_app/core/theme/app_text_scale.dart';
 import 'package:plana_app/features/desktop/desktop_gallery_browser.dart';
 import 'package:plana_app/features/desktop/desktop_library_state.dart';
 import 'package:plana_app/features/gallery/albums/album_state.dart';
@@ -56,7 +57,11 @@ void main() {
     if (!disposed) container.dispose();
   });
 
-  Future<void> mount(WidgetTester tester, bool isQuick) async {
+  Future<void> mount(
+    WidgetTester tester,
+    bool isQuick, {
+    double textScale = 1,
+  }) async {
     quick = isQuick;
     tester.view.physicalSize = const Size(1200, 860);
     tester.view.devicePixelRatio = 1;
@@ -88,6 +93,8 @@ void main() {
         container: container,
         child: MaterialApp(
           theme: AppTheme.light(),
+          builder: (context, child) =>
+              AppTextScale(factor: textScale, child: child!),
           home: Scaffold(
             body: quick
                 ? Builder(
@@ -115,7 +122,9 @@ void main() {
   }
 
   Future<void> until(WidgetTester tester, bool Function() ready) async {
-    for (var i = 0; i < 200 && !ready(); i++) {
+    // Copying originals and producing previews may exceed two seconds when
+    // other test files are also using the disk and image decoder.
+    for (var i = 0; i < 1000 && !ready(); i++) {
       await tester.runAsync(
         () => Future<void>.delayed(const Duration(milliseconds: 10)),
       );
@@ -166,6 +175,29 @@ void main() {
 
   for (final isQuick in [true, false]) {
     final surface = isQuick ? 'quick' : 'full';
+    testWidgets(
+      '$surface enlarged fonts wrap filters and the favorite button padding is clickable',
+      (tester) async {
+        await mount(tester, isQuick, textScale: 1.4);
+        tester.view.physicalSize = const Size(640, 720);
+        await tester.pumpAndSettle();
+        for (final control in [
+          'desktop-gallery-date',
+          'desktop-gallery-folder',
+          'gallery-favorites-filter',
+        ]) {
+          expect(key(control).hitTestable(), findsOneWidget);
+        }
+        final bounds = tester.getRect(key('gallery-favorites-filter'));
+        await tester.tapAt(bounds.centerRight - const Offset(5, 0));
+        await tester.pumpAndSettle();
+        expect(find.byType(GalleryImageTile), findsNothing);
+        await tester.tap(key('gallery-favorites-filter'));
+        await tester.pumpAndSettle();
+        expect(find.byType(GalleryImageTile), findsWidgets);
+        await finish(tester);
+      },
+    );
     for (final kind in [PointerDeviceKind.mouse, PointerDeviceKind.touch]) {
       testWidgets(
         '$surface first ${kind.name} selection immediately sweeps, retracts and releases',

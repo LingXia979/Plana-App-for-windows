@@ -17,15 +17,24 @@ class ToolsPage extends ConsumerStatefulWidget {
 }
 
 class _ToolsPageState extends ConsumerState<ToolsPage> {
-  late int _tab = ref.read(uiPrefsProvider).toolsTab;
+  late int _tab = ref.read(uiPrefsProvider).toolsTab.clamp(0, 1);
+  final _scroll = ScrollController();
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     final desktop = ref.watch(desktopModeProvider);
     final tabs = Padding(
-      padding: const EdgeInsets.fromLTRB(14, 4, 14, 10),
+      padding: desktop
+          ? const EdgeInsets.only(bottom: 20)
+          : const EdgeInsets.fromLTRB(14, 4, 14, 10),
       child: SizedBox(
-        width: double.infinity,
+        width: desktop ? null : double.infinity,
         child: SegmentedButton<int>(
           segments: const [
             ButtonSegment(
@@ -41,6 +50,7 @@ class _ToolsPageState extends ConsumerState<ToolsPage> {
           ],
           selected: {_tab},
           onSelectionChanged: (s) {
+            FocusManager.instance.primaryFocus?.unfocus();
             ref
                 .read(uiPrefsProvider.notifier)
                 .patch((p) => p.copyWith(toolsTab: s.first));
@@ -54,17 +64,36 @@ class _ToolsPageState extends ConsumerState<ToolsPage> {
     return SettingsScaffold(
       appBar: AppBar(title: const Text('工具箱')),
       body: desktop
-          ? SingleChildScrollView(
-              key: const PageStorageKey('desktop-tools-scroll'),
-              padding: const EdgeInsets.fromLTRB(14, 8, 14, 24),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  const SettingsPageHeader(),
-                  tabs,
-                  for (var i = 0; i < views.length; i++)
-                    Offstage(offstage: _tab != i, child: views[i]),
-                ],
+          ? Scrollbar(
+              controller: _scroll,
+              child: SingleChildScrollView(
+                key: const PageStorageKey('desktop-tools-scroll'),
+                controller: _scroll,
+                padding: const EdgeInsets.all(24),
+                child: Align(
+                  alignment: Alignment.topCenter,
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 1440),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        const SettingsPageHeader(),
+                        Align(alignment: Alignment.centerLeft, child: tabs),
+                        for (var i = 0; i < views.length; i++)
+                          Offstage(
+                            offstage: _tab != i,
+                            child: TickerMode(
+                              enabled: _tab == i,
+                              child: ExcludeFocus(
+                                excluding: _tab != i,
+                                child: views[i],
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
               ),
             )
           : Column(

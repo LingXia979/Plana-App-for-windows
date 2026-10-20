@@ -69,6 +69,108 @@ class AppearancePage extends ConsumerWidget {
             ],
           ),
           const SizedBox(height: 16),
+          if (desktop) ...[
+            const SettingsLabel('全局字体大小'),
+            SettingsCard(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Wrap(
+                        spacing: 12,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          Text(
+                            '${(ts.textScale * 100).round()}%',
+                            key: const ValueKey('appearance-text-scale-value'),
+                            style: context.texts.titleLarge,
+                          ),
+                          TextButton(
+                            key: const ValueKey('appearance-text-scale-reset'),
+                            onPressed: ts.textScale == 1
+                                ? null
+                                : () => notifier.patch(
+                                    (x) => x.copyWith(textScale: 1),
+                                  ),
+                            child: const Text('恢复默认'),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        '即时调整整个应用的文字大小，100% 为默认',
+                        style: context.texts.bodySmall!.copyWith(
+                          color: context.scheme.onSurfaceVariant,
+                        ),
+                      ),
+                      Slider(
+                        key: const ValueKey('appearance-text-scale'),
+                        value: ts.textScale,
+                        min: kMinAppTextScale,
+                        max: kMaxAppTextScale,
+                        divisions: 12,
+                        label: '${(ts.textScale * 100).round()}%',
+                        semanticFormatterCallback: (value) =>
+                            '${(value * 100).round()}%',
+                        onChanged: (value) =>
+                            notifier.patch((x) => x.copyWith(textScale: value)),
+                      ),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text('80%', style: context.texts.bodySmall),
+                          Text('140%', style: context.texts.bodySmall),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            const SettingsLabel('页面对齐方式'),
+            SettingsCard(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(
+                        '调整「我的」页面右侧内容区域的水平位置',
+                        style: context.texts.bodySmall!.copyWith(
+                          color: context.scheme.onSurfaceVariant,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      SegmentedButton<PageAlignment>(
+                        segments: const [
+                          ButtonSegment(
+                            value: PageAlignment.center,
+                            label: Text('居中'),
+                            icon: Icon(Icons.align_horizontal_center),
+                          ),
+                          ButtonSegment(
+                            value: PageAlignment.left,
+                            label: Text('居左'),
+                            icon: Icon(Icons.align_horizontal_left),
+                          ),
+                        ],
+                        selected: {ts.pageAlignment},
+                        onSelectionChanged: (s) => notifier.patch(
+                          (x) => x.copyWith(pageAlignment: s.first),
+                        ),
+                        showSelectedIcon: false,
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+          ],
           SettingsLabel(desktop ? '导航栏' : '底部导航'),
           SettingsCard(
             children: [
@@ -80,20 +182,32 @@ class AppearancePage extends ConsumerWidget {
                 onChanged: (v) =>
                     notifier.patch((x) => x.copyWith(showAssistant: v)),
               ),
+              if (desktop)
+                _SwitchRow(
+                  icon: Icons.handyman_outlined,
+                  title: '显示工具箱',
+                  subtitle: '开启时在顶部导航显示，关闭后移回「我的」',
+                  value: ts.showTools,
+                  onChanged: (v) =>
+                      notifier.patch((x) => x.copyWith(showTools: v)),
+                ),
             ],
           ),
-          const SizedBox(height: 16),
-          const SettingsLabel('触感'),
-          SettingsCard(
-            children: [
-              _SwitchRow(
-                icon: Icons.vibration,
-                title: '振动反馈',
-                value: ts.haptics,
-                onChanged: (v) => notifier.patch((x) => x.copyWith(haptics: v)),
-              ),
-            ],
-          ),
+          if (!desktop) ...[
+            const SizedBox(height: 16),
+            const SettingsLabel('触感'),
+            SettingsCard(
+              children: [
+                _SwitchRow(
+                  icon: Icons.vibration,
+                  title: '振动反馈',
+                  value: ts.haptics,
+                  onChanged: (v) =>
+                      notifier.patch((x) => x.copyWith(haptics: v)),
+                ),
+              ],
+            ),
+          ],
         ],
       ),
     );

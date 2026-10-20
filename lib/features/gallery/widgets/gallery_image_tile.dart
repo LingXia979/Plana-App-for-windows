@@ -104,8 +104,8 @@ class GalleryImageTile extends StatelessWidget {
                   fitted,
                   Offset.zero & size,
                 );
-                // The check marker belongs to the tile. Image badges follow
-                // the fitted pixels, moving below the marker only if needed.
+                // Selection and favorite controls belong to the tile. Image
+                // badges follow the pixels, moving below selection if needed.
                 final badgeTop =
                     selecting && imageRect.left < 22 && imageRect.top < 22
                     ? 33 - imageRect.top
@@ -139,53 +139,6 @@ class GalleryImageTile extends StatelessWidget {
                                       fit: BoxFit.scaleDown,
                                       child: ResultBadgeChip(
                                         badge: result.badge,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              if (onFavorite != null)
-                                Positioned(
-                                  top: 4,
-                                  right: 4,
-                                  child: GestureDetector(
-                                    // A drag starting on the star must not
-                                    // turn into a range selection behind it.
-                                    onPanUpdate: (_) {},
-                                    child: Material(
-                                      color: Colors.black.withValues(
-                                        alpha: .38,
-                                      ),
-                                      shape: const CircleBorder(),
-                                      child: GalleryTileGestures(
-                                        key: ValueKey(
-                                          'gallery-favorite-${result.id}',
-                                        ),
-                                        duration: gallerySelectionHold,
-                                        onTap: onFavorite!,
-                                        onLongPress: () {},
-                                        onSecondaryTap: () {},
-                                        onMouseDragStart: () {},
-                                        child: IconButton(
-                                          tooltip: result.favorite
-                                              ? '取消收藏'
-                                              : '收藏',
-                                          onPressed: onFavorite,
-                                          constraints:
-                                              const BoxConstraints.tightFor(
-                                                width: 30,
-                                                height: 30,
-                                              ),
-                                          padding: const EdgeInsets.all(5),
-                                          icon: Icon(
-                                            result.favorite
-                                                ? Icons.star
-                                                : Icons.star_border,
-                                            size: 20,
-                                            color: result.favorite
-                                                ? Colors.amber
-                                                : Colors.white,
-                                          ),
-                                        ),
                                       ),
                                     ),
                                   ),
@@ -238,6 +191,50 @@ class GalleryImageTile extends StatelessWidget {
                           ),
                         ),
                       ),
+                      if (onFavorite != null)
+                        Positioned(
+                          top: 4,
+                          right: 4,
+                          child: GestureDetector(
+                            // A drag starting on the star must not turn into
+                            // a range selection behind it.
+                            onPanUpdate: (_) {},
+                            child: Material(
+                              color: scheme.surfaceContainerHigh.withValues(
+                                alpha: .95,
+                              ),
+                              shape: const CircleBorder(),
+                              child: GalleryTileGestures(
+                                key: ValueKey('gallery-favorite-${result.id}'),
+                                duration: gallerySelectionHold,
+                                onTap: onFavorite!,
+                                onLongPress: () {},
+                                onSecondaryTap: () {},
+                                onMouseDragStart: () {},
+                                child: IconButton(
+                                  tooltip: result.favorite ? '取消收藏' : '收藏',
+                                  onPressed: onFavorite,
+                                  constraints: const BoxConstraints.tightFor(
+                                    width: 30,
+                                    height: 30,
+                                  ),
+                                  padding: const EdgeInsets.all(5),
+                                  icon: Icon(
+                                    result.favorite
+                                        ? Icons.star_rounded
+                                        : Icons.star_border_rounded,
+                                    size: 20,
+                                    color: result.favorite
+                                        ? (scheme.brightness == Brightness.dark
+                                              ? Colors.amber.shade300
+                                              : Colors.amber.shade800)
+                                        : scheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
                       if (selecting)
                         Positioned(
                           left: 5,

@@ -1,11 +1,12 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-/// 底部 tab 索引常量(跨页跳转统一引用,别再写裸数字)。
+/// 页面逻辑索引；入口顺序由导航栏映射，既有索引不随入口增减而移动。
 const kTabCreate = 0;
 const kTabGallery = 1;
 const kTabAssistant = 2;
 const kTabInspiration = 3;
 const kTabProfile = 4;
+const kTabTools = 5;
 
 /// 当前底部 tab 索引。
 /// 独立成 Provider,好让「生成完成跳图库」「缺 token 跳我的」等跨页切换。

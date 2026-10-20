@@ -13,10 +13,18 @@ void main() {
   var taps = 0;
   var holds = 0;
   var secondary = 0;
+  var favorites = 0;
   final tile = find.byKey(const ValueKey('selection-tile'));
 
-  Future<void> mount(WidgetTester tester) async {
-    taps = holds = secondary = 0;
+  Future<void> mount(
+    WidgetTester tester, {
+    int width = 128,
+    int height = 128,
+    double dimension = 128,
+    bool showFavorite = false,
+    BoxFit fit = BoxFit.cover,
+  }) async {
+    taps = holds = secondary = favorites = 0;
     scroll = ScrollController();
     addTearDown(scroll.dispose);
     await tester.pumpWidget(
@@ -34,13 +42,13 @@ void main() {
                     Align(
                       alignment: Alignment.topLeft,
                       child: SizedBox.square(
-                        dimension: 128,
+                        dimension: dimension,
                         child: GalleryImageTile(
                           key: const ValueKey('selection-tile'),
                           result: ResultImage(
                             id: 'gesture-image',
-                            width: 128,
-                            height: 128,
+                            width: width,
+                            height: height,
                             seed: 1,
                             bytes: File(
                               'assets/app_icon.png',
@@ -50,6 +58,8 @@ void main() {
                           onTap: () => taps++,
                           onLongPress: (_) => holds++,
                           onSecondaryTap: (_) => secondary++,
+                          onFavorite: showFavorite ? () => favorites++ : null,
+                          fit: fit,
                         ),
                       ),
                     ),
@@ -70,6 +80,53 @@ void main() {
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
   }
+
+  testWidgets('favorite stays at the tile corner across image proportions', (
+    tester,
+  ) async {
+    Rect? anchor;
+    for (final (width, height) in [
+      (512, 256),
+      (256, 512),
+      (128, 512),
+      (256, 256),
+    ]) {
+      await mount(
+        tester,
+        width: width,
+        height: height,
+        dimension: 256,
+        showFavorite: true,
+        fit: BoxFit.contain,
+      );
+      final favorite = find.byKey(
+        const ValueKey('gallery-favorite-gesture-image'),
+      );
+      final tileRect = tester.getRect(tile);
+      final favoriteRect = tester.getRect(favorite);
+      final imageRect = tester.getRect(
+        find.byKey(const ValueKey('gallery-image-content-gesture-image')),
+      );
+      final relative = favoriteRect.shift(-tileRect.topLeft);
+      anchor ??= relative;
+      expect(relative, anchor, reason: '$width × $height');
+      expect(tileRect.contains(favoriteRect.topLeft), isTrue);
+      expect(tileRect.contains(favoriteRect.bottomRight), isTrue);
+      if (width != height) {
+        expect(favoriteRect.overlaps(imageRect), isFalse);
+      }
+      await tester.tap(favorite);
+      await tester.pumpAndSettle();
+      expect(favorites, 1);
+      expect(taps, 0);
+      expect(holds, 0);
+      await tester.tap(tile);
+      await tester.pumpAndSettle();
+      expect(taps, 1);
+      expect(favorites, 1);
+      await finish(tester);
+    }
+  });
 
   testWidgets('a short primary click taps; a held right click never selects', (
     tester,

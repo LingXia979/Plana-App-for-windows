@@ -418,31 +418,48 @@ class _DesktopMetadataProcessorState
       key: const ValueKey('desktop-metadata-tool'),
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text('图片元数据', style: context.texts.titleLarge),
-        const SizedBox(height: 6),
-        Text('选择图片 → 读取元数据 → 编辑参数 → 导出图片', style: context.texts.bodySmall),
-        const SizedBox(height: 16),
-        Align(
-          alignment: Alignment.centerLeft,
-          child: SegmentedButton<int>(
-            segments: const [
-              ButtonSegment(
-                value: 0,
-                icon: Icon(Icons.image_outlined, size: 18),
-                label: Text('单张处理'),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final description = Text(
+              '读取与编辑生成参数，导出处理后的图片',
+              style: context.texts.bodySmall!.copyWith(
+                color: context.scheme.onSurfaceVariant,
               ),
-              ButtonSegment(
-                value: 1,
-                icon: Icon(Icons.photo_library_outlined, size: 18),
-                label: Text('批量处理'),
-              ),
-            ],
-            selected: {_tab},
-            showSelectedIcon: false,
-            onSelectionChanged: _busy
-                ? null
-                : (s) => setState(() => _tab = s.first),
-          ),
+            );
+            final modes = SegmentedButton<int>(
+              segments: const [
+                ButtonSegment(
+                  value: 0,
+                  icon: Icon(Icons.image_outlined, size: 18),
+                  label: Text('单张处理'),
+                ),
+                ButtonSegment(
+                  value: 1,
+                  icon: Icon(Icons.photo_library_outlined, size: 18),
+                  label: Text('批量处理'),
+                ),
+              ],
+              selected: {_tab},
+              showSelectedIcon: false,
+              onSelectionChanged: _busy
+                  ? null
+                  : (s) => setState(() => _tab = s.first),
+            );
+            final scale = MediaQuery.textScalerOf(context).scale(14) / 14;
+            if (constraints.maxWidth >= 760 * scale) {
+              return Row(
+                children: [
+                  Expanded(child: description),
+                  const SizedBox(width: 16),
+                  modes,
+                ],
+              );
+            }
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [description, const SizedBox(height: 12), modes],
+            );
+          },
         ),
         const SizedBox(height: 16),
         if (_loading) const LinearProgressIndicator(),

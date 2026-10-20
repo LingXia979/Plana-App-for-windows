@@ -12,12 +12,19 @@ import 'package:plana_app/core/store/app_stores.dart';
 import 'package:plana_app/core/theme/app_theme.dart';
 import 'package:plana_app/features/generate/generate_state.dart';
 import 'package:plana_app/features/editor/data/tag_translation_service.dart';
+import 'package:plana_app/features/inspiration/codex/codex_models.dart';
+import 'package:plana_app/features/inspiration/codex/codex_providers.dart';
 import 'package:plana_app/features/inspiration/inspiration_page.dart';
 import 'package:plana_app/features/inspiration/public_tags.dart';
 import 'package:plana_app/features/inspiration/tag_library.dart';
 import 'package:plana_app/features/inspiration/tag_models.dart';
 
 import 'support/desktop_capture.dart';
+
+class _Acknowledged extends CodexIntro {
+  @override
+  bool? build() => true;
+}
 
 void main() {
   final binding = TestWidgetsFlutterBinding.ensureInitialized();
@@ -87,6 +94,24 @@ void main() {
       overrides: [
         appStoresProvider.overrideWithValue(stores),
         desktopModeProvider.overrideWithValue(true),
+        codexIntroProvider.overrideWith(_Acknowledged.new),
+        codexIndexProvider.overrideWith(
+          (ref) async => const [
+            CodexMeta(id: 'styles', type: CodexType.string, title: '画风词典'),
+          ],
+        ),
+        codexMediaProvider.overrideWith((ref) async => CodexMedia.fallback),
+        codexDataProvider.overrideWith(
+          (ref, id) async => const CodexData(
+            meta: CodexMeta(
+              id: 'styles',
+              type: CodexType.string,
+              title: '画风词典',
+            ),
+            entries: [],
+          ),
+        ),
+        codexTagZhProvider.overrideWith((ref, id) async => null),
         publicTagsProvider.overrideWith(
           (ref, cat) async => cat == TagCategory.character ? [publicEntry] : [],
         ),
@@ -196,6 +221,42 @@ void main() {
       await finish(tester);
     },
   );
+
+  testWidgets('compact codex toolbar preserves tag search and filtering', (
+    tester,
+  ) async {
+    await mount(tester);
+    final search = key('tag-search-character');
+    await tester.enterText(search, '别名0');
+    await tester.tap(find.widgetWithText(ChoiceChip, '白发'));
+    await tester.pumpAndSettle();
+    await tester.tap(key('inspiration-category-codex'));
+    await tester.pumpAndSettle();
+    final button = key('codex-picker-button');
+    expect(tester.getSize(button).width, lessThan(200));
+    final anchor = tester.getRect(button);
+    await tester.tap(button);
+    await tester.pumpAndSettle();
+    expect(
+      tester.getRect(key('desktop-popover')).top,
+      closeTo(anchor.bottom + 8, 1),
+    );
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    tester.view.physicalSize = const Size(740, 700);
+    await tester.pumpAndSettle();
+    expect(tester.getSize(button).width, lessThan(200));
+    await tester.tap(key('inspiration-category-character'));
+    await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(search).controller!.text, '别名0');
+    expect(
+      tester.widget<ChoiceChip>(find.widgetWithText(ChoiceChip, '白发')).selected,
+      isTrue,
+    );
+    expect(key('inspiration-card-char0'), findsOneWidget);
+    expect(key('inspiration-card-char1'), findsNothing);
+    await finish(tester);
+  });
 
   testWidgets(
     'new and edit actions open one dismissible editor; selection still imports to creation',

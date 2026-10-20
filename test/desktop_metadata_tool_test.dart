@@ -107,8 +107,11 @@ void main() {
   final capture = GlobalKey();
   Finder key(String name) => find.byKey(ValueKey(name));
 
-  Future<void> mount(WidgetTester tester) async {
-    tester.view.physicalSize = const Size(1120, 1000);
+  Future<void> mount(
+    WidgetTester tester, {
+    Size size = const Size(1120, 1000),
+  }) async {
+    tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
@@ -189,7 +192,8 @@ void main() {
           '${input.path}/image${i.toString().padLeft(2, '0')}.png',
         ).writeAsBytesSync(picker.bytes);
       }
-      await mount(tester);
+      // The compact header leaves this page unscrollable in taller windows.
+      await mount(tester, size: const Size(1120, 850));
       // Load fixture thumbnails outside FakeAsync before scrolling exposes
       // them, so file reads can finish even if a card immediately unmounts.
       await tester.runAsync(() async {
@@ -263,6 +267,7 @@ void main() {
           )
           .position;
       final beforePageWheel = page.pixels;
+      expect(page.maxScrollExtent, greaterThan(0));
       tester.binding.handlePointerEvent(
         PointerScrollEvent(
           position: rect.center,

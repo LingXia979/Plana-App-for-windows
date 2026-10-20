@@ -1,4 +1,12 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
+import 'package:plana_app/core/theme/theme_settings.dart';
+import 'package:plana_app/features/desktop/desktop_tools_page.dart';
+import 'package:plana_app/features/tools/tools_page.dart';
+import 'package:plana_app/features/inspiration/tag_library.dart';
+import 'package:plana_app/features/inspiration/tag_models.dart';
+import 'support/pump_until.dart';
+
 import 'dart:io';
 import 'dart:ui' as ui;
 
@@ -981,4 +989,223 @@ void main() {
     await tester.pump(const Duration(seconds: 1));
     await drainWrites(tester);
   });
+  testWidgets(
+    '工具箱默认在我的前面，入口互斥切换保留草稿、结果和工具页签',
+    (tester) async {
+      await mount(tester, const Size(1440, 900));
+      final toolsNav = key('desktop-nav-$kTabTools');
+      final profileNav = key('desktop-nav-$kTabProfile');
+      expect(toolsNav, findsOneWidget);
+      expect(
+        tester.getRect(toolsNav).right,
+        lessThan(tester.getRect(profileNav).left),
+      );
+      await tester.tap(profileNav);
+      await tester.pumpAndSettle();
+      expect(key('profile-section-tools'), findsNothing);
+      await tester.tap(toolsNav);
+      await tester.pumpAndSettle();
+      final pane = tester.state(find.byType(DesktopToolsPage));
+      final draft = key('weight-convert-input');
+      await tester.enterText(draft, '(cat ears:1.2), solo, <lora:test:1>');
+      final modifier = defaultTargetPlatform == TargetPlatform.macOS
+          ? LogicalKeyboardKey.metaLeft
+          : LogicalKeyboardKey.controlLeft;
+      await tester.sendKeyDownEvent(modifier);
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.sendKeyUpEvent(modifier);
+      await tester.pumpAndSettle();
+      final converted = tester
+          .widget<SelectableText>(key('weight-convert-output'))
+          .textSpan!
+          .toPlainText();
+      expect(converted, contains('cat ears'));
+      expect(converted, isNot(contains('lora:')));
+      await screenshot(
+        tester,
+        'windows49-toolbox-${defaultTargetPlatform.name}',
+      );
+      await tester.tap(find.text('图片元数据'));
+      await tester.pumpAndSettle();
+      final metadataPrompt = key('metadata-field-prompt');
+      await tester.enterText(metadataPrompt, '1girl, forest');
+
+      Future<void> toggleInSettings() async {
+        await tester.tap(profileNav);
+        await tester.pumpAndSettle();
+        await tester.ensureVisible(key('profile-section-appearance'));
+        await tester.tap(key('profile-section-appearance'));
+        await tester.pumpAndSettle();
+        await tester.ensureVisible(find.text('显示工具箱'));
+        await screenshot(
+          tester,
+          'windows49-appearance-${defaultTargetPlatform.name}',
+        );
+        await tester.tap(find.text('显示工具箱'));
+        await tester.pumpAndSettle();
+        stores.flushNow();
+        var saved = false;
+        unawaited(stores.prefs.idle.then((_) => saved = true));
+        await pumpUntil(
+          tester,
+          () => saved,
+          reason: 'Toolbox navigation preference must finish saving',
+        );
+      }
+
+      await toggleInSettings();
+      expect(toolsNav, findsNothing);
+      expect(key('profile-section-tools'), findsOneWidget);
+      expect(loadThemeSettings(stores.prefs).showTools, isFalse);
+      await tester.ensureVisible(key('profile-section-tools'));
+      await tester.tap(key('profile-section-tools'));
+      await tester.pumpAndSettle();
+      expect(tester.state(find.byType(DesktopToolsPage)), same(pane));
+      expect(
+        tester.widget<TextField>(metadataPrompt).controller!.text,
+        '1girl, forest',
+      );
+      await tester.tap(find.text('权重转换'));
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<TextField>(draft).controller!.text,
+        contains('cat ears'),
+      );
+      expect(
+        tester
+            .widget<SelectableText>(key('weight-convert-output'))
+            .textSpan!
+            .toPlainText(),
+        converted,
+      );
+      await toggleInSettings();
+      expect(toolsNav, findsOneWidget);
+      expect(key('profile-section-tools'), findsNothing);
+      expect(loadThemeSettings(stores.prefs).showTools, isTrue);
+      await tester.tap(toolsNav);
+      await tester.pumpAndSettle();
+      expect(tester.state(find.byType(DesktopToolsPage)), same(pane));
+      expect(
+        tester.widget<TextField>(draft).controller!.text,
+        contains('cat ears'),
+      );
+      expect(find.byType(ToolsPage), findsOneWidget);
+
+      // A restored preference can move the currently open toolbox back to settings.
+      c
+          .read(themeSettingsProvider.notifier)
+          .patch((s) => s.copyWith(showTools: false));
+      await tester.pumpAndSettle();
+      expect(c.read(shellIndexProvider), kTabProfile);
+      expect(
+        tester.widget<TextField>(draft).controller!.text,
+        contains('cat ears'),
+      );
+      expect(tester.state(find.byType(DesktopToolsPage)), same(pane));
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      await drainWrites(tester);
+    },
+    variant: TargetPlatformVariant({
+      TargetPlatform.windows,
+      TargetPlatform.macOS,
+    }),
+  );
+
+  for (final scale in [1.0, 1.4]) {
+    testWidgets(
+      '创作侧栏灵感筛选完整显示并可操作：字号=$scale',
+      (tester) async {
+        const paths = MethodChannel('plugins.flutter.io/path_provider');
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          paths,
+          (_) async => stores.desktopOutput.root.parent.path,
+        );
+        addTearDown(() {
+          tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+            paths,
+            null,
+          );
+        });
+        await tester.runAsync(() async {
+          await c.read(tagLibraryProvider.future);
+          await c
+              .read(tagLibraryProvider.notifier)
+              .upsert(
+                const TagEntry(
+                  id: 'sidebar-character',
+                  category: TagCategory.character,
+                  name: '旅行者',
+                  createdBy: '123456',
+                ),
+              );
+        });
+        c
+            .read(themeSettingsProvider.notifier)
+            .patch((s) => s.copyWith(textScale: scale));
+        await mount(tester, const Size(1440, 900));
+        await tester.tap(key('desktop-inspiration-tab'));
+        await tester.pumpAndSettle();
+        final search = key('tag-search-character');
+        final filter = find.descendant(
+          of: search,
+          matching: find.byTooltip('筛选'),
+        );
+        final anchor = tester.getRect(filter);
+        await tester.tap(filter);
+        await tester.pumpAndSettle();
+        final panel = tester.getRect(key('desktop-popover'));
+        expect(panel.top, closeTo(anchor.bottom + 8, 1));
+        expect(panel.bottom, lessThanOrEqualTo(888));
+        expect(panel.height, greaterThan(180));
+        expect(find.text('123456').hitTestable(), findsOneWidget);
+        final input = find.descendant(
+          of: key('desktop-popover'),
+          matching: find.byType(TextField),
+        );
+        expect(input.hitTestable(), findsOneWidget);
+        await tester.enterText(input, '123');
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('123456'));
+        await tester.pumpAndSettle();
+        expect(key('desktop-popover'), findsNothing);
+        expect(
+          find.descendant(of: search, matching: find.text('123456')),
+          findsOneWidget,
+        );
+        // The active filter pill must also anchor the panel to itself.
+        await tester.tap(
+          find.descendant(of: search, matching: find.text('123456')),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('重置').hitTestable(), findsOneWidget);
+        await tester.tap(find.text('重置'));
+        await tester.pumpAndSettle();
+        expect(filter, findsOneWidget);
+        await tester.tap(filter);
+        await tester.pumpAndSettle();
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await tester.pumpAndSettle();
+        expect(key('desktop-popover'), findsNothing);
+        await tester.tap(find.text('画风').hitTestable());
+        await tester.pumpAndSettle();
+        await tester.tap(find.byTooltip('筛选').hitTestable());
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('适用模型').hitTestable());
+        await tester.pumpAndSettle();
+        expect(find.text('NAI 4 / 4.5').hitTestable(), findsOneWidget);
+        await tester.tap(find.text('NAI 4 / 4.5'));
+        await tester.pumpAndSettle();
+        expect(key('desktop-popover'), findsNothing);
+        expect(find.text('NAI 4 / 4.5').hitTestable(), findsOneWidget);
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox());
+        await drainWrites(tester);
+      },
+      variant: TargetPlatformVariant({
+        TargetPlatform.windows,
+        TargetPlatform.macOS,
+      }),
+    );
+  }
 }

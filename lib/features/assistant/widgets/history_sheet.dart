@@ -121,48 +121,60 @@ class _AssistantHistoryPanelState extends ConsumerState<AssistantHistoryPanel> {
           ),
       ],
     );
+    final clearHistoryButton = state.sessions.isEmpty
+        ? null
+        : IconButton(
+            tooltip: '清空历史会话',
+            visualDensity: VisualDensity.compact,
+            onPressed: () => _clear(state.sessions.length),
+            icon: const Icon(Icons.delete_sweep_outlined, size: 18),
+          );
     return ColoredBox(
       color: scheme.surfaceContainerLow,
       child: Column(
         mainAxisSize: widget.sidebar ? MainAxisSize.max : MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(18, 10, 8, 6),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    widget.sidebar ? '会话' : '历史会话',
-                    style: context.texts.titleSmall!.copyWith(
-                      fontWeight: FontWeight.w700,
+          if (!widget.sidebar)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 10, 8, 6),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '历史会话',
+                      style: context.texts.titleSmall!.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                   ),
-                ),
-                if (state.sessions.isNotEmpty)
-                  IconButton(
-                    tooltip: '清空历史会话',
-                    visualDensity: VisualDensity.compact,
-                    onPressed: () => _clear(state.sessions.length),
-                    icon: const Icon(Icons.delete_sweep_outlined, size: 18),
-                  ),
-                if (!widget.sidebar)
+                  ?clearHistoryButton,
                   IconButton(
                     tooltip: '关闭',
                     visualDensity: VisualDensity.compact,
                     onPressed: () => Navigator.pop(context),
                     icon: const Icon(Icons.close, size: 18),
                   ),
-              ],
+                ],
+              ),
             ),
-          ),
           if (widget.sidebar)
             Padding(
-              padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
-              child: FilledButton.tonalIcon(
-                onPressed: state.running ? null : widget.onNewChat,
-                icon: const Icon(Icons.edit_square, size: 18),
-                label: const Text('新对话'),
+              padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: FilledButton.tonalIcon(
+                      onPressed: state.running ? null : widget.onNewChat,
+                      icon: const Icon(Icons.edit_square, size: 18),
+                      label: const Text('新对话'),
+                    ),
+                  ),
+                  if (clearHistoryButton != null) ...[
+                    const SizedBox(width: 8),
+                    clearHistoryButton,
+                  ],
+                ],
               ),
             ),
           if (widget.sidebar || state.sessions.length >= 6 || _query.isNotEmpty)

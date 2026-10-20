@@ -11,6 +11,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../../core/net/remote_image.dart';
 import '../../../core/platform/desktop.dart';
 import '../../../core/theme/app_theme.dart';
+import '../../../core/ui/desktop_popover.dart';
 import '../../editor/editor_models.dart' show draftOf, outputOf, pickEditorText;
 import '../../generate/generate_state.dart';
 import '../../generate/models.dart'
@@ -1813,39 +1814,166 @@ Future<String?> showCodexPickerSheet(
   BuildContext context,
   List<CodexMeta> index,
   String? current,
-) => _sheet<String>(context, _PickerSheet(index: index, current: current));
+) {
+  if (ProviderScope.containerOf(
+    context,
+    listen: false,
+  ).read(desktopModeProvider)) {
+    return showDesktopPopover<String>(
+      context,
+      builder: (_) =>
+          _PickerSheet(index: index, current: current, desktop: true),
+    );
+  }
+  return _sheet<String>(context, _PickerSheet(index: index, current: current));
+}
 
-class _PickerSheet extends ConsumerWidget {
-  const _PickerSheet({required this.index, required this.current});
+class _PickerSheet extends StatefulWidget {
+  const _PickerSheet({
+    required this.index,
+    required this.current,
+    this.desktop = false,
+  });
 
   final List<CodexMeta> index;
   final String? current;
+  final bool desktop;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  State<_PickerSheet> createState() => _PickerSheetState();
+}
+
+class _PickerSheetState extends State<_PickerSheet> {
+  final _search = TextEditingController();
+  final _scroll = ScrollController();
+
+  @override
+  void dispose() {
+    _search.dispose();
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final scheme = context.scheme;
+    final title = Row(
+      children: [
+        Icon(Icons.menu_book_outlined, size: 20, color: scheme.primary),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            '选择法典',
+            style: context.texts.titleMedium!.copyWith(
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+        if (widget.desktop)
+          IconButton(
+            tooltip: '关闭',
+            icon: const Icon(Icons.close, size: 18),
+            onPressed: () => Navigator.pop(context),
+          ),
+      ],
+    );
+    if (widget.desktop) {
+      final query = _search.text.trim().toLowerCase();
+      final matches = widget.index
+          .where(
+            (m) => [
+              m.displayTitle,
+              m.title,
+              m.author,
+              ...m.aliases,
+              m.type.label,
+              if (m.nsfw) 'R18',
+            ].any((value) => value.toLowerCase().contains(query)),
+          )
+          .toList();
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 6, 8, 4),
+            child: title,
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+            child: TextField(
+              key: const ValueKey('codex-picker-search'),
+              controller: _search,
+              autofocus: true,
+              onChanged: (_) => setState(() {}),
+              style: context.texts.bodyMedium,
+              decoration: InputDecoration(
+                hintText: '搜索法典名称 / 作者…',
+                isDense: true,
+                filled: true,
+                fillColor: scheme.surfaceContainerHigh,
+                prefixIcon: const Icon(Icons.search, size: 18),
+                prefixIconConstraints: const BoxConstraints(
+                  minWidth: 36,
+                  minHeight: 36,
+                ),
+                suffixIcon: _search.text.isEmpty
+                    ? null
+                    : IconButton(
+                        tooltip: '清空法典搜索',
+                        icon: const Icon(Icons.close, size: 16),
+                        onPressed: () => setState(_search.clear),
+                      ),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: BorderSide.none,
+                ),
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 8,
+                ),
+              ),
+            ),
+          ),
+          Flexible(
+            child: matches.isEmpty
+                ? Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Text(
+                      '没有匹配的法典',
+                      textAlign: TextAlign.center,
+                      style: context.texts.bodyMedium!.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  )
+                : Scrollbar(
+                    controller: _scroll,
+                    child: ListView.separated(
+                      controller: _scroll,
+                      shrinkWrap: true,
+                      padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                      itemCount: matches.length,
+                      separatorBuilder: (_, _) => const SizedBox(height: 4),
+                      itemBuilder: (context, i) => _codexTile(
+                        context,
+                        matches[i],
+                        matches[i].id == widget.current,
+                      ),
+                    ),
+                  ),
+          ),
+        ],
+      );
+    }
     return SafeArea(
       child: ListView(
         shrinkWrap: true,
         padding: const EdgeInsets.fromLTRB(12, 14, 12, 18),
         children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(6, 0, 6, 8),
-            child: Row(
-              children: [
-                Icon(Icons.menu_book_outlined, size: 20, color: scheme.primary),
-                const SizedBox(width: 8),
-                Text(
-                  '选择法典',
-                  style: context.texts.titleMedium!.copyWith(
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          for (final m in index) ...[
-            _codexTile(context, ref, m, m.id == current),
+          Padding(padding: const EdgeInsets.fromLTRB(6, 0, 6, 8), child: title),
+          for (final m in widget.index) ...[
+            _codexTile(context, m, m.id == widget.current),
             const SizedBox(height: 8),
           ],
         ],
@@ -1853,23 +1981,20 @@ class _PickerSheet extends ConsumerWidget {
     );
   }
 
-  Widget _codexTile(
-    BuildContext context,
-    WidgetRef ref,
-    CodexMeta m,
-    bool sel,
-  ) {
+  Widget _codexTile(BuildContext context, CodexMeta m, bool sel) {
     final scheme = context.scheme;
     return Material(
       color: sel ? scheme.primaryContainer : scheme.surfaceContainerHigh,
-      borderRadius: BorderRadius.circular(14),
+      borderRadius: BorderRadius.circular(widget.desktop ? 8 : 14),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         // R18 法典不再拦年龄确认框:标题旁的 R18 角标已经把话说清楚了,
         // 每次进都弹一遍只是让人机械点掉。
         onTap: () => Navigator.pop(context, m.id),
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+          padding: widget.desktop
+              ? const EdgeInsets.symmetric(horizontal: 12, vertical: 8)
+              : const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
           child: Row(
             children: [
               Expanded(
@@ -1883,9 +2008,15 @@ class _PickerSheet extends ConsumerWidget {
                             m.displayTitle,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: context.texts.bodyLarge!.copyWith(
-                              fontWeight: FontWeight.w700,
-                            ),
+                            style:
+                                (widget.desktop
+                                        ? context.texts.bodyMedium
+                                        : context.texts.bodyLarge)!
+                                    .copyWith(
+                                      fontWeight: widget.desktop
+                                          ? FontWeight.w600
+                                          : FontWeight.w700,
+                                    ),
                           ),
                         ),
                         if (m.type.label.isNotEmpty) ...[
@@ -2515,6 +2646,7 @@ class _AboutSheet extends StatelessWidget {
   Widget _line(BuildContext context, String k, String v) => Padding(
     padding: const EdgeInsets.only(bottom: 4),
     child: RichText(
+      textScaler: MediaQuery.textScalerOf(context),
       text: TextSpan(
         style: context.texts.bodySmall,
         children: [

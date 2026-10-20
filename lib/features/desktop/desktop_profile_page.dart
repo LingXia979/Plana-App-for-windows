@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/theme/app_theme.dart';
+import '../../core/theme/theme_settings.dart';
 import '../generate/preset_manage_page.dart';
 import '../migrate/web_backup_page.dart';
 import '../profile/about_page.dart';
@@ -11,7 +12,7 @@ import '../profile/gen_settings_page.dart';
 import '../profile/storage_page.dart';
 import '../stats/stats_page.dart';
 import '../shell/shell_state.dart';
-import '../tools/tools_page.dart';
+import 'desktop_tools_page.dart';
 
 enum _Section {
   account('账号与接入', Icons.manage_accounts_outlined, '账户与服务', AccountPage()),
@@ -20,7 +21,7 @@ enum _Section {
   presets('提示词预设', Icons.bookmark_outline, '创作偏好', PromptPresetManagePage()),
   appearance('外观与体验', Icons.color_lens_outlined, '应用', AppearancePage()),
   storage('存储管理', Icons.storage_outlined, '应用', StoragePage()),
-  tools('工具箱', Icons.handyman_outlined, '应用', ToolsPage()),
+  tools('工具箱', Icons.handyman_outlined, '应用', null),
   stats('统计', Icons.query_stats, '应用', StatsPage()),
   about('关于 Plana', Icons.info_outline, '应用', AboutPage());
 
@@ -28,13 +29,16 @@ enum _Section {
   final String label;
   final IconData icon;
   final String group;
-  final Widget page;
+  final Widget? page;
 }
 
 /// Keep settings navigation inside the content pane. Lazily retain each visited
 /// section, including its subpages and drafts, when switching sidebar entries.
 class DesktopProfilePage extends ConsumerStatefulWidget {
-  const DesktopProfilePage({super.key});
+  const DesktopProfilePage({super.key, this.toolsKey, this.openTools = false});
+
+  final GlobalKey? toolsKey;
+  final bool openTools;
 
   @override
   ConsumerState<DesktopProfilePage> createState() => _DesktopProfilePageState();
@@ -51,6 +55,24 @@ class _DesktopProfilePageState extends ConsumerState<DesktopProfilePage>
   @override
   bool get wantKeepAlive => true;
 
+  @override
+  void initState() {
+    super.initState();
+    if (widget.openTools) {
+      _selected = _Section.tools;
+      _visited.add(_Section.tools);
+    }
+  }
+
+  @override
+  void didUpdateWidget(DesktopProfilePage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.openTools && !oldWidget.openTools) {
+      _selected = _Section.tools;
+      _visited.add(_Section.tools);
+    }
+  }
+
   void _select(_Section section) {
     if (_selected == section) return;
     FocusManager.instance.primaryFocus?.unfocus();
@@ -64,6 +86,21 @@ class _DesktopProfilePageState extends ConsumerState<DesktopProfilePage>
   Widget build(BuildContext context) {
     super.build(context);
     final active = ref.watch(shellIndexProvider) == kTabProfile;
+    final showTools = ref.watch(
+      themeSettingsProvider.select((settings) => settings.showTools),
+    );
+    ref.listen<bool>(
+      themeSettingsProvider.select((settings) => settings.showTools),
+      (_, show) {
+        if (show && _selected == _Section.tools) _select(_Section.appearance);
+      },
+    );
+    final sections = _Section.values.where(
+      (section) => section != _Section.tools || !showTools,
+    );
+    final alignment = ref.watch(
+      themeSettingsProvider.select((settings) => settings.pageAlignment),
+    );
     return LayoutBuilder(
       builder: (context, constraints) {
         final sidebar = constraints.maxWidth >= 700;
@@ -78,49 +115,45 @@ class _DesktopProfilePageState extends ConsumerState<DesktopProfilePage>
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      '我的',
-                      style: context.texts.headlineSmall!.copyWith(
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ),
-                  if (!sidebar)
-                    PopupMenuButton<_Section>(
-                      key: const ValueKey('profile-section-menu'),
-                      tooltip: '设置分类',
-                      initialValue: _selected,
-                      onSelected: _select,
-                      itemBuilder: (context) => [
-                        for (final section in _Section.values)
-                          CheckedPopupMenuItem(
-                            value: section,
-                            checked: section == _selected,
-                            child: Text(section.label),
-                          ),
-                      ],
-                      child: Padding(
-                        padding: const EdgeInsets.all(8),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text(_selected.label),
-                            const SizedBox(width: 8),
-                            const Icon(Icons.expand_more, size: 18),
-                          ],
+              Padding(
+                padding: EdgeInsets.only(left: sidebar ? 22 : 0),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        '账户、创作偏好与应用设置',
+                        style: context.texts.bodySmall!.copyWith(
+                          color: scheme.onSurfaceVariant,
                         ),
                       ),
                     ),
-                ],
-              ),
-              const SizedBox(height: 6),
-              Text(
-                '账户、创作偏好与应用设置',
-                style: context.texts.bodySmall!.copyWith(
-                  color: scheme.onSurfaceVariant,
+                    if (!sidebar)
+                      PopupMenuButton<_Section>(
+                        key: const ValueKey('profile-section-menu'),
+                        tooltip: '设置分类',
+                        initialValue: _selected,
+                        onSelected: _select,
+                        itemBuilder: (context) => [
+                          for (final section in sections)
+                            CheckedPopupMenuItem(
+                              value: section,
+                              checked: section == _selected,
+                              child: Text(section.label),
+                            ),
+                        ],
+                        child: Padding(
+                          padding: const EdgeInsets.all(8),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(_selected.label),
+                              const SizedBox(width: 8),
+                              const Icon(Icons.expand_more, size: 18),
+                            ],
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
               ),
               const SizedBox(height: 18),
@@ -165,7 +198,7 @@ class _DesktopProfilePageState extends ConsumerState<DesktopProfilePage>
                                     ),
                                   ),
                                 ),
-                                for (final section in _Section.values.where(
+                                for (final section in sections.where(
                                   (s) => s.group == group,
                                 ))
                                   Padding(
@@ -175,6 +208,8 @@ class _DesktopProfilePageState extends ConsumerState<DesktopProfilePage>
                                         'profile-section-${section.name}',
                                       ),
                                       dense: true,
+                                      minTileHeight: 48,
+                                      visualDensity: VisualDensity.standard,
                                       contentPadding:
                                           const EdgeInsets.symmetric(
                                             horizontal: 12,
@@ -187,7 +222,7 @@ class _DesktopProfilePageState extends ConsumerState<DesktopProfilePage>
                                       selectedTileColor: scheme.primaryContainer
                                           .withValues(alpha: .65),
                                       selectedColor: scheme.primary,
-                                      leading: Icon(section.icon, size: 20),
+                                      leading: Icon(section.icon, size: 22),
                                       title: Text(
                                         section.label,
                                         style: TextStyle(
@@ -208,7 +243,9 @@ class _DesktopProfilePageState extends ConsumerState<DesktopProfilePage>
                     ],
                     Expanded(
                       child: Align(
-                        alignment: Alignment.topLeft,
+                        alignment: alignment == PageAlignment.center
+                            ? Alignment.topCenter
+                            : Alignment.topLeft,
                         child: ConstrainedBox(
                           constraints: const BoxConstraints(maxWidth: 1000),
                           child: IndexedStack(
@@ -217,36 +254,48 @@ class _DesktopProfilePageState extends ConsumerState<DesktopProfilePage>
                             sizing: StackFit.expand,
                             children: [
                               for (final section in _Section.values)
-                                _visited.contains(section)
-                                    ? TickerMode(
-                                        enabled: _selected == section,
-                                        child: ExcludeFocus(
-                                          excluding: _selected != section,
-                                          child: NavigatorPopHandler<Object?>(
-                                            enabled:
-                                                active && _selected == section,
-                                            onPopWithResult: (result) {
-                                              final navigator =
-                                                  _navigators[section]!
-                                                      .currentState!;
-                                              if (active &&
-                                                  _selected == section &&
-                                                  navigator.canPop()) {
-                                                navigator.pop(result);
-                                              }
-                                            },
-                                            child: Navigator(
-                                              key: _navigators[section],
-                                              onGenerateRoute: (_) =>
-                                                  MaterialPageRoute<void>(
-                                                    builder: (_) =>
-                                                        section.page,
-                                                  ),
+                                if (section == _Section.tools)
+                                  !showTools &&
+                                          (widget.toolsKey != null ||
+                                              _visited.contains(section))
+                                      ? DesktopToolsPage(
+                                          key: widget.toolsKey,
+                                          active:
+                                              active && _selected == section,
+                                        )
+                                      : const SizedBox.shrink()
+                                else
+                                  _visited.contains(section)
+                                      ? TickerMode(
+                                          enabled: _selected == section,
+                                          child: ExcludeFocus(
+                                            excluding: _selected != section,
+                                            child: NavigatorPopHandler<Object?>(
+                                              enabled:
+                                                  active &&
+                                                  _selected == section,
+                                              onPopWithResult: (result) {
+                                                final navigator =
+                                                    _navigators[section]!
+                                                        .currentState!;
+                                                if (active &&
+                                                    _selected == section &&
+                                                    navigator.canPop()) {
+                                                  navigator.pop(result);
+                                                }
+                                              },
+                                              child: Navigator(
+                                                key: _navigators[section],
+                                                onGenerateRoute: (_) =>
+                                                    MaterialPageRoute<void>(
+                                                      builder: (_) =>
+                                                          section.page!,
+                                                    ),
+                                              ),
                                             ),
                                           ),
-                                        ),
-                                      )
-                                    : const SizedBox.shrink(),
+                                        )
+                                      : const SizedBox.shrink(),
                             ],
                           ),
                         ),
