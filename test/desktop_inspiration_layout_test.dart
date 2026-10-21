@@ -20,6 +20,7 @@ import 'package:plana_app/features/inspiration/tag_library.dart';
 import 'package:plana_app/features/inspiration/tag_models.dart';
 
 import 'support/desktop_capture.dart';
+import 'support/pump_until.dart';
 
 class _Acknowledged extends CodexIntro {
   @override
@@ -424,6 +425,11 @@ void main() {
         await Future<void>.delayed(const Duration(milliseconds: 150));
       });
       await tester.pumpAndSettle();
+      await pumpUntil(
+        tester,
+        () => find.text('已收藏到「我的」').evaluate().isNotEmpty,
+        reason: 'Collection must finish its file write before cleanup',
+      );
       expect(find.byTooltip('已收藏'), findsOneWidget);
       await tester.tap(key('inspiration-scope-mine'));
       await tester.pumpAndSettle();

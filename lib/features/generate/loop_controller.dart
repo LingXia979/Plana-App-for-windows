@@ -7,6 +7,8 @@ import '../../core/platform/desktop.dart';
 import '../shell/shell_state.dart';
 import 'gen_queue.dart';
 import 'generate_state.dart';
+import 'canvas_state.dart';
+import 'gen_modules.dart';
 import 'generation_controller.dart';
 import '../gallery/albums/album_state.dart';
 
@@ -38,7 +40,7 @@ final loopStatusProvider = NotifierProvider<LoopNotifier, LoopStatus>(
   LoopNotifier.new,
 );
 
-/// 循环控制器:顺序连跑 N 张(对齐 web:每轮重读当前编辑器参数、seed 留空
+/// 循环控制器:顺序连跑 N 张(每轮重读来源画布的词与出图参数和当前全局设置,seed 留空
 /// 则每轮随机、停止让当前张跑完)。与 web 不同:单张失败即停(移动端挂机
 /// 连续失败无意义),错误由单张生成流程弹出。
 class LoopNotifier extends Notifier<LoopStatus> {
@@ -52,6 +54,9 @@ class LoopNotifier extends Notifier<LoopStatus> {
     // 手动生成中不再让位:并行之后手动那条只是池子里的一员,循环照常投。
     if (state.active || ref.read(genQueueProvider).active) return;
     final total = ref.read(generateProvider).params.loop.count; // 开跑时锁档位
+    final canvasId = ref.read(canvasWorkspaceProvider).activeId;
+    // 来源画布被删了就接着用它最后那组词和参数跑完,不半路改用别的画布的
+    var prompts = CanvasPrompts.of(ref.read(generateProvider));
     final galleryTarget = ref.read(gallerySaveTargetProvider);
     state = LoopStatus(active: true, total: total);
     // 桌面直接在创作画布显示进度；移动端只在开跑时切一次图库。
@@ -70,9 +75,19 @@ class LoopNotifier extends Notifier<LoopStatus> {
     // 才发现第一张就挂了),而且会把 20 条的池子上限一次撑满。
     Future<void> worker() async {
       while (ok && !state.stopping && (total == 0 || dispatched < total)) {
+        // 每张重读:词和出图参数(模型、尺寸、种子、采样)取来源画布那组(切去
+        // 别的画布改的不串进来),参考图是全局的,中途改了下一张就跟着改。
+        prompts =
+            ref.read(canvasWorkspaceProvider).find(canvasId)?.prompts ??
+            prompts;
+        final snapshot = stripHiddenModules(
+          prompts.applyTo(ref.read(generateProvider)),
+          ref.read(genModulesProvider).value ?? const GenModuleSettings(),
+        );
         dispatched++;
         // 非 ok 一律停(含用户取消):挂机连续失败无意义,也不该替用户决定重试
-        if (await gen.generate(galleryTarget: galleryTarget) != GenOutcome.ok) {
+        if (await gen.generate(using: snapshot, galleryTarget: galleryTarget) !=
+            GenOutcome.ok) {
           ok = false;
           break;
         }

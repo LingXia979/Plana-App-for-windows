@@ -1,3 +1,7 @@
+import 'package:plana_app/features/generate/generate_state.dart';
+import 'package:plana_app/features/generate/models.dart';
+import 'package:plana_app/core/store/app_stores.dart';
+import 'support/pump_until.dart';
 import 'dart:convert';
 import 'dart:io';
 
@@ -53,6 +57,8 @@ class _MemoryPresets extends PromptPresetsNotifier {
   int activations = 0;
   int reorders = 0;
   final imported = <List<PromptPreset>>[];
+  String get activeId =>
+      selectedPromptPresetId(ref.read(generateProvider), state.requireValue);
   PromptPresetsState get current => state.requireValue;
 
   @override
@@ -62,15 +68,12 @@ class _MemoryPresets extends PromptPresetsNotifier {
       PromptPreset(id: 'b', name: 'Beta', positive: 'b', negative: ''),
       PromptPreset(id: 'c', name: 'Gamma', positive: 'c', negative: ''),
     ],
-    activeId: 'c',
   );
 
   @override
   Future<void> setActive(String id) async {
     activations++;
-    state = AsyncData(
-      PromptPresetsState(presets: state.requireValue.presets, activeId: id),
-    );
+    ref.read(generateProvider.notifier).setPromptPreset(id);
   }
 
   @override
@@ -79,9 +82,7 @@ class _MemoryPresets extends PromptPresetsNotifier {
     final old = state.requireValue;
     final next = [...old.presets];
     next.insert(to, next.removeAt(from));
-    state = AsyncData(
-      PromptPresetsState(presets: next, activeId: old.activeId),
-    );
+    state = AsyncData(PromptPresetsState(presets: next));
   }
 
   @override
@@ -110,9 +111,17 @@ void main() {
   tearDown(() => FilePicker.platform = originalPicker);
 
   Future<void> mount(WidgetTester tester) async {
+    final stores = AppStores.ephemeral();
+    stores.workspace.initial = GenerateState.initial().copyWith(
+      promptPresetId: 'c',
+    );
+    addTearDown(() async {
+      await pumpUntilComplete(tester, stores.flushForExit());
+    });
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          appStoresProvider.overrideWithValue(stores),
           desktopModeProvider.overrideWithValue(true),
           promptPresetsProvider.overrideWith(() => presets),
         ],
@@ -184,7 +193,7 @@ void main() {
       expect(presets.reorders, 1);
       expect(presets.current.presets.map((p) => p.id), ['b', 'a', 'c']);
       expect(presets.activations, 0);
-      expect(presets.current.activeId, 'c');
+      expect(presets.activeId, 'c');
       expect(find.text('编辑预设'), findsNothing);
 
       final click = await tester.startGesture(
@@ -237,7 +246,10 @@ void main() {
         paths,
         (_) async => fixture.path,
       );
-      final container = ProviderContainer();
+      final stores = await AppStores.open(rootOverride: fixture);
+      final container = ProviderContainer(
+        overrides: [appStoresProvider.overrideWithValue(stores)],
+      );
       try {
         await container.read(promptPresetsProvider.future);
         final notifier = container.read(promptPresetsProvider.notifier);
@@ -267,14 +279,18 @@ void main() {
         final current = container.read(promptPresetsProvider).requireValue;
         expect(current.presets, hasLength(kDefaultPromptPresets.length + 2));
         expect(current.presets.map((p) => p.id), orderBefore);
-        expect(current.activeId, 'first');
-        final restoredContainer = ProviderContainer();
+        expect(container.read(activePromptPresetIdProvider), 'first');
+        await stores.flushForExit();
+        final restoredStores = await AppStores.open(rootOverride: fixture);
+        final restoredContainer = ProviderContainer(
+          overrides: [appStoresProvider.overrideWithValue(restoredStores)],
+        );
         try {
           final restored = await restoredContainer.read(
             promptPresetsProvider.future,
           );
           expect(restored.presets.map((p) => p.id), orderBefore);
-          expect(restored.activeId, 'first');
+          expect(restoredContainer.read(activePromptPresetIdProvider), 'first');
           final first = restored.presets.firstWhere((p) => p.id == 'first');
           expect(first.positive, 'a');
           expect(first.negative, 'b');

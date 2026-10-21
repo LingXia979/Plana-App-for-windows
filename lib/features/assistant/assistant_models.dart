@@ -355,10 +355,14 @@ class AssistantChange {
     required this.before,
     required this.after,
     this.undone = false,
+    this.canvasId,
   });
 
   final PromptSnapshot before;
   final PromptSnapshot after;
+
+  /// 导入到的那张画布;撤销回滚到它身上。null = 多画布之前的老记录(按当前画布)。
+  final String? canvasId;
 
   final bool undone;
 
@@ -390,12 +394,14 @@ class AssistantChange {
     before: before,
     after: after,
     undone: undone ?? this.undone,
+    canvasId: canvasId,
   );
 
   Map<String, dynamic> toJson() => {
     'before': before.toJson(),
     'after': after.toJson(),
     if (undone) 'undone': true,
+    if (canvasId != null) 'canvasId': canvasId,
   };
 
   factory AssistantChange.fromJson(Map<String, dynamic> j) => AssistantChange(
@@ -410,6 +416,7 @@ class AssistantChange {
           : const {},
     ),
     undone: j['undone'] == true,
+    canvasId: j['canvasId'] is String ? j['canvasId'] as String : null,
   );
 }
 

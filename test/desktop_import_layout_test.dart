@@ -14,16 +14,12 @@ import 'package:plana_app/features/import/import_panel.dart';
 
 class _Presets extends PromptPresetsNotifier {
   @override
-  Future<PromptPresetsState> build() async => const PromptPresetsState(
-    presets: kDefaultPromptPresets,
-    activeId: 'v5-light',
-  );
+  Future<PromptPresetsState> build() async =>
+      const PromptPresetsState(presets: kDefaultPromptPresets);
 
   @override
   Future<void> setActive(String id) async {
-    state = AsyncData(
-      PromptPresetsState(presets: state.requireValue.presets, activeId: id),
-    );
+    ref.read(generateProvider.notifier).setPromptPreset(id);
   }
 }
 
@@ -86,6 +82,7 @@ void main() {
         promptPresetsProvider.overrideWith(_Presets.new),
       ],
     );
+    container.read(generateProvider.notifier).setPromptPreset('v5-light');
     container
         .read(generateProvider.notifier)
         .setPrompts(positive: 'original', negative: 'keep negative');
@@ -129,17 +126,18 @@ void main() {
     expect(tester.takeException(), isNull);
   }
 
-  testWidgets('clicking the import backdrop closes without changing the draft', (
-    tester,
-  ) async {
-    await mount(tester);
-    final before = container.read(generateProvider);
-    await tester.tapAt(const Offset(5, 5));
-    await tester.pumpAndSettle();
-    expect(find.byType(ImportImagePanel), findsNothing);
-    expect(container.read(generateProvider), same(before));
-    await finish(tester);
-  });
+  testWidgets(
+    'clicking the import backdrop closes without changing the draft',
+    (tester) async {
+      await mount(tester);
+      final before = container.read(generateProvider);
+      await tester.tapAt(const Offset(5, 5));
+      await tester.pumpAndSettle();
+      expect(find.byType(ImportImagePanel), findsNothing);
+      expect(container.read(generateProvider), same(before));
+      await finish(tester);
+    },
+  );
 
   for (final presetId in ['v5-light', 'v5-standard']) {
     testWidgets(
@@ -199,7 +197,7 @@ void main() {
           container.read(generateProvider).negativePrompt,
           'keep negative',
         );
-        expect(container.read(promptPresetsProvider).value?.activeId, presetId);
+        expect(container.read(activePromptPresetIdProvider), presetId);
         await finish(tester);
       },
     );

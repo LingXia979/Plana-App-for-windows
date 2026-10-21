@@ -34,7 +34,7 @@ class EditorTopBar extends ConsumerWidget {
     final tok = ref.watch(naiTokenizerProvider).value;
     final preset = charName != null
         ? null
-        : ref.watch(promptPresetsProvider).value?.active;
+        : ref.watch(activePromptPresetProvider);
     final presetSide = preset == null
         ? ''
         : (st.activePositive ? preset.positive : preset.negative);

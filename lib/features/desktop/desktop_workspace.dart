@@ -18,6 +18,7 @@ import '../generate/models.dart';
 import '../generate/widgets/bottom_action_bar.dart';
 import '../generate/widgets/common.dart';
 import '../generate/widgets/top_bar.dart';
+import '../generate/widgets/desktop_canvas_tabs.dart';
 import '../generate/widgets/desktop_prompt_card.dart';
 import '../inspiration/inspiration_page.dart';
 import '../import/desktop_image_drop.dart';

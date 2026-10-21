@@ -21,6 +21,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/auth/bot_session_store.dart';
 import '../../core/net/backend_client.dart';
 import '../../core/store/app_stores.dart';
+import 'canvas_state.dart';
 import 'generate_state.dart';
 
 /// 预设。`name` 即请求体 `mode` 的取值,不要改名。
@@ -149,6 +150,12 @@ class AnimaNlNotifier extends AsyncNotifier<AnimaNlState> {
 
   @override
   Future<AnimaNlState> build() async {
+    // 补强结果是照发起时那张画布的词来的:换了画布就作废(在途那趟也不要了),
+    // 免得把 A 的句子插进 B。
+    ref.listen(
+      canvasWorkspaceProvider.select((w) => w.activeId),
+      (prev, next) => _dropForCanvasSwitch(),
+    );
     try {
       final raw = await ref.read(prefsStoreProvider).read(key: _key);
       if (raw == null || raw.isEmpty) return const AnimaNlState();
@@ -159,6 +166,13 @@ class AnimaNlNotifier extends AsyncNotifier<AnimaNlState> {
   }
 
   AnimaNlState get _cur => state.value ?? const AnimaNlState();
+
+  void _dropForCanvasSwitch() {
+    _seq++;
+    final cur = state.value;
+    if (cur == null) return;
+    _set(cur.copyWith(clearResult: true, clearRunning: true, error: ''));
+  }
 
   /// 先改状态(立即生效),再尽力持久化。[persist] = false 用于纯临时态
   /// (转圈/报错)的改动,不值得为它写盘。

@@ -148,7 +148,7 @@ Future<WebBackupImportOutcome?> runWebBackupImport(
     }
   }
 
-  // 预设:按 id upsert,顺带同步激活项
+  // 预设:按 id upsert,备份里用着的那一档顺带换到当前画布上
   if (picked.contains('preset') &&
       (b.presets.isNotEmpty || b.activePresetId != null)) {
     try {

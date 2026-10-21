@@ -59,6 +59,7 @@ class _DesktopControlsState extends ConsumerState<_DesktopControls> {
       color: context.scheme.surfaceContainerLow,
       child: Column(
         children: [
+          const DesktopCanvasTabs(),
           const GenerateTopBar(),
           Expanded(
             child: Scrollbar(

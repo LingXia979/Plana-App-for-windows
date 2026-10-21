@@ -4,11 +4,30 @@ import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../generate/generate_state.dart';
+import '../generate/canvas_state.dart';
 import 'editor_models.dart';
 
 final editorProvider = NotifierProvider<EditorNotifier, EditorState>(
   EditorNotifier.new,
 );
+
+/// All mounted editors share undo archives and flush before a canvas switch.
+final editorSessionsProvider = Provider((ref) => EditorSessions());
+
+class EditorSessions {
+  final Map<String, _UndoArchive> _archives = {};
+  final Set<EditorNotifier> _editors = {};
+  final Set<void Function()> prepareInputs = {};
+
+  void flushPending() {
+    for (final prepare in prepareInputs.toList()) {
+      prepare();
+    }
+    for (final editor in _editors.toList()) {
+      editor.flushPendingWriteBack();
+    }
+  }
+}
 
 /// 光标驱动定稿:字符串就是真相,正/负各一条(含原样权重语法)。
 /// 折叠体不在正文里(正文只有 `<#名字>` 占位符),存 [foldBodies];
@@ -74,18 +93,20 @@ class EditorNotifier extends Notifier<EditorState> {
   final bool immediateWriteBack;
   bool isWritingBack = false;
 
-  /// key = 角色 id,主提示词用 ''。
-  final Map<String, _UndoArchive> _archives = {};
+  /// Undo history belongs to a canvas and an editing target.
+  Map<String, _UndoArchive> get _archives =>
+      ref.read(editorSessionsProvider)._archives;
   static const _maxHistory = 60;
   int _lastPushMs = 0;
 
   _UndoArchive get _arc =>
-      _archives.putIfAbsent(_charId ?? '', _UndoArchive.new);
+      _archives.putIfAbsent('$_canvasId/${_charId ?? ''}', _UndoArchive.new);
 
   /// 本次会话的编辑目标:null = 创作页主提示词,否则 = 该 id 的角色提示词。
   /// 进页面时由 [load] 钉死,中途不变。用 id 不用名字——角色自动编号
   /// (「角色 N」)在删掉中间一个再新增时会重名,名字不是稳定句柄。
   String? _charId;
+  String? _canvasId;
 
   /// 编辑中实时回写创作页的防抖(编辑器内容不再只活在内存:
   /// 回写进 generateProvider 后由工作台持久化链自动落盘,
@@ -94,7 +115,12 @@ class EditorNotifier extends Notifier<EditorState> {
 
   @override
   EditorState build() {
-    ref.onDispose(() => _writeBack?.cancel());
+    final sessions = ref.read(editorSessionsProvider);
+    sessions._editors.add(this);
+    ref.onDispose(() {
+      _writeBack?.cancel();
+      sessions._editors.remove(this);
+    });
     return const EditorState();
   }
 
@@ -107,12 +133,17 @@ class EditorNotifier extends Notifier<EditorState> {
     _writeBack?.cancel(); // 新会话,作废上一会话可能挂着的回写
     _lastPushMs = 0;
     _charId = charId;
+    _canvasId = ref.read(canvasWorkspaceProvider).activeId;
     // 角色已删,其撤销档随之作废(主档 '' 恒保留)
     final live = <String>{
       '',
       for (final c in ref.read(generateProvider).characters) c.id,
     };
-    _archives.removeWhere((k, _) => !live.contains(k));
+    final prefix = '$_canvasId/';
+    _archives.removeWhere(
+      (k, _) =>
+          k.startsWith(prefix) && !live.contains(k.substring(prefix.length)),
+    );
     final arc = _arc;
     final input = ref.read(generateProvider);
     final links = validPromptFoldLinks(
@@ -193,6 +224,7 @@ class EditorNotifier extends Notifier<EditorState> {
   /// ——从前这里写死了 setPrompts,点角色卡进来编辑会静默覆盖主提示词。
   void flushWriteBack() {
     _writeBack?.cancel();
+    _writeBack = null;
     isWritingBack = true;
     try {
       _writeToGenerate();
@@ -201,8 +233,13 @@ class EditorNotifier extends Notifier<EditorState> {
     }
   }
 
+  void flushPendingWriteBack() {
+    if (_writeBack?.isActive ?? false) flushWriteBack();
+  }
+
   void _writeToGenerate() {
-    final gen = ref.read(generateProvider.notifier);
+    final canvasId = _canvasId;
+    if (canvasId == null) return;
     final id = _charId;
     // 草稿 = 占位符展开回完整折叠语法(下次载入原样收回);定稿再剔编辑期语法
     final posDraft = expandFolds(state.positiveText, state.foldBodies);
@@ -212,37 +249,48 @@ class EditorNotifier extends Notifier<EditorState> {
     final posRaw = draftOf(posDraft, pos);
     final negRaw = draftOf(negDraft, neg);
     final links = validPromptFoldLinks(posDraft, negDraft, state.foldLinks);
-    if (id == null) {
-      gen.setPrompts(
-        positive: pos,
-        negative: neg,
-        positiveRaw: posRaw,
-        negativeRaw: negRaw,
-        promptFoldLinks: links,
-      );
-      return;
-    }
-    // updateCharacter 没有 setPrompts 那样的同值短路,这里自己挡一道:
-    // 防抖回写高频触发,内容没变不该惊动创作页重建与落盘。
-    for (final c in ref.read(generateProvider).characters) {
-      if (c.id != id) continue;
-      if (c.positive == pos &&
-          c.negative == neg &&
-          c.positiveRaw == posRaw &&
-          c.negativeRaw == negRaw &&
-          listEquals(c.foldLinks, links)) {
-        return;
+    ref.read(canvasWorkspaceProvider.notifier).updatePrompts(canvasId, (p) {
+      if (id == null) {
+        if (p.prompt == pos &&
+            p.negativePrompt == neg &&
+            p.promptRaw == posRaw &&
+            p.negativePromptRaw == negRaw &&
+            listEquals(p.promptFoldLinks, links)) {
+          return p;
+        }
+        return p.copyWith(
+          prompt: pos,
+          negativePrompt: neg,
+          promptRaw: posRaw,
+          negativePromptRaw: negRaw,
+          promptFoldLinks: links,
+        );
       }
-      break;
-    }
-    gen.updateCharacter(
-      id,
-      positive: pos,
-      negative: neg,
-      positiveRaw: posRaw,
-      negativeRaw: negRaw,
-      foldLinks: links,
-    );
+      final c = p.characters.where((c) => c.id == id).firstOrNull;
+      if (c == null ||
+          (c.positive == pos &&
+              c.negative == neg &&
+              c.positiveRaw == posRaw &&
+              c.negativeRaw == negRaw &&
+              listEquals(c.foldLinks, links))) {
+        return p;
+      }
+      return p.copyWith(
+        characters: [
+          for (final character in p.characters)
+            if (character.id == id)
+              character.copyWith(
+                positive: pos,
+                negative: neg,
+                positiveRaw: posRaw,
+                negativeRaw: negRaw,
+                foldLinks: links,
+              )
+            else
+              character,
+        ],
+      );
+    });
   }
 
   /// 写入当前段。structural=true(删/插/改权重等)必入撤销栈,打字按 700ms 合并。

@@ -25,6 +25,7 @@ import '../../core/net/backend_client.dart';
 import '../../core/net/backend_config.dart';
 import '../../core/store/app_stores.dart';
 import '../generate/agent_chars.dart';
+import '../generate/canvas_state.dart';
 import '../generate/char_position.dart';
 import '../gallery/gallery_state.dart' show galleryProvider;
 import '../generate/gen_modules.dart';
@@ -497,6 +498,8 @@ class AssistantNotifier extends Notifier<AssistantState> {
       // 而实际什么都没发出去。
       final g = ref.read(generateProvider);
       final canvas = withCanvas && canvasHasContent(g);
+      // 回复回来时人可能已经切去别的画布,自动导入 / 出图只对发问时这张生效
+      final sourceCanvasId = ref.read(canvasWorkspaceProvider).activeId;
       final picked = state.mode;
       final noDraw = assistantSettingsOf(ref).noDraw;
 
@@ -728,7 +731,7 @@ class AssistantNotifier extends Notifier<AssistantState> {
               );
               _set(state.copyWith(liveTools: List.of(tools)), persist: false);
             case AgentDone(:final result):
-              _finish(result, tools, canvas, picked, noDraw);
+              _finish(result, tools, canvas, picked, noDraw, sourceCanvasId);
           }
         },
         onError: (Object e) {
@@ -855,6 +858,7 @@ class AssistantNotifier extends Notifier<AssistantState> {
     bool canvas,
     AssistantMode mode,
     bool noDraw,
+    String sourceCanvasId,
   ) {
     _finishTrace(null);
     // **不写创作页**。AI 的产出先当成一份「提议」挂在这条消息上,用户在结果卡上
@@ -913,7 +917,7 @@ class AssistantNotifier extends Notifier<AssistantState> {
       ),
     );
     // 纯文本那种只给复制:不自动导入、不自动出图
-    if (draw != null && !noDraw) _autoAfterDraw(id);
+    if (draw != null && !noDraw) _autoAfterDraw(id, sourceCanvasId);
   }
 
   /// 「总是读写创作页」/「出词后自动生成」这两个开关的落点。
@@ -921,7 +925,11 @@ class AssistantNotifier extends Notifier<AssistantState> {
   /// 顺序是**先导入再出图**:两件事各自独立(不导入也能照 AI 那份出图),但
   /// 如果两个开关都开着,先导入能让画布和这张图对得上 —— 出完图回创作页一看
   /// 提示词还是旧的,那才叫见鬼。
-  void _autoAfterDraw(String msgId) {
+  ///
+  /// 发问之后切去了别的画布,两样都不自动做:回复是照着原来那张要的,自动写进
+  /// (或照它出图到)眼下这张都不对。提议照常挂在消息上,用户自己点导入 / 生成。
+  void _autoAfterDraw(String msgId, String sourceCanvasId) {
+    if (ref.read(canvasWorkspaceProvider).activeId != sourceCanvasId) return;
     final settings = assistantSettingsOf(ref);
     if (settings.autoImport) applyProposal(msgId);
     if (settings.autoGenerate) unawaited(generateFrom(msgId));
@@ -1006,6 +1014,21 @@ class AssistantNotifier extends Notifier<AssistantState> {
     );
   }
 
+  /// 某张画布眼下那组词。null = 当前画布(切画布之前的老记录没记画布);
+  /// 画布已经删了返回 null。
+  PromptSnapshot? _snapshotOf(String? canvasId) {
+    final w = ref.read(canvasWorkspaceProvider);
+    if (canvasId == null || canvasId == w.activeId) return _snapshot();
+    final p = w.find(canvasId)?.prompts;
+    if (p == null) return null;
+    return PromptSnapshot(
+      positive: p.prompt,
+      negative: p.negativePrompt,
+      characters: List.of(p.characters),
+      useCoords: p.useCoords,
+    );
+  }
+
   /// 这条提议**如果拿去生成**会发出什么 —— 不改任何状态。
   ///
   /// 供结果卡的「不导入直接生成」与费用估算用。角色走 [buildAgentCharacters]
@@ -1066,14 +1089,20 @@ class AssistantNotifier extends Notifier<AssistantState> {
     final msgs = [...state.msgs];
     msgs[i] = msg.copyWith(
       // 撤销过再导入:非空的 change 直接覆盖掉那条 undone 的记录。
-      change: AssistantChange(before: before, after: _snapshot()),
+      change: AssistantChange(
+        before: before,
+        after: _snapshot(),
+        canvasId: ref.read(canvasWorkspaceProvider).activeId,
+      ),
     );
     _set(state.copyWith(msgs: msgs, changedUnseen: true));
     return true;
   }
 
-  /// 当前画面与那一轮写回时是否还一致。false = 用户之后自己又改过。
-  bool inSyncWith(AssistantChange c) => _snapshot().sameAs(c.after);
+  /// 导入的那张画布与那一轮写回时是否还一致。false = 用户之后自己又改过。
+  /// 那张画布已经删了就无从比较,按一致算(撤销只是把这条记成已撤销)。
+  bool inSyncWith(AssistantChange c) =>
+      _snapshotOf(c.canvasId)?.sameAs(c.after) ?? true;
 
   /// 撤销一条 AI 消息的写回:把 [AssistantChange.before] 整份恢复回去。
   ///
@@ -1090,10 +1119,33 @@ class AssistantNotifier extends Notifier<AssistantState> {
     if (c == null || c.undone) return true;
     if (!force && !inSyncWith(c)) return false;
 
-    final gen = ref.read(generateProvider.notifier);
-    gen.setPrompts(positive: c.before.positive, negative: c.before.negative);
-    gen.replaceCharacters(c.before.characters);
-    gen.setUseCoords(c.before.useCoords);
+    // 回滚到导入的那张画布上,不碰眼下这张;画布删了就只记成已撤销。
+    final target = c.canvasId;
+    final w = ref.read(canvasWorkspaceProvider);
+    if (target == null || target == w.activeId) {
+      final gen = ref.read(generateProvider.notifier);
+      gen.setPrompts(positive: c.before.positive, negative: c.before.negative);
+      gen.replaceCharacters(c.before.characters);
+      gen.setUseCoords(c.before.useCoords);
+    } else if (w.find(target) != null) {
+      final b = c.before;
+      ref
+          .read(canvasWorkspaceProvider.notifier)
+          .updatePrompts(
+            target,
+            (p) => p.copyWith(
+              prompt: b.positive,
+              // 同 setPrompts:词变了,编辑器草稿随之作废
+              promptRaw: b.positive == p.prompt ? p.promptRaw : '',
+              negativePrompt: b.negative,
+              negativePromptRaw: b.negative == p.negativePrompt
+                  ? p.negativePromptRaw
+                  : '',
+              characters: List.of(b.characters),
+              useCoords: b.useCoords,
+            ),
+          );
+    }
 
     final msgs = [...state.msgs];
     msgs[i] = msgs[i].copyWith(change: c.copyWith(undone: true));

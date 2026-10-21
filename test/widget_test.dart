@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:plana_app/core/auth/auth_mode.dart';
+import 'package:plana_app/core/net/anlas_provider.dart';
+import 'package:plana_app/core/net/nai_client.dart';
 import 'package:plana_app/core/store/app_stores.dart';
 import 'package:plana_app/core/store/gen_settings.dart';
 import 'package:plana_app/features/generate/widgets/bottom_action_bar.dart';
@@ -20,6 +22,11 @@ class _PrimedSettings extends GenSettingsNotifier {
   Future<GenSettings> build() async => const GenSettings(notifyPrimed: true);
 }
 
+class _NoBalance extends AnlasNotifier {
+  @override
+  Future<NaiSubscription?> build() async => null;
+}
+
 void main() {
   testWidgets('创作页冒烟:核心区块可见', (WidgetTester tester) async {
     await tester.pumpWidget(
@@ -27,6 +34,7 @@ void main() {
         overrides: [
           appStoresProvider.overrideWithValue(AppStores.ephemeral()),
           authModeProvider.overrideWith(_TokenMode.new),
+          anlasProvider.overrideWith(_NoBalance.new),
           genSettingsProvider.overrideWith(_PrimedSettings.new),
         ],
         child: const PlanaApp(),
@@ -93,6 +101,7 @@ void main() {
         overrides: [
           appStoresProvider.overrideWithValue(AppStores.ephemeral()),
           authModeProvider.overrideWith(_TokenMode.new),
+          anlasProvider.overrideWith(_NoBalance.new),
           genSettingsProvider.overrideWith(_PrimedSettings.new),
         ],
         child: const PlanaApp(),

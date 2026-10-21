@@ -25,16 +25,12 @@ import 'package:plana_app/features/shell/shell_state.dart';
 
 class _MemoryPresets extends PromptPresetsNotifier {
   @override
-  Future<PromptPresetsState> build() async => const PromptPresetsState(
-    presets: kDefaultPromptPresets,
-    activeId: 'heavy',
-  );
+  Future<PromptPresetsState> build() async =>
+      const PromptPresetsState(presets: kDefaultPromptPresets);
 
   @override
   Future<void> setActive(String id) async {
-    state = AsyncData(
-      PromptPresetsState(presets: state.requireValue.presets, activeId: id),
-    );
+    ref.read(generateProvider.notifier).setPromptPreset(id);
   }
 }
 
@@ -266,7 +262,7 @@ void main() {
       await tap(tester, key('desktop-prompt-preset'));
       await tap(tester, key('prompt-preset-card-none'));
       await tap(tester, key('prompt-preset-manager-close'));
-      expect(container.read(promptPresetsProvider).value!.activeId, 'none');
+      expect(container.read(activePromptPresetIdProvider), 'none');
       expect(gen.state.promptFoldLinks, imported.promptFoldLinks);
 
       for (final positive in [true, false]) {

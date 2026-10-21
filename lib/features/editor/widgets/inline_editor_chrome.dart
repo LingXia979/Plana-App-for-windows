@@ -36,9 +36,7 @@ class InlineEditorChrome extends ConsumerWidget {
     final notifier = ref.read(editorProvider.notifier);
     final character = charId != null;
     final prefix = character ? 'desktop-character-$charId' : 'desktop-prompt';
-    final preset = character
-        ? null
-        : ref.watch(promptPresetsProvider).value?.active;
+    final preset = character ? null : ref.watch(activePromptPresetProvider);
     final tokens = totalPromptTokens(
       ref.watch(naiTokenizerProvider).value,
       main: state.activeOutput,

@@ -15,6 +15,7 @@ import '../../../core/util/haptics.dart';
 import '../../stats/stats_providers.dart' show fmtInt;
 import '../generate_state.dart';
 import '../models.dart' as m;
+import 'top_bar_status.dart';
 
 /// 创作页顶栏右侧那枚余额胶囊,以及它点开的「点数与额度」弹层。
 ///
@@ -28,7 +29,9 @@ import '../models.dart' as m;
 ///
 /// 与算力来源胶囊同一路数:胶囊只报一眼能读完的那一段,详情全在弹层里。
 class AnlasChip extends ConsumerWidget {
-  const AnlasChip({super.key, this.height = 42});
+  const AnlasChip({super.key, this.height = 42, this.compact = false});
+
+  final bool compact;
 
   /// 顶栏用 42(与模型胶囊、算力来源胶囊同高)。
   final double height;
@@ -36,7 +39,8 @@ class AnlasChip extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final scheme = context.scheme;
-    final sub = ref.watch(anlasProvider).asData?.value;
+    final anlas = ref.watch(anlasProvider);
+    final sub = anlas.asData?.value;
     final bot = ref.watch(authModeProvider).value == AuthMode.bot;
     final model = ref.watch(generateProvider.select((s) => s.params.model));
     final quota = bot ? ref.watch(naiQuotaProvider).asData?.value : null;
@@ -55,6 +59,24 @@ class AnlasChip extends ConsumerWidget {
       ),
       _ => (null, null),
     };
+
+    if (compact) {
+      return TopBarStatus(
+        tooltip: '点数与额度',
+        // 顶栏只报**合计**:常驻在那儿,一眼要的是「还剩多少」。
+        // 「订阅额+已购额」的拆分留给弹层里的 Anlas 那行 —— 想分清
+        // 哪截月底会重置的人,本来就会点进去看。
+        value: sub == null ? null : fmtInt(sub.anlas),
+        // 还没数时数值位是一枚刷新图标:首次加载、换接入方式 / 主账号、
+        // 弹层里点刷新,正在拉的时候它就转。
+        loading: anlas.isLoading,
+        detail: badge.$1,
+        icon: Icons.toll,
+        valueColor: scheme.primary,
+        detailColor: badge.$2,
+        onTap: () => showAnlasSheet(context),
+      );
+    }
 
     return Material(
       color: scheme.surfaceContainerHigh,

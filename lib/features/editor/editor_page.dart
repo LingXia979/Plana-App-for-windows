@@ -10,6 +10,7 @@ import '../../core/store/storage_lifecycle.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/theme/editor_theme.dart';
 import '../generate/generate_state.dart';
+import '../generate/canvas_state.dart';
 import '../generate/models.dart' show GenerateState;
 import '../generate/widgets/common.dart' show hintSnack;
 import 'data/suggestions.dart';
@@ -67,6 +68,8 @@ class _EditorPageState extends ConsumerState<EditorPage>
   final FocusNode _inlineFocus = FocusNode();
   bool _inlineHasFocus = false;
   bool _loaded = false;
+  String? _loadedCanvasId;
+  late final EditorSessions _sessions;
   final ScrollController _scroll = ScrollController();
   final _inlineTextKey = GlobalKey<AnnotatedFieldState>();
   final _inlineChipKey = GlobalKey<ChipFlowViewState>();
@@ -144,13 +147,15 @@ class _EditorPageState extends ConsumerState<EditorPage>
   @override
   void initState() {
     super.initState();
+    _sessions = ref.read(editorSessionsProvider);
+    _sessions.prepareInputs.add(_prepareInputForSwitch);
     _tabAnim = AnimationController(vsync: this, duration: Motion.medium)
       ..value = 1;
     _lifecycle = createStorageLifecycleListener(
       ref.read(appStoresProvider),
       beforeFlush: () {
         if (!mounted || !_loaded) return;
-        _notifier.flushWriteBack();
+        _sessions.flushPending();
       },
     );
     _controller.addListener(_onCtrl);
@@ -205,6 +210,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
   void _loadFromGenerate(bool positive) {
     final drafts = _drafts(ref.read(generateProvider));
     _loaded = true;
+    _loadedCanvasId = ref.read(canvasWorkspaceProvider).activeId;
     _notifier.load(
       positive: drafts.$1,
       negative: drafts.$2,
@@ -230,6 +236,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
 
   @override
   void dispose() {
+    _sessions.prepareInputs.remove(_prepareInputForSwitch);
     _lifecycle?.dispose();
     _debounce?.cancel();
     _transSvc.removeListener(_refreshAnnotations);
@@ -1051,7 +1058,13 @@ class _EditorPageState extends ConsumerState<EditorPage>
   }
 
   /// 回车/「直接添加」:整条落成标签。
-  void _commitInput() {
+  void _prepareInputForSwitch() {
+    if (mounted && _loaded && _chipMode && _inputText.trim().isNotEmpty) {
+      _commitInput(restoreFocus: false);
+    }
+  }
+
+  void _commitInput({bool restoreFocus = true}) {
     final raw = _inputText.trim();
     if (raw.isEmpty) {
       _clearSuggest();
@@ -1059,7 +1072,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
     }
     _resetInput();
     _appendTag(raw);
-    _inputFocus.requestFocus();
+    if (restoreFocus) _inputFocus.requestFocus();
   }
 
   /// 末尾追加一枚标签。[quiet] = 不重算 dock(补全弹层里连续插入时用:
@@ -1505,7 +1518,8 @@ class _EditorPageState extends ConsumerState<EditorPage>
     if (widget.embedded) {
       ref.listen(generateProvider, (previous, next) {
         if (!_loaded || _notifier.isWritingBack || previous == null) return;
-        if (_drafts(previous) != _drafts(next) ||
+        if (_loadedCanvasId != ref.read(canvasWorkspaceProvider).activeId ||
+            _drafts(previous) != _drafts(next) ||
             !listEquals(_links(previous), _links(next))) {
           _loadFromGenerate(ref.read(editorProvider).activePositive);
         }

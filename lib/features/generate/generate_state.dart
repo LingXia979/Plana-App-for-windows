@@ -7,6 +7,7 @@ import '../../core/store/app_stores.dart';
 import '../editor/editor_models.dart' show PromptFoldLink;
 import '../vibe_library/naiv4vibe_codec.dart' show kModelToEncodingKey;
 import 'agent_chars.dart';
+import 'canvas_state.dart';
 import 'char_position.dart';
 import 'gen_modules.dart';
 import 'lora_triggers.dart' show removeLoraTriggersFromPrompt;
@@ -29,12 +30,27 @@ class GenerateNotifier extends Notifier<GenerateState> {
 
   @override
   GenerateState build() {
-    // 启动水合 + 每次状态变更排队防抖落盘:重启回到原样工作台
+    // 启动水合 + 每次状态变更抄回当前画布、排队防抖落盘:重启回到原样工作台
     final ws = ref.watch(appStoresProvider).workspace;
     _idSeq = ws.idSeq;
-    listenSelf((_, next) => ws.schedule(next, idSeq: _idSeq));
+    listenSelf((_, next) {
+      ref.read(canvasWorkspaceProvider.notifier).record(next, idSeq: _idSeq);
+    });
     return ws.initial ?? GenerateState.initial();
   }
+
+  /// 换上画布的提示词、模型和采样参数，保留共享的参考图等输入。
+  void applyCanvas(CanvasPrompts prompts, {bool force = false}) {
+    if (!force && CanvasPrompts.of(state).sameAs(prompts)) return;
+    state = prompts.applyTo(state);
+  }
+
+  /// 把全局设置整份换回 [s],当前画布的词不动(撤销一次整体写入时用,
+  /// 词由 [CanvasWorkspaceNotifier.undoWrite] 另行还给原画布)。
+  void restoreGlobals(GenerateState s) =>
+      state = CanvasPrompts.of(state).applyTo(s);
+
+  void setPromptPreset(String id) => state = state.copyWith(promptPresetId: id);
 
   String _newId() => 'id${_idSeq++}';
 
@@ -541,33 +557,37 @@ class GenerateNotifier extends Notifier<GenerateState> {
   /// 那意味着用户在下载期间把它移除了,或者中途载入了别的工作区/快照。
   /// 这两种情况下他手上的配置里都没有这一条,下载完再塞回去就是个幽灵改动:
   /// 明明点了移除,过几分钟它自己又回来了。装好的本体在库里,要用去挂载即可。
+  ///
+  /// 下载途中切去了另一个底模的模型 / 画布,占位条就收在 [GenerateState.loraMem]
+  /// 里,在那儿转正,切回来时已经是装好的样子。
   bool promotePendingLora(String placeholder, ActiveLora real) {
-    final idx = state.loras.indexWhere((l) => l.name == placeholder);
-    if (idx < 0) return false;
-    final old = state.loras[idx];
-    final dup = state.loras.any((l) => l.name == real.name);
-    state = state.copyWith(
-      loras: [
-        for (var i = 0; i < state.loras.length; i++)
+    List<ActiveLora>? promote(List<ActiveLora> list) {
+      final idx = list.indexWhere((l) => l.name == placeholder);
+      if (idx < 0) return null;
+      final old = list[idx];
+      final dup = list.any((l) => l.name == real.name);
+      return [
+        for (var i = 0; i < list.length; i++)
           if (i != idx)
-            state.loras[i]
+            list[i]
           else if (!dup)
             real.copyWith(
               weight: old.weight,
               enabled: old.enabled,
               clipWeight: old.clipWeight,
             ),
-      ],
-    );
-    return true;
+      ];
+    }
+
+    return _updateLoraLists(promote);
   }
 
   /// 占位条下载失败:标红并停用,留在原地等用户处理(移除或重新导入)。
   void markLoraFailed(String placeholder, String reason) {
-    if (!state.loras.any((l) => l.name == placeholder)) return;
-    state = state.copyWith(
-      loras: [
-        for (final l in state.loras)
+    _updateLoraLists((list) {
+      if (!list.any((l) => l.name == placeholder)) return null;
+      return [
+        for (final l in list)
           if (l.name == placeholder)
             l.copyWith(
               enabled: false,
@@ -578,8 +598,25 @@ class GenerateNotifier extends Notifier<GenerateState> {
             )
           else
             l,
-      ],
-    );
+      ];
+    });
+  }
+
+  /// 先在挂着的列表里改,找不到再去收起来的那几份([GenerateState.loraMem])里改。
+  /// [change] 返回 null = 这份里没有要改的。
+  bool _updateLoraLists(List<ActiveLora>? Function(List<ActiveLora>) change) {
+    final active = change(state.loras);
+    if (active != null) {
+      state = state.copyWith(loras: active);
+      return true;
+    }
+    for (final e in state.loraMem.entries) {
+      final stashed = change(e.value);
+      if (stashed == null) continue;
+      state = state.copyWith(loraMem: {...state.loraMem, e.key: stashed});
+      return true;
+    }
+    return false;
   }
 
   void removeLora(String name) {
@@ -769,9 +806,13 @@ class GenerateNotifier extends Notifier<GenerateState> {
     // 换档位时先把旧档那套收进记忆(与 setModel 同一套规矩)。**不**跟着取回
     // 新档的:导入面板给了哪些字段就落哪些,没勾的项保持不动是这条路的本意。
     var cur = state.params;
-    if (model != null && model != cur.model) cur = cur.rememberModalSampling();
+    var base = state;
+    if (model != null && model != cur.model) {
+      cur = cur.rememberModalSampling();
+      base = state.withLoraBaseOf(model);
+    }
     final medium = cur.copyWith(model: model, naiEffort: naiEffort).isNaiMedium;
-    state = state.copyWith(
+    state = base.copyWith(
       // 导入面板勾了模型这一项时也可能把槽位换小,同 setModel 一样收口。
       // 角色是在这之前落地的(导入面板先加角色再落设置),所以得在这儿再过一遍。
       characters: _capEnabled(state.characters, model ?? cur.model),
@@ -811,24 +852,20 @@ class GenerateNotifier extends Notifier<GenerateState> {
   /// 这档,调好的步数/CFG 就没了。联动的初衷(切到慢档别还挂着蒸馏档的 12 步)
   /// 由「没进过的档才套配方」保住。
   ///
-  /// 换 LoRA 底模时连带清空已挂的:上一个库的 LR 编号在新库里查无此条,
-  /// 留着发出去服务端会静默丢弃,等于白跑一次生成(对齐 web prevLoraBaseRef)。
-  /// NAI 归在 anima 那一侧,所以 NAI↔Anima 来回切不动列表,只有进出 Krea 才清。
+  /// LoRA 按底模分别保留，切回时恢复挂载；NAI 与 Anima 共用一组。
   void setModel(String model) {
     // 收好旧档 → 换名 → 取回新档,顺序不能反(两步各自认 params.model)
     final p = state.params
         .rememberModalSampling()
         .copyWith(model: model)
         .recallModalSampling();
-    final baseChanged =
-        loraBaseOf(model) != loraBaseOf(state.params.model) &&
-        state.loras.isNotEmpty;
-    state = state.copyWith(
-      params: p,
-      loras: baseChanged ? const [] : null,
-      // 5 → 4/4.5 槽位从 32 掉到 6,超出的尾巴就地停用(见 [_capEnabled])
-      characters: _capEnabled(state.characters, model),
-    );
+    state = state
+        .withLoraBaseOf(model)
+        .copyWith(
+          params: p,
+          // 5 → 4/4.5 槽位从 32 掉到 6,超出的尾巴就地停用(见 [_capEnabled])
+          characters: _capEnabled(state.characters, model),
+        );
   }
 
   void setNaiEffort(NaiEffort effort) {

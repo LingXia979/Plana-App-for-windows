@@ -20,6 +20,8 @@ import 'package:plana_app/features/assistant/custom_endpoint.dart';
 import 'package:plana_app/features/assistant/direct_agent.dart';
 import 'package:plana_app/features/assistant/preset_rules.dart';
 import 'package:plana_app/features/assistant/session_store.dart';
+import 'package:plana_app/features/generate/canvas_state.dart';
+import 'package:plana_app/features/generate/generate_state.dart';
 
 class _TestSession extends BotSessionNotifier {
   @override
@@ -34,6 +36,12 @@ class _TestSettings extends AssistantSettingsNotifier {
     libraryScope: LibraryScope.none,
     stream: false,
   );
+}
+
+class _AutoImportSettings extends _TestSettings {
+  @override
+  Future<AssistantSettings> build() async =>
+      (await super.build()).copyWith(autoImport: true);
 }
 
 class _TestRules extends RulesLibraryNotifier {
@@ -80,14 +88,16 @@ void main() {
     await temp.delete(recursive: true);
   });
 
-  Future<ProviderContainer> boot(String base) async {
+  Future<ProviderContainer> boot(String base, {bool autoImport = false}) async {
     final c = ProviderContainer(
       overrides: [
         appStoresProvider.overrideWithValue(stores),
         botSessionProvider.overrideWith(_TestSession.new),
         assistantEndpointProvider.overrideWithValue(null),
         backendBaseProvider.overrideWith(() => _TestBackend(base)),
-        assistantSettingsProvider.overrideWith(_TestSettings.new),
+        assistantSettingsProvider.overrideWith(
+          autoImport ? _AutoImportSettings.new : _TestSettings.new,
+        ),
         rulesLibraryProvider.overrideWith(_TestRules.new),
       ],
     );
@@ -564,6 +574,56 @@ void main() {
         contains('$kAssistantMaxAttachments'),
       );
       expect(await stores.assistant.liveRefs(), isEmpty);
+    },
+  );
+  test(
+    'delayed assistant response never overwrites another canvas; undo targets the import canvas',
+    () async {
+      final received = Completer<void>();
+      final release = Completer<void>();
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => server.close(force: true));
+      server.listen((request) async {
+        await utf8.decoder.bind(request).join();
+        received.complete();
+        await release.future;
+        request.response.headers.contentType = ContentType(
+          'text',
+          'event-stream',
+          charset: 'utf-8',
+        );
+        request.response.write(
+          'event: final\ndata: {"positive":"assistant proposal"}\n\n',
+        );
+        await request.response.close();
+      });
+      final c = await boot('http://127.0.0.1:${server.port}', autoImport: true);
+      final gen = c.read(generateProvider.notifier);
+      final canvases = c.read(canvasWorkspaceProvider.notifier);
+      final a = c.read(canvasWorkspaceProvider).activeId;
+      gen.setPrompts(positive: 'draft A');
+      final assistant = c.read(assistantProvider.notifier);
+      final running = turn(
+        c,
+        () => assistant.send('synthetic request', withCanvas: true),
+      );
+      await received.future.timeout(const Duration(seconds: 10));
+      final b = canvases.create();
+      gen.setPrompts(positive: 'draft B');
+      release.complete();
+      await running;
+      final reply = c.read(assistantProvider).msgs.last;
+      expect(reply.draw?.positive, 'assistant proposal');
+      expect(reply.change, isNull);
+      expect(c.read(generateProvider).prompt, 'draft B');
+      canvases.select(a);
+      expect(assistant.applyProposal(reply.id), isTrue);
+      expect(c.read(generateProvider).prompt, 'assistant proposal');
+      canvases.select(b);
+      expect(assistant.undo(reply.id), isTrue);
+      expect(c.read(generateProvider).prompt, 'draft B');
+      canvases.select(a);
+      expect(c.read(generateProvider).prompt, 'draft A');
     },
   );
 }

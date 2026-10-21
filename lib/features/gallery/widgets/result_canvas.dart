@@ -1045,10 +1045,17 @@ class _ActionRailState extends ConsumerState<ResultActions> {
       await ref.read(appStoresProvider).gallery.readImage(result.id);
 
   /// 参数快照:内存优先;盘上有(hasInput)则懒读,读失败/无快照为 null。
+  /// 没记预设的老图按当前画布那一档(同当时出图时用的是当下选的档)。
   Future<GenerateState?> _inputOf(WidgetRef ref) async =>
       result.input ??
       (result.hasInput
-          ? await ref.read(appStoresProvider).gallery.readInput(result.id)
+          ? await ref
+                .read(appStoresProvider)
+                .gallery
+                .readInput(
+                  result.id,
+                  presetFallback: ref.read(generateProvider).promptPresetId,
+                )
           : null);
 
   /// 重绘一次只能有一条 —— 回贴信息(裁切框/原图)是随会话共享的,两条同时跑会串。

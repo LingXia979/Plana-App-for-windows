@@ -852,19 +852,22 @@ class DashedBorderPainter extends CustomPainter {
 /// 二次确认弹窗。[danger] 决定确认键用不用错误色 —— 默认真,因为这个函数的
 /// 调用点绝大多数是删除/清空。发布、同意这类**不会毁数据**的动作传 false,
 /// 否则一个红底的「我已确认,发布」看着像在警告用户别按。
+/// [body] 给了就用它当正文(参数表之类排过版的内容),否则用 [message] 那段字。
 Future<bool> confirmDialog(
   BuildContext context, {
   required String title,
-  required String message,
+  String? message,
+  Widget? body,
   String confirmLabel = '确定',
   String cancelLabel = '取消',
   bool danger = true,
 }) async {
+  assert(message != null || body != null);
   final ok = await showDialog<bool>(
     context: context,
     builder: (context) => AlertDialog(
       title: Text(title),
-      content: Text(message),
+      content: body ?? Text(message ?? ''),
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(context, false),

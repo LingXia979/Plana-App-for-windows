@@ -25,6 +25,7 @@ import 'package:plana_app/features/assistant/custom_endpoint.dart';
 import 'package:plana_app/features/gallery/albums/album_state.dart';
 import 'package:plana_app/features/gallery/gallery_state.dart';
 import 'package:plana_app/features/generate/generate_state.dart';
+import 'package:plana_app/features/generate/canvas_state.dart';
 import 'package:plana_app/features/generate/models.dart';
 import 'package:plana_app/features/shell/shell_state.dart';
 import 'package:plana_app/features/inpaint/inpaint_overlay.dart';
@@ -1208,4 +1209,32 @@ void main() {
       }),
     );
   }
+  testWidgets(
+    'multi-canvas workspace retains Medium controls at compact and large text sizes',
+    (tester) async {
+      final gen = c.read(generateProvider.notifier);
+      final canvases = c.read(canvasWorkspaceProvider.notifier);
+      gen.setModel('NAI 5.0 Full');
+      gen.setNaiEffort(NaiEffort.medium);
+      gen.setPrompts(positive: 'blue sky, soft light', negative: 'rain');
+      for (var i = 1; i <= 7; i++) {
+        final id = canvases.create(duplicate: true);
+        canvases.rename(id, '合成场景 $i');
+      }
+      await mount(tester, const Size(1440, 900));
+      expect(find.text('Medium', skipOffstage: false), findsOneWidget);
+      expect(key('desktop-canvas-tabs'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await screenshot(tester, 'windows50-canvas-wide');
+      c
+          .read(themeSettingsProvider.notifier)
+          .patch((s) => s.copyWith(textScale: 1.4));
+      tester.view.physicalSize = const Size(900, 760);
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(c.read(generateProvider).params.isNaiMedium, isTrue);
+      await screenshot(tester, 'windows50-canvas-compact');
+      await drainWrites(tester);
+    },
+  );
 }

@@ -10,6 +10,7 @@ import '../generate_state.dart';
 import '../gpu_rental.dart';
 import '../models.dart' as m;
 import 'anlas_panel.dart';
+import 'canvas_picker.dart';
 import 'common.dart' show hintSnack;
 import 'rental_panel.dart';
 
@@ -68,77 +69,80 @@ class GenerateTopBar extends ConsumerWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              // 模型选择
-              Flexible(
-                child: Padding(
-                  padding: const EdgeInsets.only(right: 8),
-                  child: ref.watch(desktopModeProvider)
-                      ? const _DesktopModelDropdown()
-                      : Material(
-                          color: scheme.surfaceContainerHigh,
-                          borderRadius: BorderRadius.circular(19),
-                          clipBehavior: Clip.antiAlias,
-                          child: InkWell(
-                            onTap: () => _pickModel(context, ref),
-                            child: Padding(
-                              padding: const EdgeInsets.only(
-                                left: 14,
-                                right: 8,
-                              ),
-                              child: SizedBox(
-                                height: 42,
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Flexible(
-                                      child: AnimatedSwitcher(
-                                        duration: Motion.fast,
-                                        child: Text(
-                                          state.params.model,
-                                          key: ValueKey(state.params.model),
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: context.texts.bodyMedium!
-                                              .copyWith(
-                                                fontWeight: FontWeight.w600,
-                                                color: scheme.onSurface,
-                                              ),
+          if (!ref.watch(desktopModeProvider))
+            _mobileBar(context, ref)
+          else
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                // 模型选择
+                Flexible(
+                  child: Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: ref.watch(desktopModeProvider)
+                        ? const _DesktopModelDropdown()
+                        : Material(
+                            color: scheme.surfaceContainerHigh,
+                            borderRadius: BorderRadius.circular(19),
+                            clipBehavior: Clip.antiAlias,
+                            child: InkWell(
+                              onTap: () => _pickModel(context, ref),
+                              child: Padding(
+                                padding: const EdgeInsets.only(
+                                  left: 14,
+                                  right: 8,
+                                ),
+                                child: SizedBox(
+                                  height: 42,
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Flexible(
+                                        child: AnimatedSwitcher(
+                                          duration: Motion.fast,
+                                          child: Text(
+                                            state.params.model,
+                                            key: ValueKey(state.params.model),
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: context.texts.bodyMedium!
+                                                .copyWith(
+                                                  fontWeight: FontWeight.w600,
+                                                  color: scheme.onSurface,
+                                                ),
+                                          ),
                                         ),
                                       ),
-                                    ),
-                                    const SizedBox(width: 2),
-                                    Icon(
-                                      Icons.expand_more,
-                                      size: 20,
-                                      color: scheme.outline,
-                                    ),
-                                  ],
+                                      const SizedBox(width: 2),
+                                      Icon(
+                                        Icons.expand_more,
+                                        size: 20,
+                                        color: scheme.outline,
+                                      ),
+                                    ],
+                                  ),
                                 ),
                               ),
                             ),
                           ),
-                        ),
+                  ),
                 ),
-              ),
-              // 右侧那个位置给谁,看当前模型花的是哪种钱:
-              //  - Anima / Krea 不扣 Anlas,余额摆在那儿是个永远不动的死数 ——
-              //    换成算力来源(免费共享 / 独享实例,运行中直接报计时与费用);
-              //  - NAI 但实例还活着:那台在烧 ¥4/时,比余额紧急,也让位;
-              //  - 其余交给余额胶囊 —— 它自己再按模型分:NAI 5 花的是按时间回充的
-              //    额度电池,报百分比;别的报 Anlas。
-              // 单独取出来再判:写成 `isModal || rental.active` 会因为短路
-              // 让 NAI 之外的路径**不订阅** gpuRentalProvider —— 那样冷启动时
-              // 没人把它建起来,也就不会去问「我上次那台还在不在跑」。
-              if (m.isModalModel(state.params.model) || rentalActive)
-                const RentalSourceChip(height: 42)
-              else
-                // 余额 / NAI 5 额度(点开是「点数与额度」弹层)
-                const AnlasChip(height: 42),
-            ],
-          ),
+                // 右侧那个位置给谁,看当前模型花的是哪种钱:
+                //  - Anima / Krea 不扣 Anlas,余额摆在那儿是个永远不动的死数 ——
+                //    换成算力来源(免费共享 / 独享实例,运行中直接报计时与费用);
+                //  - NAI 但实例还活着:那台在烧 ¥4/时,比余额紧急,也让位;
+                //  - 其余交给余额胶囊 —— 它自己再按模型分:NAI 5 花的是按时间回充的
+                //    额度电池,报百分比;别的报 Anlas。
+                // 单独取出来再判:写成 `isModal || rental.active` 会因为短路
+                // 让 NAI 之外的路径**不订阅** gpuRentalProvider —— 那样冷启动时
+                // 没人把它建起来,也就不会去问「我上次那台还在不在跑」。
+                if (m.isModalModel(state.params.model) || rentalActive)
+                  const RentalSourceChip(height: 42)
+                else
+                  // 余额 / NAI 5 额度(点开是「点数与额度」弹层)
+                  const AnlasChip(height: 42),
+              ],
+            ),
           if (m.naiSupportsEffort(state.params.model)) ...[
             const SizedBox(height: 10),
             Row(
@@ -185,6 +189,88 @@ class GenerateTopBar extends ConsumerWidget {
             ],
           ],
         ],
+      ),
+    );
+  }
+
+  Widget _mobileBar(BuildContext context, WidgetRef ref) {
+    final model = ref.watch(generateProvider.select((s) => s.params.model));
+    final rentalActive = ref.watch(gpuRentalProvider).active;
+    final scheme = context.scheme;
+    final textScale = MediaQuery.textScalerOf(context).scale(14) / 14;
+    final extra = (textScale - 1).clamp(0.0, double.infinity);
+    final rowHeight = 44.0 + extra * 20;
+    return Padding(
+      padding: EdgeInsets.zero,
+      child: LayoutBuilder(
+        builder: (context, constraints) => Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Flexible(
+              flex: 4,
+              child: SizedBox(height: rowHeight, child: const CanvasPicker()),
+            ),
+            const SizedBox(width: 4),
+            Flexible(
+              flex: 5,
+              child: Tooltip(
+                message: '切换模型：$model',
+                child: Semantics(
+                  button: true,
+                  label: '切换模型，当前 $model',
+                  child: Material(
+                    color: Colors.transparent,
+                    borderRadius: BorderRadius.circular(12),
+                    clipBehavior: Clip.antiAlias,
+                    child: InkWell(
+                      onTap: () => _pickModel(context, ref),
+                      child: Padding(
+                        padding: const EdgeInsets.only(left: 2),
+                        child: SizedBox(
+                          height: rowHeight,
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Flexible(
+                                child: Text(
+                                  model,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: context.texts.bodyMedium!.copyWith(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w600,
+                                    color: scheme.onSurface,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 3),
+                              Icon(
+                                Icons.expand_more,
+                                size: 20,
+                                color: scheme.outline,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 4),
+            ConstrainedBox(
+              constraints: BoxConstraints(maxWidth: constraints.maxWidth * .38),
+              child: SizedBox(
+                height: rowHeight,
+                // 持续订阅实例状态，NAI 下也显示仍在计费的算力。
+                child: m.isModalModel(model) || rentalActive
+                    ? const RentalSourceChip(compact: true)
+                    : const AnlasChip(compact: true),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

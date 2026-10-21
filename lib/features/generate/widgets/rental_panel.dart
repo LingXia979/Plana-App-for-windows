@@ -7,6 +7,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/util/haptics.dart';
 import '../gpu_rental.dart';
 import 'common.dart' show hintSnack;
+import 'top_bar_status.dart';
 
 /// 算力来源:模型弹层里 Anima / Krea 两页共用的那一块,以及顶栏那枚状态胶囊。
 ///
@@ -30,10 +31,11 @@ int _now() => DateTime.now().millisecondsSinceEpoch;
 /// 又占着列表的底边。最后落在标题行:那一行本来就存在、右侧一直空着,
 /// **列表的可用高度一点没少**,而状态照样一眼可见。
 class RentalSourceChip extends ConsumerWidget {
-  const RentalSourceChip({super.key, this.height = 32});
+  const RentalSourceChip({super.key, this.height = 32, this.compact = false});
 
-  /// 弹层标题行用 32,创作页顶栏用 42(与模型胶囊 / Anlas 胶囊同高)。
+  /// 弹层标题行的胶囊高度；compact 模式由融合顶栏统一约束。
   final double height;
+  final bool compact;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -59,6 +61,33 @@ class RentalSourceChip extends ConsumerWidget {
     // 一个点足够说明"有台机器在烧钱"了。彩色留给真正需要抢注意的失败态。
     final failed = s.status == RentalStatus.failed;
     final fg = failed ? scheme.error : scheme.onSurfaceVariant;
+
+    if (compact) {
+      return TopBarStatus(
+        tooltip: '算力与费用',
+        // 没开机时只报一句:共享通道「免费共享」,独享通道「未启动」(图标已分开两条线)
+        value: s.status == RentalStatus.ready
+            ? fmtUptime(s.elapsedAt(now))
+            : switch (s.status) {
+                RentalStatus.none => rented ? '未启动' : '免费共享',
+                _ => value,
+              },
+        detail: s.status == RentalStatus.ready
+            ? fmtYuan(s.priceAt(now))
+            : switch (s.status) {
+                RentalStatus.none => null,
+                RentalStatus.failed => '查看详情',
+                _ => '独享算力',
+              },
+        icon: failed
+            ? Icons.error_outline
+            : (s.active || rented ? Icons.memory : Icons.groups_outlined),
+        valueColor: failed || s.active
+            ? (failed ? scheme.error : scheme.primary)
+            : fg,
+        onTap: () => showRentalSheet(context),
+      );
+    }
 
     return Material(
       color: scheme.surfaceContainerHigh,

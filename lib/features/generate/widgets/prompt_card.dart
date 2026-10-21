@@ -23,7 +23,7 @@ class PromptCard extends ConsumerWidget {
     // 角色串取 countedCharactersProvider —— 模块不可见(anima 等)时为空,
     // 不然会出现「切到 anima 计数凭空变大」的幽灵。
     final tok = ref.watch(naiTokenizerProvider).value;
-    final preset = ref.watch(promptPresetsProvider).value?.active;
+    final preset = ref.watch(activePromptPresetProvider);
     final chars = ref.watch(countedCharactersProvider);
     final promptTokens = totalPromptTokens(
       tok,

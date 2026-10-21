@@ -143,6 +143,7 @@ Future<EncodedState> encodeGenerateState(
   final json = <String, dynamic>{
     'prompt': s.prompt,
     'negativePrompt': s.negativePrompt,
+    'promptPresetId': s.promptPresetId,
     // 编辑器原文草稿:与定稿无差别时为空,空就不写(绝大多数存档不带这两键)
     if (s.promptRaw.isNotEmpty) 'promptRaw': s.promptRaw,
     if (s.negativePromptRaw.isNotEmpty)
@@ -167,25 +168,14 @@ Future<EncodedState> encodeGenerateState(
     ],
     'vibes': vibes,
     'charRefs': charRefs,
-    // LoRA 无图片字节(previewUrl 是远端直链),整条直接进 JSON
-    // 下载中的占位条不入存档:安装队列在内存里,重启就没了,存回来只会是一条
-    // 永远停在「排队中」、还悄悄不参与生成的僵尸条目。
-    if (s.loras.any((l) => l.pending == null))
-      'loras': [
-        for (final l in s.loras)
-          if (l.pending == null)
-            {
-              'name': l.name,
-              'displayName': l.displayName,
-              'weight': l.weight,
-              'enabled': l.enabled,
-              if (l.clipWeight != null) 'clipWeight': l.clipWeight,
-              if (l.hasTe != null) 'hasTe': l.hasTe,
-              'triggerWords': l.triggerWords,
-              if (l.previewUrl.isNotEmpty) 'previewUrl': l.previewUrl,
-              'type': l.type,
-            },
-      ],
+    if (s.loras.any((l) => l.pending == null)) 'loras': _encodeLoras(s.loras),
+    // 收起来的另一个底模那份(见 GenerateState.loraMem),没有就整键不写
+    if (s.loraMem.values.any((v) => v.any((l) => l.pending == null)))
+      'loraMem': {
+        for (final e in s.loraMem.entries)
+          if (e.value.any((l) => l.pending == null))
+            e.key: _encodeLoras(e.value),
+      },
     if (kreaStyleRefs.isNotEmpty) 'kreaStyleRefs': kreaStyleRefs,
     // 强度无条件写(不跟着图走):同一份 codec 也在存创作页工作区,只在有图时
     // 存的话,把参考图清空再重启,调好的强度就没了。
@@ -329,10 +319,13 @@ Future<EncodedState> encodeGenerateState(
   return (characters: out, useCoords: true);
 }
 
+/// [presetFallback]:存的时候还没记提示词预设的(1.1.1 及以前的存档和图库
+/// 快照)用哪一档;不给就用 [kDefaultPromptPresetId]。
 Future<GenerateState> decodeGenerateState(
   Map<String, dynamic> j,
-  BlobStore blobs,
-) async {
+  BlobStore blobs, {
+  String? presetFallback,
+}) async {
   Future<Uint8List?> img(Object? hash) async =>
       hash is String && hash.isNotEmpty ? blobs.get(hash) : null;
 
@@ -438,37 +431,12 @@ Future<GenerateState> decodeGenerateState(
     }
   }
 
-  final loras = <ActiveLora>[];
-  if (j['loras'] is List) {
-    for (final e in j['loras'] as List) {
-      if (e is! Map) continue;
-      final name = e['name'];
-      if (name is! String || name.isEmpty) continue;
-      loras.add(
-        ActiveLora(
-          name: name,
-          displayName: e['displayName'] is String
-              ? e['displayName'] as String
-              : name,
-          weight: (e['weight'] as num?)?.toDouble() ?? 0.8,
-          enabled: e['enabled'] != false,
-          clipWeight: (e['clipWeight'] as num?)
-              ?.toDouble(), // 缺省 null=跟随 weight
-          hasTe: e['hasTe'] is bool ? e['hasTe'] as bool : null,
-          triggerWords: e['triggerWords'] is List
-              ? [
-                  for (final t in e['triggerWords'] as List)
-                    if (t is String && t.isNotEmpty) t,
-                ]
-              : const [],
-          previewUrl: e['previewUrl'] is String
-              ? e['previewUrl'] as String
-              : '',
-          type: e['type'] is String ? e['type'] as String : 'concept',
-        ),
-      );
-    }
-  }
+  final loras = _decodeLoras(j['loras']);
+  final loraMem = <String, List<ActiveLora>>{
+    if (j['loraMem'] is Map)
+      for (final e in (j['loraMem'] as Map).entries)
+        if (e.key is String) e.key as String: _decodeLoras(e.value),
+  }..removeWhere((_, v) => v.isEmpty);
 
   Img2ImgConfig? img2img;
   if (j['img2img'] is Map) {
@@ -660,6 +628,9 @@ Future<GenerateState> decodeGenerateState(
   }
 
   return GenerateState(
+    promptPresetId: j['promptPresetId'] is String
+        ? j['promptPresetId'] as String
+        : presetFallback ?? kDefaultPromptPresetId,
     prompt: j['prompt'] is String ? j['prompt'] as String : '',
     negativePrompt: j['negativePrompt'] is String
         ? j['negativePrompt'] as String
@@ -676,8 +647,57 @@ Future<GenerateState> decodeGenerateState(
     anlas: (j['anlas'] as num?)?.toInt() ?? 0,
     openPanels: openPanels,
     loras: loras,
+    loraMem: loraMem,
     kreaStyleRefs: kreaStyleRefs,
     kreaStyleRefWeight: (j['kreaStyleRefWeight'] as num?)?.toDouble() ?? 1.0,
     inpaint: inpaint,
   ).copyWith(promptFoldLinks: PromptFoldLink.decode(j['promptFoldLinks']));
+}
+
+/// LoRA 无图片字节(previewUrl 是远端直链),整条直接进 JSON。
+/// 下载中的占位条不入存档:安装队列在内存里,重启就没了,存回来只会是一条
+/// 永远停在「排队中」、还悄悄不参与生成的僵尸条目。
+List<Map<String, dynamic>> _encodeLoras(List<ActiveLora> loras) => [
+  for (final l in loras)
+    if (l.pending == null)
+      {
+        'name': l.name,
+        'displayName': l.displayName,
+        'weight': l.weight,
+        'enabled': l.enabled,
+        if (l.clipWeight != null) 'clipWeight': l.clipWeight,
+        if (l.hasTe != null) 'hasTe': l.hasTe,
+        'triggerWords': l.triggerWords,
+        if (l.previewUrl.isNotEmpty) 'previewUrl': l.previewUrl,
+        'type': l.type,
+      },
+];
+
+List<ActiveLora> _decodeLoras(Object? raw) {
+  if (raw is! List) return const [];
+  return [
+    for (final e in raw)
+      if (e is Map && e['name'] is String && (e['name'] as String).isNotEmpty)
+        ActiveLora(
+          name: e['name'] as String,
+          displayName: e['displayName'] is String
+              ? e['displayName'] as String
+              : e['name'] as String,
+          weight: (e['weight'] as num?)?.toDouble() ?? 0.8,
+          enabled: e['enabled'] != false,
+          clipWeight: (e['clipWeight'] as num?)
+              ?.toDouble(), // 缺省 null=跟随 weight
+          hasTe: e['hasTe'] is bool ? e['hasTe'] as bool : null,
+          triggerWords: e['triggerWords'] is List
+              ? [
+                  for (final t in e['triggerWords'] as List)
+                    if (t is String && t.isNotEmpty) t,
+                ]
+              : const [],
+          previewUrl: e['previewUrl'] is String
+              ? e['previewUrl'] as String
+              : '',
+          type: e['type'] is String ? e['type'] as String : 'concept',
+        ),
+  ];
 }

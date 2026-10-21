@@ -696,7 +696,11 @@ class _PresetRow extends ConsumerWidget {
     // 存的那个档在当前模型下可能根本不在列表里(切了模型、档没跟着换)。
     // 这里只是**显示**成同强度的那一档 —— 真正落地由 _applyPreset 再算一次,
     // 不在这儿写回:草稿里的模型用户还可能取消。
-    final activeId = remapPromptPresetId(s.activeId, s.presets, model);
+    final activeId = remapPromptPresetId(
+      ref.watch(activePromptPresetIdProvider),
+      s.presets,
+      model,
+    );
     return Row(
       children: [
         Expanded(

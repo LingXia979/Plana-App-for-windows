@@ -208,9 +208,12 @@ class GenNoticeNotifier extends Notifier<String?> {
 
 /// 一条任务的运行时句柄(不进 UI 状态:中止令牌和 Key 槽位对渲染没意义)。
 class _JobRun {
-  _JobRun(this.abort);
+  _JobRun(this.abort, this.presets);
 
   final GenAbort abort;
+
+  /// 受理时捕获预设库快照，等位期间切画布/改预设不改变这一单。
+  final Future<PromptPresetsState> presets;
 
   /// 服务端任务 id(bot 模式提交成功后才有),取消排队要用。
   String? taskId;
@@ -430,10 +433,15 @@ class GenerationNotifier extends Notifier<GenPool> {
   /// 正面拼前还是拼后由预设自己说了算(V5 档是后缀,见 [PromptPreset.suffixPositive])。
   /// 当前模型看不到的档(切了模型但档没跟着换)先映射到同强度的那一档 ——
   /// 否则 4.5 的质量词会被拼进 V5 的请求里。
-  Future<({GenerateState state, String presetId, bool qualityToggle})>
-  _applyPreset(GenerateState s) async {
-    final ps = await ref.read(promptPresetsProvider.future);
-    final id = remapPromptPresetId(ps.activeId, ps.presets, s.params.model);
+  ({GenerateState state, String presetId, bool qualityToggle}) _applyPreset(
+    GenerateState s,
+    PromptPresetsState ps,
+  ) {
+    final id = remapPromptPresetId(
+      selectedPromptPresetId(s, ps),
+      ps.presets,
+      s.params.model,
+    );
     final p = ps.presets.where((e) => e.id == id).firstOrNull;
     final qt = p != null && p.positive.isNotEmpty;
     if (p == null || (p.positive.isEmpty && p.negative.isEmpty)) {
@@ -526,7 +534,7 @@ class GenerationNotifier extends Notifier<GenPool> {
         _ => null,
       },
     );
-    final run = _JobRun(GenAbort());
+    final run = _JobRun(GenAbort(), ref.read(promptPresetsProvider.future));
     _focusRevision++;
     _runs[job.id] = run;
     state = state.copyWith(
@@ -681,7 +689,7 @@ class GenerationNotifier extends Notifier<GenPool> {
         // 3. 角色参考:contain 处理底图(无编码调用,载荷层按模型 gate)
         final charRefs = await _processCharRefs(s);
         // 4. 拼载荷 + 流式生成
-        final preset = await _applyPreset(s);
+        final preset = _applyPreset(s, await run.presets);
         built = buildNaiPayload(
           focusedRequestState(preset.state),
           presetId: preset.presetId,
@@ -1038,7 +1046,7 @@ class GenerationNotifier extends Notifier<GenPool> {
         final charRefs = await _processCharRefs(s);
         final prepared = await _prepareVibes(s);
         final styleRefs = await _processKreaStyleRefs(s);
-        final preset = await _applyPreset(s);
+        final preset = _applyPreset(s, await run.presets);
         final params = buildBotParams(
           focusedRequestState(preset.state),
           seed: seed,

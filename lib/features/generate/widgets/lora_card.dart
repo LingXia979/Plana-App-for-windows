@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -32,6 +34,10 @@ class _LoraCardState extends ConsumerState<LoraCard> {
   String? _selectedName;
   void Function()? _dropInstallHandler;
 
+  /// 正在收尾的任务(按 versionId):装好的回调和下面的补接、换模型时新旧两张
+  /// 卡片,都可能撞上同一条。
+  static final _handling = <int>{};
+
   @override
   void initState() {
     super.initState();
@@ -39,6 +45,14 @@ class _LoraCardState extends ConsumerState<LoraCard> {
     _dropInstallHandler = ref
         .read(loraInstallQueueProvider.notifier)
         .onInstalled(_onLoraInstalled);
+    // 装好的那一刻卡片不在(切去了没有 LoRA 模块的模型 / 画布),那条没人接,
+    // 占位条会一直停在「下载中」:卡片回来时把队列里没收尾的补上。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      for (final job in ref.read(loraInstallQueueProvider)) {
+        if (!job.pending) unawaited(_onLoraInstalled(job));
+      }
+    });
   }
 
   @override
@@ -47,9 +61,14 @@ class _LoraCardState extends ConsumerState<LoraCard> {
     super.dispose();
   }
 
+  /// 转正 / 标红是状态上的事,卡片中途被拆也照做(用到的先取到手);只有提示
+  /// 条要看卡片还在不在。
   Future<void> _onLoraInstalled(LoraInstallJob job) async {
+    if (!_handling.add(job.versionId)) return;
     final queue = ref.read(loraInstallQueueProvider.notifier);
     final notifier = ref.read(generateProvider.notifier);
+    final backend = ref.read(backendClientProvider);
+    final session = ref.read(botSessionProvider.future);
     final placeholder = pendingLoraKey(job.versionId);
     if (job.status != LoraInstallStatus.done || job.lrId == null) {
       // 失败:占位条留在原地标红,别让它默默消失 —— 用户导入时是勾了的,
@@ -59,18 +78,17 @@ class _LoraCardState extends ConsumerState<LoraCard> {
         hintSnack(context, 'LoRA「${job.name}」下载失败:${job.message ?? '未知原因'}');
       }
       queue.clearFinished();
+      _handling.remove(job.versionId);
       return;
     }
     try {
-      final sid = (await ref.read(botSessionProvider.future))?.sessionId;
+      final sid = (await session)?.sessionId;
       if (sid == null || sid.isEmpty) return;
       // 按任务自己的底模去查:队列跨页面存活,装好时用户可能已经切走模型,
       // 拿当前底模查会查不到这条(它落在另一个库里)。
-      final lib = await ref
-          .read(backendClientProvider)
-          .listLoras(sid, base: job.base);
+      final lib = await backend.listLoras(sid, base: job.base);
       final item = lib.where((l) => l.name == job.lrId).firstOrNull;
-      if (item != null && mounted) {
+      if (item != null) {
         final promoted = notifier.promotePendingLora(
           placeholder,
           ActiveLora(
@@ -99,6 +117,7 @@ class _LoraCardState extends ConsumerState<LoraCard> {
       if (mounted) hintSnack(context, 'LoRA「${job.name}」已下载,请手动挂载');
     } finally {
       queue.clearFinished();
+      _handling.remove(job.versionId);
     }
   }
 

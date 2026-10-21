@@ -1,3 +1,4 @@
+import 'support/pump_until.dart';
 import 'dart:io';
 import 'dart:ui' as ui;
 
@@ -412,6 +413,15 @@ void main() {
       expect(
         c.read(tagLibraryProvider).value!.poolOf(TagCategory.character),
         contains('喜欢的角色'),
+      );
+      await pumpUntil(
+        tester,
+        () => tester
+            .widget<TextField>(find.byType(TextField))
+            .controller!
+            .text
+            .isEmpty,
+        reason: 'Tag save must finish before checking the cleared input',
       );
       expect(find.text('喜欢的角色'), findsOneWidget);
       await screenshot(tester, 'windows12-tag-pool');

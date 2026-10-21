@@ -188,6 +188,7 @@ class _PromptPresetManagePageState
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
+    final activeId = ref.watch(activePromptPresetIdProvider);
     final s = ref.watch(promptPresetsProvider).value;
     final desktop = ref.watch(desktopModeProvider);
     final actions = <Widget>[
@@ -247,7 +248,7 @@ class _PromptPresetManagePageState
                     child: _PresetTile(
                       key: ValueKey('prompt-preset-card-${s.presets[i].id}'),
                       preset: s.presets[i],
-                      active: s.presets[i].id == s.activeId,
+                      active: s.presets[i].id == activeId,
                       onTap: () {
                         Haptics.selection();
                         ref
