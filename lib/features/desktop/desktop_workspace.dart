@@ -44,6 +44,7 @@ class _DesktopWorkspaceState extends ConsumerState<DesktopWorkspace>
   final toolKey = GlobalKey();
   final assistantDropKey = GlobalKey();
   final shortcutFocus = FocusNode(debugLabel: 'Desktop workspace');
+  final _canvasTabs = GlobalKey<DesktopCanvasTabsState>();
   static const _leftWidthKey = 'desktop_left_pane_width';
   static const _rightWidthKey = 'desktop_right_pane_width';
   static const _minLeft = 300.0;
@@ -201,11 +202,35 @@ class _DesktopWorkspaceState extends ConsumerState<DesktopWorkspace>
     ),
   );
 
+  void _canvasCommand(void Function(DesktopCanvasTabsState tabs) action) {
+    final tabs = _canvasTabs.currentState;
+    if (tabs != null && ref.read(shellIndexProvider) == kTabCreate)
+      action(tabs);
+  }
+
   @override
   Widget build(BuildContext context) {
     super.build(context);
     return CallbackShortcuts(
       bindings: {
+        const SingleActivator(
+          LogicalKeyboardKey.f2,
+          includeRepeats: false,
+        ): () =>
+            _canvasCommand((tabs) => tabs.renameActiveCanvas()),
+        const SingleActivator(
+          LogicalKeyboardKey.keyN,
+          control: true,
+          shift: true,
+          includeRepeats: false,
+        ): () =>
+            _canvasCommand((tabs) => tabs.createCanvas()),
+        const SingleActivator(
+          LogicalKeyboardKey.keyD,
+          control: true,
+          includeRepeats: false,
+        ): () =>
+            _canvasCommand((tabs) => tabs.deleteActiveCanvas()),
         const SingleActivator(LogicalKeyboardKey.keyA, alt: true): () =>
             _tool(0),
         const SingleActivator(LogicalKeyboardKey.keyI, alt: true): () =>
@@ -233,7 +258,9 @@ class _DesktopWorkspaceState extends ConsumerState<DesktopWorkspace>
                 SizedBox(
                   key: const ValueKey('desktop-controls'),
                   width: left,
-                  child: const DesktopImportRegion(child: _DesktopControls()),
+                  child: DesktopImportRegion(
+                    child: _DesktopControls(canvasTabsKey: _canvasTabs),
+                  ),
                 ),
                 DesktopPaneDivider(
                   key: const ValueKey('desktop-left-divider'),
