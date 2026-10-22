@@ -427,6 +427,7 @@ void main() {
       use(original);
       gen.addNamedCharactersFrom([
         (
+          avatar: null,
           name: '角色',
           positive: original.prompt,
           negative: original.negativePrompt,

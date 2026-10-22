@@ -298,6 +298,7 @@ void main() {
       gen.setPrompts(positive: 'main untouched', negative: 'main exclusion');
       gen.addNamedCharactersFrom([
         (
+          avatar: null,
           name: '已有角色',
           positive: 'original words',
           negative: 'original negative',

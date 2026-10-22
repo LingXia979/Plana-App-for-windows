@@ -173,8 +173,8 @@ void main() {
       final search = key('tag-search-character');
       expect(tester.getSize(search).width, 300);
       expect(
-        tester.getTopLeft(search).dy,
-        closeTo(tester.getTopLeft(key('inspiration-category-character')).dy, 4),
+        tester.getCenter(search).dy,
+        closeTo(tester.getCenter(key('inspiration-category-character')).dy, 4),
       );
       expect(
         tester.getTopLeft(key('inspiration-card-char0')).dy,
@@ -184,7 +184,7 @@ void main() {
         tester.getTopLeft(key('inspiration-card-char6')).dy,
         greaterThan(tester.getTopLeft(key('inspiration-card-char0')).dy),
       );
-      await captureDesktop(tester, capture, 'windows16-inspiration-wide');
+      await captureDesktop(tester, capture, 'windows52-inspiration-wide');
 
       await tester.tap(key('inspiration-detail-char0'));
       await tester.pumpAndSettle();
@@ -211,7 +211,7 @@ void main() {
       expect(tester.takeException(), isNull);
       await tester.enterText(search, '');
       await tester.pumpAndSettle();
-      await captureDesktop(tester, capture, 'windows16-inspiration-compact');
+      await captureDesktop(tester, capture, 'windows52-inspiration-compact');
       await tester.tap(find.widgetWithText(ChoiceChip, '白发'));
       await tester.pumpAndSettle();
       expect(key('inspiration-card-char1'), findsNothing);

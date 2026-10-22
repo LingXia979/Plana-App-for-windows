@@ -38,6 +38,7 @@ final publicTagsProvider = FutureProvider.family<List<TagEntry>, TagCategory>((
             createdAt: o.createdAt * 1000,
             // 归属以服务端 owner_id 为准,存量数据回退 created_by(对齐 web)
             createdBy: o.ownerId ?? o.createdBy,
+            mosaic: o.mosaic,
           ),
       ];
     case TagCategory.artist:
@@ -51,6 +52,7 @@ final publicTagsProvider = FutureProvider.family<List<TagEntry>, TagCategory>((
             positive: a.artistString,
             negative: a.negative,
             models: normalizeArtistModels(a.models),
+            recipe: StyleRecipe.fromJson(a.recipe),
             publicId: a.id,
             previews: [if (a.previewUrl != null) a.previewUrl!],
             createdAt: a.createdTime * 1000,
@@ -61,6 +63,39 @@ final publicTagsProvider = FutureProvider.family<List<TagEntry>, TagCategory>((
       return const [];
   }
 });
+
+/// 灵感页「我的」的完整来源 = 本地条目 + 公共库里我发布的(本地没副本的补进来,
+/// 标 created、去掉打码;对齐 web mineAll)。归属判定优先 owner_id,与服务端一致。
+/// 纯函数:灵感页、它的筛选弹层、选角色面板都拿读来的值喂进来。
+List<TagEntry> mergeMineTags(
+  List<TagEntry> local,
+  String? myId,
+  List<TagEntry>? pub,
+) {
+  if (myId == null || pub == null) return local;
+  final haveId = {for (final e in local) e.publicId};
+  final haveName = {for (final e in local) e.name};
+  return [
+    ...local,
+    for (final p in pub)
+      if (p.createdBy == myId &&
+          !haveId.contains(p.publicId) &&
+          !haveName.contains(p.name))
+        p.copyWith(origin: TagOrigin.created, mosaic: false),
+  ];
+}
+
+/// publicId → 当前公共库的 http 预览,配合 [tagPreviewOf] 用。
+Map<String, String> publicPreviewsOf(List<TagEntry>? pub) => {
+  for (final p in pub ?? const <TagEntry>[])
+    if (p.publicId != null && p.previewUrl != null) p.publicId!: p.previewUrl!,
+};
+
+/// 条目实际该显示的预览:有 publicId 的(收藏 / 我发布的)一律用当前公共库的
+/// http 预览 —— 随当前后端地址,不受备份剥离本机预览、也不受端口变化影响;
+/// 公共库里没有(或还没加载到)才退回条目自带的。
+String? tagPreviewOf(TagEntry e, Map<String, String> pubPreviews) =>
+    (e.publicId != null ? pubPreviews[e.publicId] : null) ?? e.previewUrl;
 
 /// 公共库作者目录:归属 id(QQ 号)→ 昵称。灵感页拿它把条目上的 owner_id
 /// 显示成人名,也是作者筛选那个输入补全的候选名单来源。
@@ -86,7 +121,7 @@ final tagAuthorNamesProvider = FutureProvider<Map<String, String>>((ref) async {
 /// 「我的」公共条目的**本地副本**:公共库里 `createdBy` 是自己的那些画风 / 角色。
 ///
 /// 那本来就是用户自己的东西,只是存在服务端 —— 灵感页的「我的」页签就是
-/// 「本地条目 + 这些」拼出来的(见 `_mergeMine`)。以前它们只活在一次网络请求的
+/// 「本地条目 + 这些」拼出来的(见 [mergeMineTags])。以前它们只活在一次网络请求的
 /// 结果里:关掉应用就没了,离线看不见,图库归类也无从认起。这里落一份到盘上。
 ///
 /// **只留自己的**,不镜像整个公共库:公共库是别人发布的东西,拿它参与归类会凭空

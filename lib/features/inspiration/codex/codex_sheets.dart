@@ -90,12 +90,26 @@ Future<T?> _sheet<T>(BuildContext context, Widget child) {
 /// 拆角色卡**只对 NAI 做**:Anima / Krea 没有角色分离这回事,给它们拆出来的卡
 /// 会被模块剥离层当场收走,白忙一场还让人以为丢了东西 —— 那两家一律整段
 /// (含各角色段)折叠进主提示词。
-({int added, int dropped}) codexAddToPrompt(WidgetRef ref, CodexEntry e) {
+///
+/// 主提示词分过区([asSection] 或已有分区)时,公共部分不折叠,自成一格
+/// (格子叫「法典」,见 GenerateNotifier.addEntrySections)。
+({int added, int dropped}) codexAddToPrompt(
+  WidgetRef ref,
+  CodexEntry e, {
+  bool asSection = false,
+}) {
   final gen = ref.read(generateProvider);
   final isNai = providerOfModel(gen.params.model) == GenProvider.nai;
+  final section = asSection || gen.sections.isNotEmpty;
+  void put(String content) => section
+      ? _codexSectionInto(ref, e, content)
+      : _codexFoldInto(ref, e, content, gen);
 
   // 非 NAI:整条(公共 + 角色段)一起进主提示词,一个字不丢
-  if (!isNai) return _codexFoldInto(ref, e, e.fullText, gen);
+  if (!isNai) {
+    put(e.fullText);
+    return (added: 0, dropped: 0);
+  }
 
   // 字段里带角色段 → 直接用;否则退回内联写法的拆分
   final fromField = [
@@ -116,7 +130,7 @@ Future<T?> _sheet<T>(BuildContext context, Widget child) {
       : (hasChars ? split!.base : e.tags);
 
   // 公共部分为空(全站 401 条 tags 就是空的)时不折叠 —— 否则插进去一个空组。
-  _codexFoldInto(ref, e, base, gen);
+  put(base);
 
   if (!hasChars) return (added: 0, dropped: 0);
   final added = ref.read(generateProvider.notifier).addCharactersFilled([
@@ -128,6 +142,19 @@ Future<T?> _sheet<T>(BuildContext context, Widget child) {
       ),
   ]);
   return (added: added, dropped: chars.length - added);
+}
+
+/// 一段内容自成一格(不折叠),格子叫「法典」。空段跳过。
+void _codexSectionInto(WidgetRef ref, CodexEntry e, String content) {
+  if (content.trim().isEmpty) return;
+  ref.read(generateProvider.notifier).addEntrySections([
+    TagEntry(
+      id: 'codex_${e.id}',
+      category: TagCategory.other,
+      name: e.title,
+      positive: content,
+    ),
+  ], name: '法典');
 }
 
 /// 把一段内容作为**命名折叠组**追加进主提示词(复用灵感页同一条链路:草稿带回
@@ -245,7 +272,7 @@ class _DetailSheetState extends ConsumerState<_DetailSheet>
   int _imgPage = 0;
   _DragMode _dragMode = _DragMode.undecided;
 
-  /// 「导入」正在下原图:按钮转圈并停用,不让同一张被点两遍。
+  /// 正在下载原图:按钮转圈并停用,不让同一张被点两遍。
   bool _importing = false;
 
   /// 下载进度(0..1;长度未知或空闲时 null)。用 notifier 而不是 setState ——
@@ -755,6 +782,7 @@ class _DetailSheetState extends ConsumerState<_DetailSheet>
   /// 底部常驻操作条:随机模式头上多一枚整宽的「继续抽」;顶部一道细线与滚动
   /// 区分隔。钉在 SafeArea 内,按钮永远露在系统栏之上,不被长内容挤出屏幕。
   Widget _bottomActions(ColorScheme scheme, CodexEntry e, bool canReroll) {
+    final desktop = ref.watch(desktopModeProvider);
     return Container(
       decoration: BoxDecoration(
         border: Border(
@@ -766,39 +794,68 @@ class _DetailSheetState extends ConsumerState<_DetailSheet>
         mainAxisSize: MainAxisSize.min,
         children: [
           if (canReroll) ...[_rerollButton(), const SizedBox(height: 10)],
-          // 四件事一行摆得下,靠的是**收藏和复制只留图标**:星星和纸叠自己就
-          // 说得清,那四个字省下的宽度正是带字两枚摆得开所需的 —— 「加入提示词」
-          // 五个汉字加图标本来就顶格,谁多占一点它就换行,而这条操作栏一变高
-          // 就把上面的内容挤走。
-          Row(
-            children: [
-              _favButton(scheme, e),
-              const SizedBox(width: 8),
-              _copyButton(e),
-              const SizedBox(width: 8),
-              // 2:3 差不多就是「导入」与「加入提示词」各自最小宽之比;
-              // 五五开等于把富余全给短的那枚,长的先换行
-              Expanded(flex: 2, child: _importButton()),
-              const SizedBox(width: 8),
-              Expanded(flex: 3, child: _addButton(e)),
-            ],
-          ),
+          if (desktop)
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final imageActions = Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _favButton(scheme, e),
+                    const SizedBox(width: 8),
+                    _importButton(labelImage: true),
+                  ],
+                );
+                final promptActions = Wrap(
+                  alignment: WrapAlignment.end,
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [_copyButton(e, showLabel: true), _addButton(e)],
+                );
+                final textScale =
+                    MediaQuery.textScalerOf(context).scale(14) / 14;
+                if (constraints.maxWidth < 500 * textScale) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: imageActions,
+                      ),
+                      const SizedBox(height: 8),
+                      promptActions,
+                    ],
+                  );
+                }
+                return Row(
+                  children: [imageActions, const Spacer(), promptActions],
+                );
+              },
+            )
+          else
+            Row(
+              children: [
+                _favButton(scheme, e),
+                const SizedBox(width: 8),
+                _copyButton(e),
+                const SizedBox(width: 8),
+                Expanded(flex: 2, child: _importButton()),
+                const SizedBox(width: 8),
+                Expanded(flex: 3, child: _addButton(e)),
+              ],
+            ),
         ],
       ),
     );
   }
 
-  /// 带字那两枚共用的尺寸:描边和实心混排,高度圆角不统一一眼就看得出参差。
-  /// 内边距收到 8 —— M3 带图标的默认是左 16 右 24,那 32px 是压垮它的那根;
-  /// 省下来的富余留给系统字号放大(放大到 1.2 倍才开始吃省略号)。
+  /// 带字按钮共用高度和圆角;紧凑内边距也适用于移动端的单行操作栏。
   static const _labeledStyle = ButtonStyle(
     minimumSize: WidgetStatePropertyAll(Size(0, 46)),
     padding: WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 8)),
     shape: WidgetStatePropertyAll(StadiumBorder()),
   );
 
-  /// 只留图标那两枚:46×46 的**正圆**(宽=高才是圆;圆比同高的胶囊窄,
-  /// 省下的宽度正好给右边带字的两枚)。
+  /// 图标按钮固定为 46×46 的正圆。
   ///
   /// ⚠ `minimumSize` 必须跟着给零:M3 给 OutlinedButton 的默认最小宽是 **64**,
   /// 而 fixedSize 要先被最小尺寸夹一道才生效 —— 只写 fixedSize 的话这两枚会
@@ -810,27 +867,35 @@ class _DetailSheetState extends ConsumerState<_DetailSheet>
     shape: WidgetStatePropertyAll(CircleBorder()),
   );
 
-  /// 复制。不留字(见 [_bottomActions]);纸叠图标够常见,长按还有 tooltip 兜底。
-  Widget _copyButton(CodexEntry e) => Tooltip(
+  Future<void> _copyPrompt(CodexEntry e) async {
+    await Clipboard.setData(ClipboardData(text: e.fullText));
+    if (mounted) {
+      Navigator.pop(context);
+      hintSnack(context, '已复制提示词', icon: Icons.copy);
+    }
+  }
+
+  Widget _copyButton(CodexEntry e, {bool showLabel = false}) => Tooltip(
     message: '复制提示词',
-    child: OutlinedButton(
-      onPressed: () async {
-        await Clipboard.setData(ClipboardData(text: e.fullText));
-        if (mounted) {
-          Navigator.pop(context);
-          hintSnack(context, '已复制提示词', icon: Icons.copy);
-        }
-      },
-      style: _iconOnlyStyle,
-      child: const Icon(Icons.copy, size: 20),
-    ),
+    child: showLabel
+        ? OutlinedButton.icon(
+            onPressed: () => _copyPrompt(e),
+            style: _labeledStyle,
+            icon: const Icon(Icons.copy, size: 18),
+            label: const Text('复制提示词'),
+          )
+        : OutlinedButton(
+            onPressed: () => _copyPrompt(e),
+            style: _iconOnlyStyle,
+            child: const Icon(Icons.copy, size: 20),
+          ),
   );
 
   /// 「导入」:每张例图背后还压着一张原图,里头带着出图元数据。
   ///
   /// 无图词条按**停用**摆着而不是撤掉 —— 一摞牌里翻过去少一枚按钮,
   /// 整条操作栏会跟着变形。下载期间也停用,同一张不让点两遍。
-  Widget _importButton() => OutlinedButton.icon(
+  Widget _importButton({bool labelImage = false}) => OutlinedButton.icon(
     onPressed: _imgCount > 0 && !_importing ? _importOriginal : null,
     style: _labeledStyle,
     icon: _importing
@@ -842,8 +907,15 @@ class _DetailSheetState extends ConsumerState<_DetailSheet>
               child: CircularProgressIndicator(strokeWidth: 2, value: v),
             ),
           )
-        : const Icon(Icons.input, size: 18),
-    label: const Text('导入', maxLines: 1, overflow: TextOverflow.ellipsis),
+        : Icon(
+            labelImage ? Icons.add_photo_alternate_outlined : Icons.input,
+            size: 18,
+          ),
+    label: Text(
+      labelImage ? '导入图片' : '导入',
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+    ),
   );
 
   /// 下当前这张的原图 → 关弹层 → 推导入面板(与相册 / 画布同一个面板:

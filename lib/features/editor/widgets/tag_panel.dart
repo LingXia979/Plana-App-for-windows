@@ -12,7 +12,7 @@ import '../editor_models.dart';
 import '../../../core/util/haptics.dart';
 
 /// 词条栏 / 权重面板 —— 光标右邻是本标签正文时吸在键盘上方。
-/// 头部(名字·热度·翻译·复制·关闭)+ 权重(括号快捷键 · 数值加减,长按持续)
+/// 头部(名字·热度·翻译·维基·复制·收藏·关闭)+ 权重(括号快捷键 · 数值加减,长按持续)
 /// + 清除/关联/禁用/删除 + 关联标签(点「关联」才展开)。改动都由页面改文本落地。
 class TagPanel extends StatefulWidget {
   const TagPanel({
@@ -33,11 +33,19 @@ class TagPanel extends StatefulWidget {
     required this.onAddRelated,
     required this.onClose,
     this.onRename,
+    this.favorited = false,
+    this.onToggleFavorite,
   });
 
   final Tok tok;
   final int? count;
   final List<String> related;
+
+  /// 这枚标签已在收藏里(头部星标实心)。
+  final bool favorited;
+
+  /// 收 / 取消收藏;null = 不给星标。
+  final VoidCallback? onToggleFavorite;
 
   /// 行内改名(芯片模式专有:那边没有光标,改字只能从这里进)。
   /// null = 文本模式,点标题不进编辑态——直接点正文里那个词就行。
@@ -81,7 +89,7 @@ class TagPanel extends StatefulWidget {
 /// 精简词条栏的控件尺寸。抽成常量是因为 [_TagPanelState._compactRow] 要靠
 /// 它们判断放不放得下 —— 硬编码两份迟早对不上。
 ///
-/// 尺寸是**真机宽度**倒推的,不是拍脑袋:测试机 1200px / 520dpi = **369 dp**,
+/// 尺寸按窄屏倒推:1200px / 520dpi = **369 dp**,
 /// 去掉内边距只剩 353 装八个控件。按这一版的数是 334,留 19 的余量,
 /// 360 那档也放得下。一行里塞八样东西,单颗就只能到这个尺寸 ——
 /// 想再粗只能减功能。
@@ -198,6 +206,8 @@ class _TagPanelState extends State<TagPanel> {
               tok: tok,
               count: widget.count,
               wc: wc,
+              favorited: widget.favorited,
+              onToggleFavorite: widget.onToggleFavorite,
               onClose: widget.onClose,
               renaming: _renaming,
               nameCtrl: _nameCtrl,
@@ -438,7 +448,7 @@ class _TagPanelState extends State<TagPanel> {
               ],
             ),
             // 关联标签:点「关联」展开一行横向滚动(定高,再多也不溢出;
-            // Wrap 多行版在词多时撑破 dock 区,真机反馈弃用)
+            // Wrap 多行版在词多时撑破 dock 区,弃用)
             AnimatedSize(
               duration: Motion.fast,
               curve: Motion.emphasized,
@@ -453,10 +463,9 @@ class _TagPanelState extends State<TagPanel> {
                           scrollDirection: Axis.horizontal,
                           itemCount: widget.related.length,
                           separatorBuilder: (_, _) => const SizedBox(width: 8),
-                          itemBuilder: (context, i) => _relChip(
-                            context,
-                            widget.related[i],
-                            () => widget.onAddRelated(widget.related[i]),
+                          itemBuilder: (context, i) => TagAddChip(
+                            tag: widget.related[i],
+                            onTap: () => widget.onAddRelated(widget.related[i]),
                           ),
                         ),
                       ),
@@ -675,9 +684,24 @@ class _TagPanelState extends State<TagPanel> {
       },
     );
   }
+}
 
-  /// 关联 chip:英文 + 中文双行(web RelatedTagsRow 同形态),点按插入。
-  Widget _relChip(BuildContext context, String tag, VoidCallback onTap) {
+/// 加标签的小卡:英文 + 中文双行(web RelatedTagsRow 同形态),点按插入。
+/// 关联标签与底栏收藏共用;高度由外层定。
+class TagAddChip extends StatelessWidget {
+  const TagAddChip({
+    super.key,
+    required this.tag,
+    required this.onTap,
+    this.onLongPress,
+  });
+
+  final String tag;
+  final VoidCallback onTap;
+  final VoidCallback? onLongPress;
+
+  @override
+  Widget build(BuildContext context) {
     final scheme = context.scheme;
     final trans = translationOf(tag);
     return Material(
@@ -686,6 +710,7 @@ class _TagPanelState extends State<TagPanel> {
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: onTap,
+        onLongPress: onLongPress,
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 11),
           child: Column(
@@ -727,12 +752,14 @@ class _TagPanelState extends State<TagPanel> {
   }
 }
 
-/// 头部:名字 · 热度 · 翻译 · 复制 · 关闭
+/// 头部:名字 · 热度 · 翻译 · 维基 · 复制 · 收藏 · 关闭
 class _Header extends StatelessWidget {
   const _Header({
     required this.tok,
     required this.count,
     required this.wc,
+    required this.favorited,
+    required this.onToggleFavorite,
     required this.onClose,
     required this.renaming,
     required this.nameCtrl,
@@ -745,6 +772,8 @@ class _Header extends StatelessWidget {
   final Tok tok;
   final int? count;
   final Color wc;
+  final bool favorited;
+  final VoidCallback? onToggleFavorite;
   final VoidCallback onClose;
 
   /// 标题处于行内改名态:整行换成输入框 + 确认/取消。
@@ -802,18 +831,6 @@ class _Header extends StatelessWidget {
                         ),
                       ),
                     ],
-                    // 可改名时给个笔:不然「标题能点」这件事没人看得出来。
-                    // **自带一格留白**:紧挨着热度那串数字时它像是数字的一部分,
-                    // 分不清那是「1.2M✏」还是两样东西(实测反馈)。
-                    if (onStartRename != null)
-                      Padding(
-                        padding: const EdgeInsets.only(left: 10, right: 2),
-                        child: Icon(
-                          Icons.edit_outlined,
-                          size: 15,
-                          color: scheme.outline,
-                        ),
-                      ),
                   ],
                 ),
                 // 译文只给一行:长译文折成两行会把整张面板顶高一截
@@ -847,6 +864,20 @@ class _Header extends StatelessWidget {
             hintSnack(context, '已复制标签', icon: Icons.check);
           },
         ),
+        if (onToggleFavorite != null && tok.name.isNotEmpty) ...[
+          const SizedBox(width: 4),
+          _circleIcon(
+            context,
+            icon: favorited ? Icons.star_rounded : Icons.star_outline_rounded,
+            color: favorited ? scheme.primary : null,
+            // 星形只占图标框七成,22 才和旁边 18 的图标看着一样大
+            size: 22,
+            onTap: () {
+              Haptics.selection();
+              onToggleFavorite!();
+            },
+          ),
+        ],
         const SizedBox(width: 4),
         _circleIcon(context, icon: Icons.close, onTap: onClose),
       ],
@@ -1016,14 +1047,17 @@ Widget _action(
   );
 }
 
-/// 圆形小图标按钮(复制/关闭)。
+/// 圆形小图标按钮(提取 / 复制 / 收藏 / 关闭)。[color] 缺省走 onSurfaceVariant。
 Widget _circleIcon(
   BuildContext context, {
   required IconData icon,
   required VoidCallback onTap,
+  String? tooltip,
+  Color? color,
+  double size = 18,
 }) {
   final scheme = context.scheme;
-  return Material(
+  final btn = Material(
     color: scheme.surfaceContainerHighest,
     shape: const CircleBorder(),
     clipBehavior: Clip.antiAlias,
@@ -1032,10 +1066,11 @@ Widget _circleIcon(
       child: SizedBox(
         width: _kPanelBtnH,
         height: _kPanelBtnH,
-        child: Icon(icon, size: 18, color: scheme.onSurfaceVariant),
+        child: Icon(icon, size: size, color: color ?? scheme.onSurfaceVariant),
       ),
     ),
   );
+  return tooltip == null ? btn : Tooltip(message: tooltip, child: btn);
 }
 
 /// 精简词条栏里的圆钮([_kTailW])。置灰时不可点,颜色跟着语义走。
@@ -1094,6 +1129,7 @@ class BatchPanel extends StatelessWidget {
     this.onUnfold,
     this.foldCount = 0,
     required this.onCopy,
+    this.onExtract,
     required this.onWrap,
     required this.onStepMult,
     required this.onClearWeight,
@@ -1144,6 +1180,9 @@ class BatchPanel extends StatelessWidget {
   /// 复制所选(折叠摊平成成员,权重/禁用记号照搬)。
   final VoidCallback onCopy;
 
+  /// 把所选提取出来新建一个分区;null = 不给(角色会话没有分区)。
+  final VoidCallback? onExtract;
+
   final void Function(bool up) onWrap;
   final void Function(bool up) onStepMult;
   final VoidCallback onClearWeight;
@@ -1189,6 +1228,15 @@ class BatchPanel extends StatelessWidget {
                   ),
                 ),
                 if (has) ...[
+                  if (onExtract case final extract?) ...[
+                    _circleIcon(
+                      context,
+                      icon: Icons.playlist_add,
+                      onTap: extract,
+                      tooltip: '提取为新分区',
+                    ),
+                    const SizedBox(width: 4),
+                  ],
                   _circleIcon(context, icon: Icons.content_copy, onTap: onCopy),
                   const SizedBox(width: 4),
                   _circleIcon(context, icon: Icons.close, onTap: onClose),

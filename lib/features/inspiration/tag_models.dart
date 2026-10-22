@@ -146,7 +146,9 @@ class TagEntry {
     this.previews = const [],
     this.createdAt = 0,
     this.createdBy,
+    this.recipe,
     this.extra = const {},
+    this.mosaic = false,
   });
 
   /// 封面(首张预览)。
@@ -177,10 +179,19 @@ class TagEntry {
   final List<String> previews;
   final int createdAt; // ms
   final String? createdBy;
+
+  /// 推荐参数(仅画风;见 [StyleRecipe])。null = 没记。
+  final StyleRecipe? recipe;
   final Map<String, dynamic> extra;
+
+  /// 公共库预览要先打码(服务端给);只在公共库列表里有,不落盘、不进备份。
+  final bool mosaic;
 
   /// [publicId] 传 [clearPublicId] 哨兵可清空(取消发布/脱钩副本用)。
   static const clearPublicId = Object();
+
+  /// [recipe] 传 [clearRecipe] 哨兵可清空。
+  static const clearRecipe = Object();
 
   TagEntry copyWith({
     String? name,
@@ -193,6 +204,8 @@ class TagEntry {
     Object? publicId,
     List<String>? previews,
     String? createdBy,
+    Object? recipe,
+    bool? mosaic,
   }) => TagEntry(
     id: id,
     category: category,
@@ -201,6 +214,7 @@ class TagEntry {
     negative: negative ?? this.negative,
     aliases: aliases ?? this.aliases,
     tags: tags ?? this.tags,
+    models: models ?? this.models,
     origin: origin ?? this.origin,
     publicId: identical(publicId, clearPublicId)
         ? null
@@ -208,7 +222,11 @@ class TagEntry {
     previews: previews ?? this.previews,
     createdAt: createdAt,
     createdBy: createdBy ?? this.createdBy,
+    recipe: identical(recipe, clearRecipe)
+        ? null
+        : (recipe as StyleRecipe? ?? this.recipe),
     extra: extra,
+    mosaic: mosaic ?? this.mosaic,
   );
 
   Map<String, dynamic> toJson() => {
@@ -225,6 +243,7 @@ class TagEntry {
     if (previews.isNotEmpty) 'previews': previews,
     'createdAt': createdAt,
     if (createdBy != null) 'createdBy': createdBy,
+    if (recipe != null) 'recipe': recipe!.toJson(),
     if (extra.isNotEmpty) 'extra': extra,
   };
 
@@ -234,6 +253,16 @@ class TagEntry {
         ? tagCategoryByWebId(j['category'] as String)
         : null;
     if (id is! String || cat == null) return null;
+    final rawExtra = j['extra'] is Map<String, dynamic>
+        ? j['extra'] as Map<String, dynamic>
+        : const <String, dynamic>{};
+    // 早先从云端恢复时 web 标的适用模型落进了 extra(解码没认这个键):
+    // 搬回字段,extra 里不再留,免得编码备份时又被旧值带出去
+    var models = _strList(j['models']);
+    if (models.isEmpty) models = _strList(rawExtra['models']);
+    final extra = rawExtra.containsKey('models')
+        ? ({...rawExtra}..remove('models'))
+        : rawExtra;
     return TagEntry(
       id: id,
       category: cat,
@@ -242,7 +271,7 @@ class TagEntry {
       negative: j['negative'] is String ? j['negative'] as String : '',
       aliases: _strList(j['aliases']),
       tags: _strList(j['tags']),
-      models: _strList(j['models']),
+      models: models,
       origin: TagOrigin.values.asNameMap()[j['origin']] ?? TagOrigin.local,
       publicId: j['publicId'] as String?,
       // 旧版单字段 previewUrl 迁入列表
@@ -251,9 +280,79 @@ class TagEntry {
           : [if (j['previewUrl'] is String) j['previewUrl'] as String],
       createdAt: (j['createdAt'] as num?)?.toInt() ?? 0,
       createdBy: j['createdBy'] as String?,
-      extra: j['extra'] is Map<String, dynamic>
-          ? j['extra'] as Map<String, dynamic>
-          : const {},
+      recipe: StyleRecipe.fromJson(j['recipe']),
+      extra: extra,
+    );
+  }
+}
+
+/// 画风的推荐参数:记下时的模型 + 那一档的采样参数(步数、CFG、采样器、调度,
+/// NAI 另有 CFG Rescale 与 Variety+)。
+///
+/// 画风本身仍是那串提示词;这份只是附带的出图条件 —— 导入时模型对得上才提示,
+/// 用户点了才写进当前画布,不切模型。随条目进云备份,发布时也带进公共库。
+class StyleRecipe {
+  const StyleRecipe({
+    required this.model,
+    required this.steps,
+    required this.cfg,
+    required this.sampler,
+    required this.scheduler,
+    this.cfgRescale = 0,
+    this.varietyPlus = false,
+  });
+
+  /// 记下时的模型,用与 web 互通的模型 id(见 artist_models.dart);
+  /// 目录里没有的模型存展示名。
+  final String model;
+  final int steps;
+  final double cfg;
+  final String sampler;
+
+  /// NAI 是噪声调度,Anima / Krea 是调度器。
+  final String scheduler;
+
+  /// 仅 NAI 有。
+  final double cfgRescale;
+  final bool varietyPlus;
+
+  Map<String, dynamic> toJson() => {
+    'model': model,
+    'steps': steps,
+    'cfg': cfg,
+    'sampler': sampler,
+    'scheduler': scheduler,
+    'cfgRescale': cfgRescale,
+    'varietyPlus': varietyPlus,
+  };
+
+  /// 缺关键字段就当没有 —— 半套参数套出去比不套更难查。
+  static StyleRecipe? fromJson(Object? j) {
+    if (j is! Map) return null;
+    final model = j['model'];
+    final steps = j['steps'];
+    final cfg = j['cfg'];
+    final sampler = j['sampler'];
+    final scheduler = j['scheduler'];
+    if (model is! String ||
+        model.isEmpty ||
+        steps is! num ||
+        cfg is! num ||
+        sampler is! String ||
+        scheduler is! String) {
+      return null;
+    }
+    return StyleRecipe(
+      model: model,
+      steps: steps.toInt(),
+      cfg: cfg.toDouble(),
+      sampler: sampler,
+      scheduler: scheduler,
+      cfgRescale: switch (j['cfgRescale']) {
+        final num v => v.toDouble(),
+        _ => 0,
+      },
+      varietyPlus: j['varietyPlus'] == true,
     );
   }
 }
@@ -488,6 +587,17 @@ Map<String, dynamic> encodeBackupEntry(TagEntry e) {
     case TagCategory.artist:
       base['prompt'] = e.positive;
       base['previews'] ??= portablePreviews(e.previews);
+      // 适用模型、推荐参数以字段为准:有就写,清空了就不带这个键(通用 / 没记)
+      if (e.models.isNotEmpty) {
+        base['models'] = e.models;
+      } else {
+        base.remove('models');
+      }
+      if (e.recipe case final r?) {
+        base['recipe'] = r.toJson();
+      } else {
+        base.remove('recipe');
+      }
     case TagCategory.character:
       base['positive'] = e.positive;
       base['aliases'] = e.aliases;
@@ -533,6 +643,8 @@ TagEntry? decodeBackupEntry(TagCategory cat, Map<String, dynamic> j) {
         'negative_prompt',
         'aliases',
         'tags',
+        'models',
+        'recipe',
         'origin',
         'publicId',
         'createdAt',
@@ -554,6 +666,7 @@ TagEntry? decodeBackupEntry(TagCategory cat, Map<String, dynamic> j) {
         : '',
     aliases: _strList(j['aliases']),
     tags: _strList(j['tags']),
+    models: _strList(j['models']),
     origin: TagOrigin.values.asNameMap()[j['origin']] ?? TagOrigin.local,
     // 历史数据里 publicId/added_by 存在裸数字,宽松转字符串,别让恢复崩掉
     publicId: switch (j['publicId']) {
@@ -568,6 +681,7 @@ TagEntry? decodeBackupEntry(TagCategory cat, Map<String, dynamic> j) {
       final num n => '$n',
       _ => null,
     },
+    recipe: StyleRecipe.fromJson(j['recipe']),
     extra: extra,
   );
 }

@@ -6,6 +6,7 @@ import '../../../core/util/nai_tokenizer.dart';
 import '../../generate/generate_state.dart';
 import '../../generate/models.dart' show tokenLimitOf;
 import '../../generate/prompt_presets.dart';
+import '../../generate/prompt_sections.dart' show mainEnabled, sectionTexts;
 import '../editor_state.dart';
 
 /// 编辑器顶栏(精简,单行):返回(=保存并退出)+ 进度条 + token 读数 + 设置。
@@ -16,31 +17,60 @@ class EditorTopBar extends ConsumerWidget {
     required this.onBack,
     required this.onSettings,
     this.charName,
+    this.character = false,
+    this.sectionId,
   });
 
   final VoidCallback onBack;
   final VoidCallback onSettings;
 
-  /// 编辑角色时的角色名(标题);主提示词会话为 null,标题位留空。
+  /// 标题:角色名 / 分区名;没分区的主提示词会话为 null,标题位留空。
   final String? charName;
+
+  /// 角色会话:读数只计本角色正文。
+  final bool character;
+
+  /// 分区会话:读数照主提示词的口径算总数,这一格用编辑器里的实时文本。
+  final String? sectionId;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final scheme = context.scheme;
     final st = ref.watch(editorProvider);
 
-    // 主提示词会话按 web totalTokenCount 口径计:正文 + 启用角色串 + 激活
-    // 预设(都实际参与生成),与生成页卡头读数一致;角色会话只计本角色正文。
+    // 主提示词(含分区)会话按 web totalTokenCount 口径计:正文 + 启用分区 +
+    // 启用角色串 + 激活预设(都实际参与生成),与生成页卡头读数一致;
+    // 角色会话只计本角色正文。
     final tok = ref.watch(naiTokenizerProvider).value;
-    final preset = charName != null
-        ? null
-        : ref.watch(activePromptPresetProvider);
+    final preset = character ? null : ref.watch(activePromptPresetProvider);
     final presetSide = preset == null
         ? ''
         : (st.activePositive ? preset.positive : preset.negative);
-    final parts = charName != null
+    final gen = character
+        ? null
+        : ref.watch(
+            generateProvider.select(
+              (s) => (
+                prompt: s.prompt,
+                negative: s.negativePrompt,
+                sections: s.sections,
+              ),
+            ),
+          );
+    // 主体的正向停用了就不算(负面那侧一直算,同出图)
+    final mainOn =
+        gen == null || !st.activePositive || mainEnabled(gen.sections);
+    final parts = gen == null
         ? const <String>[]
         : [
+            // 分区会话:编辑器里是这一格,主体换成存着的那份
+            if (sectionId != null && mainOn)
+              st.activePositive ? gen.prompt : gen.negative,
+            ...sectionTexts(
+              gen.sections,
+              positive: st.activePositive,
+              except: sectionId,
+            ),
             // 与生成页同一口径:模块不可见(anima 等)时角色整组不计
             for (final c in ref.watch(countedCharactersProvider))
               st.activePositive ? c.positive : c.negative,
@@ -49,7 +79,7 @@ class EditorTopBar extends ConsumerWidget {
     // 直接算会把整段折叠体漏掉——读数得按占位符展开后的真实定稿来。
     final tokens = totalPromptTokens(
       tok,
-      main: st.activeOutput,
+      main: sectionId == null && !mainOn ? '' : st.activeOutput,
       parts: parts,
       preset: presetSide,
     );

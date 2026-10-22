@@ -33,12 +33,17 @@ class CharacterPrompt {
     this.enabled = true,
     this.position, // 'A1'..'E5';null = AUTO
     this.activeTab = CharTab.positive,
+    this.avatar,
   });
 
   final String id;
   final String name;
   final String positive;
   final String negative;
+
+  /// 头像:从灵感角色库选来时带上的预览图(http URL 或本机文件路径)。
+  /// 只在角色卡上显示,不进载荷;null = 没有(手写 / AI 写的 / 导入的角色)。
+  final String? avatar;
 
   /// 编辑器原文草稿(含禁用 `~tag~` / 折叠 `<#名字: …>` 等仅编辑期语法),
   /// 空 = 与定稿无差别,不必单独存。有效性由读取侧判定,见 [pickEditorText]。
@@ -60,6 +65,7 @@ class CharacterPrompt {
     bool? enabled,
     Object? position = _unset,
     CharTab? activeTab,
+    Object? avatar = _unset,
   }) {
     return CharacterPrompt(
       id: id,
@@ -89,8 +95,90 @@ class CharacterPrompt {
       enabled: enabled ?? this.enabled,
       position: position == _unset ? this.position : position as String?,
       activeTab: activeTab ?? this.activeTab,
+      avatar: avatar == _unset ? this.avatar : avatar as String?,
     );
   }
+}
+
+/// 主体那一行在分区列表里的 id。主体的词不存在分区里,就是 [GenerateState.prompt]
+/// 本身;列表里这一项只记它的名字和排在第几行。
+const kMainSectionId = 'main';
+
+/// 主提示词的一个分区(画风 / 场景 / 镜头…)。纯界面层的分类:载荷里没有分区,
+/// 出图前按行序和主体拼成一整串(见 prompt_sections.dart 的 composeSections)。
+///
+/// 和角色一样各有正负两面、开关和编辑器草稿,只是没有站位。
+class PromptSection {
+  const PromptSection({
+    required this.id,
+    required this.name,
+    this.positive = '',
+    this.negative = '',
+    this.positiveRaw = '',
+    this.negativeRaw = '',
+    this.foldLinks = const [],
+    this.enabled = true,
+    this.artist = false,
+  });
+
+  /// 主体那一行(见 [kMainSectionId])。
+  const PromptSection.main({this.name = '主体', this.enabled = true})
+    : id = kMainSectionId,
+      positive = '',
+      negative = '',
+      positiveRaw = '',
+      negativeRaw = '',
+      foldLinks = const [],
+      artist = false;
+
+  final String id;
+  final String name;
+  final String positive;
+  final String negative;
+
+  /// 编辑器原文草稿,同 [CharacterPrompt.positiveRaw]。
+  final String positiveRaw;
+  final String negativeRaw;
+
+  final List<PromptFoldLink> foldLinks;
+
+  final bool enabled;
+
+  /// 从灵感库「画风」类加进来的一格(画师串词典里收的也算)。名字清空时回到
+  /// 「画风」而不是「分区 N」。
+  final bool artist;
+
+  bool get isMain => id == kMainSectionId;
+
+  PromptSection copyWith({
+    String? name,
+    String? positive,
+    String? negative,
+    String? positiveRaw,
+    String? negativeRaw,
+    List<PromptFoldLink>? foldLinks,
+    bool? enabled,
+  }) => PromptSection(
+    id: id,
+    name: name ?? this.name,
+    positive: positive ?? this.positive,
+    negative: negative ?? this.negative,
+    positiveRaw: positiveRaw ?? this.positiveRaw,
+    negativeRaw: negativeRaw ?? this.negativeRaw,
+    foldLinks: validPromptFoldLinks(
+      pickEditorText(
+        positiveRaw ?? this.positiveRaw,
+        positive ?? this.positive,
+      ),
+      pickEditorText(
+        negativeRaw ?? this.negativeRaw,
+        negative ?? this.negative,
+      ),
+      foldLinks ?? this.foldLinks,
+    ),
+    enabled: enabled ?? this.enabled,
+    artist: artist,
+  );
 }
 
 class VibeItem {
@@ -1191,6 +1279,7 @@ class GenerateState {
     this.promptRaw = '',
     this.negativePromptRaw = '',
     this.promptFoldLinks = const [],
+    this.sections = const [],
     required this.characters,
     required this.vibes,
     required this.charRefs,
@@ -1231,6 +1320,12 @@ class GenerateState {
   final String promptRaw;
   final String negativePromptRaw;
   final List<PromptFoldLink> promptFoldLinks;
+
+  /// 主提示词的分区,按卡上的行序;空 = 没分区(卡片是原来的样子)。
+  /// 最多一项是主体([PromptSection.isMain]),它的词就是 [prompt];主体那一行
+  /// 也能删(正向随之清空),这时列表里就没有它。
+  /// 只活在创作页:生成快照里已拼进 [prompt](见 composeSections)。
+  final List<PromptSection> sections;
 
   final List<CharacterPrompt> characters;
   final List<VibeItem> vibes;
@@ -1297,6 +1392,7 @@ class GenerateState {
     String? promptRaw,
     String? negativePromptRaw,
     List<PromptFoldLink>? promptFoldLinks,
+    List<PromptSection>? sections,
     List<CharacterPrompt>? characters,
     List<VibeItem>? vibes,
     List<CharRefItem>? charRefs,
@@ -1334,6 +1430,7 @@ class GenerateState {
               ),
               promptFoldLinks ?? this.promptFoldLinks,
             ),
+      sections: sections ?? this.sections,
       characters: characters ?? this.characters,
       vibes: vibes ?? this.vibes,
       charRefs: charRefs ?? this.charRefs,

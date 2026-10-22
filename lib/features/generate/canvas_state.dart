@@ -5,6 +5,7 @@ import '../editor/editor_state.dart';
 import 'canvas_models.dart';
 import 'generate_state.dart';
 import 'models.dart';
+import 'prompt_sections.dart';
 
 export 'canvas_models.dart';
 
@@ -116,7 +117,7 @@ class CanvasWorkspaceNotifier extends Notifier<CanvasWorkspace> {
     _save();
   }
 
-  /// 新建并切过去。空白画布只沿用当前的提示词预设和出图参数(词清空);
+  /// 新建并切过去。空白画布只沿用当前的提示词预设、出图参数和分区骨架(词清空);
   /// 复制则带上整组。
   String create({bool duplicate = false}) {
     _prepareSwitch();
@@ -126,6 +127,7 @@ class CanvasWorkspaceNotifier extends Notifier<CanvasWorkspace> {
         ? current
         : CanvasPrompts(
             promptPresetId: current.promptPresetId,
+            sections: sectionSkeleton(current.sections),
             sampling: current.sampling,
           );
     final name = duplicate ? _copyName(state.active.name) : _blankName();

@@ -50,3 +50,36 @@ class ChromeScrollTracker {
     return null;
   }
 }
+
+/// 正文视口变矮(权重面板弹出 / 顶栏放出)时,该不该把「刚点的那一处」拉回视野。
+///
+/// 滚动位置按顶边记,视口从底下变矮,底下那截就被吃掉 —— 刚点的词正好在下面,
+/// 面板一出来就把它盖住。键盘升起时框架自己会追光标(`EditableText.didChangeMetrics`),
+/// 面板和顶栏没人管,这里补上。
+///
+/// 只管「点了之后还没手动滚过」的:自己滚走了的,视口再怎么变也不往回拽。
+/// 正文那层把通知原样喂给 [update];视口每帧矮一点就追一下,面板展开的动画
+/// 期间是一路跟着走的。
+class KeepInViewTracker {
+  double? _viewport;
+  bool _armed = false;
+
+  /// 点了一处(落光标 / 点芯片):之后视口变矮,把它留在视野里。
+  void arm() => _armed = true;
+
+  /// true = 视口刚变矮,该把目标拉回视野了。
+  bool update(Notification n) {
+    // 只认正文自己那一层,同 [ChromeScrollTracker]
+    if (n is! ViewportNotificationMixin || n.depth != 0) return false;
+    switch (n) {
+      case ScrollStartNotification(dragDetails: _?):
+        _armed = false; // 手动滚了
+      case ScrollMetricsNotification(:final metrics)
+          when metrics.axis == Axis.vertical:
+        final was = _viewport;
+        _viewport = metrics.viewportDimension;
+        return _armed && was != null && metrics.viewportDimension < was;
+    }
+    return false;
+  }
+}

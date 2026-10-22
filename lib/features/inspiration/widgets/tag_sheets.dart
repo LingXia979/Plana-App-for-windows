@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/app_info.dart';
 import '../../../core/auth/bot_session_store.dart';
 import '../../../core/net/backend_client.dart';
 import '../../../core/platform/desktop.dart';
@@ -339,48 +340,79 @@ class _PoolSheetState extends ConsumerState<_PoolSheet> {
                       ),
                     ),
                   )
-                : ListView.builder(
+                // 顺序即筛选行的顺序:按住抓手即拖,整行长按也可拖
+                : ReorderableListView.builder(
                     shrinkWrap: true,
+                    buildDefaultDragHandles: false,
+                    proxyDecorator: (child, index, animation) => Material(
+                      color: scheme.surfaceContainerHigh,
+                      borderRadius: BorderRadius.circular(12),
+                      elevation: 3,
+                      child: child,
+                    ),
+                    onReorderItem: (from, to) =>
+                        notifier.movePoolTag(widget.cat, from, to),
                     itemCount: tags.length,
                     itemBuilder: (context, i) {
                       final t = tags[i];
                       final n = notifier.poolTagUsage(widget.cat, t);
-                      return ListTile(
-                        dense: true,
-                        leading: const Icon(Icons.sell_outlined, size: 18),
-                        title: Text(t),
-                        trailing: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text(
-                              '$n',
-                              style: mono(
-                                context,
-                                size: 12,
-                                color: n > 0 ? scheme.primary : scheme.outline,
+                      return ReorderableDelayedDragStartListener(
+                        key: ValueKey(t),
+                        index: i,
+                        child: ListTile(
+                          dense: true,
+                          leading: ReorderableDragStartListener(
+                            key: ValueKey('tag-pool-drag-$t'),
+                            index: i,
+                            child: Tooltip(
+                              message: '拖动调整标签顺序',
+                              child: SizedBox(
+                                width: 30,
+                                height: 40,
+                                child: Icon(
+                                  Icons.reorder,
+                                  size: 20,
+                                  color: scheme.outline,
+                                ),
                               ),
                             ),
-                            IconButton(
-                              icon: Icon(
-                                Icons.delete_outline,
-                                size: 18,
-                                color: scheme.error,
+                          ),
+                          title: Text(t),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                '$n',
+                                style: mono(
+                                  context,
+                                  size: 12,
+                                  color: n > 0
+                                      ? scheme.primary
+                                      : scheme.outline,
+                                ),
                               ),
-                              onPressed: () async {
-                                final ok =
-                                    n == 0 ||
-                                    await confirmDialog(
-                                      context,
-                                      title: '删除标签「$t」?',
-                                      message: '$n 个条目会摘掉该标签,条目本身保留。',
-                                      confirmLabel: '删除',
-                                    );
-                                if (ok && mounted) {
-                                  await notifier.removePoolTag(widget.cat, t);
-                                }
-                              },
-                            ),
-                          ],
+                              IconButton(
+                                icon: Icon(
+                                  Icons.delete_outline,
+                                  size: 18,
+                                  color: scheme.error,
+                                ),
+                                onPressed: () async {
+                                  final ok =
+                                      n == 0 ||
+                                      await confirmDialog(
+                                        context,
+                                        title: '删除标签「$t」?',
+                                        message: '$n 个条目会摘掉该标签,条目本身保留。',
+                                        confirmLabel: '删除',
+                                      );
+                                  if (ok && mounted) {
+                                    await notifier.removePoolTag(widget.cat, t);
+                                  }
+                                },
+                              ),
+                            ],
+                          ),
                         ),
                       );
                     },
@@ -607,7 +639,7 @@ class _BackupSheetState extends ConsumerState<_BackupSheet> {
     });
     await client.recordBackupLog(
       sessionId: sid,
-      device: 'Plana App',
+      device: kAppName,
       action: 'backup',
       count: n,
       detail: 'tag-manager 备份 $detail',
@@ -651,7 +683,7 @@ class _BackupSheetState extends ConsumerState<_BackupSheet> {
     });
     await client.recordBackupLog(
       sessionId: sid,
-      device: 'Plana App',
+      device: kAppName,
       action: 'restore',
       count: n,
       detail: 'tag-manager 恢复 $detail',

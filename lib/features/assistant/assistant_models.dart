@@ -7,7 +7,11 @@ library;
 import 'dart:convert';
 
 import '../../core/net/backend_client.dart' show AgentCharacter;
-import '../generate/models.dart' show CharacterPrompt, CharTab;
+import '../generate/models.dart'
+    show CharacterPrompt, CharTab, GenerateState, PromptSection;
+import '../generate/canvas_models.dart';
+import '../generate/state_codec.dart' show decodePromptSections;
+import '../editor/editor_models.dart' show PromptFoldLink;
 import 'assistant_mode.dart';
 import 'prompt_diff.dart';
 
@@ -120,19 +124,66 @@ class PromptSnapshot {
   const PromptSnapshot({
     this.positive = '',
     this.negative = '',
+    this.positiveRaw = '',
+    this.negativeRaw = '',
+    this.foldLinks = const [],
+    this.sections = const [],
     this.characters = const [],
     this.useCoords = false,
   });
 
-  final String positive;
-  final String negative;
+  factory PromptSnapshot.of(GenerateState s) => PromptSnapshot(
+    positive: s.prompt,
+    negative: s.negativePrompt,
+    positiveRaw: s.promptRaw,
+    negativeRaw: s.negativePromptRaw,
+    foldLinks: s.promptFoldLinks,
+    sections: s.sections,
+    characters: List.of(s.characters),
+    useCoords: s.params.useCoords,
+  );
+
+  final String positive, negative, positiveRaw, negativeRaw;
+  final List<PromptFoldLink> foldLinks;
+  final List<PromptSection> sections;
   final List<CharacterPrompt> characters;
   final bool useCoords;
+
+  CanvasPrompts restoreTo(CanvasPrompts p) => p.copyWith(
+    prompt: positive,
+    negativePrompt: negative,
+    promptRaw: positiveRaw,
+    negativePromptRaw: negativeRaw,
+    promptFoldLinks: foldLinks,
+    sections: sections,
+    characters: List.of(characters),
+    useCoords: useCoords,
+  );
 
   Map<String, dynamic> toJson() => {
     'positive': positive,
     'negative': negative,
     'useCoords': useCoords,
+    if (positiveRaw.isNotEmpty) 'positiveRaw': positiveRaw,
+    if (negativeRaw.isNotEmpty) 'negativeRaw': negativeRaw,
+    if (foldLinks.isNotEmpty)
+      'foldLinks': [for (final l in foldLinks) l.toJson()],
+    if (sections.isNotEmpty)
+      'sections': [
+        for (final s in sections)
+          {
+            'id': s.id,
+            'name': s.name,
+            'positive': s.positive,
+            'negative': s.negative,
+            'positiveRaw': s.positiveRaw,
+            'negativeRaw': s.negativeRaw,
+            'enabled': s.enabled,
+            'artist': s.artist,
+            if (s.foldLinks.isNotEmpty)
+              'foldLinks': [for (final l in s.foldLinks) l.toJson()],
+          },
+      ],
     'characters': [
       for (final c in characters)
         {
@@ -141,7 +192,12 @@ class PromptSnapshot {
           'positive': c.positive,
           'negative': c.negative,
           'enabled': c.enabled,
+          if (c.positiveRaw.isNotEmpty) 'positiveRaw': c.positiveRaw,
+          if (c.negativeRaw.isNotEmpty) 'negativeRaw': c.negativeRaw,
+          if (c.foldLinks.isNotEmpty)
+            'foldLinks': [for (final l in c.foldLinks) l.toJson()],
           if (c.position != null) 'position': c.position,
+          if (c.avatar != null) 'avatar': c.avatar,
         },
     ],
   };
@@ -149,6 +205,10 @@ class PromptSnapshot {
   factory PromptSnapshot.fromJson(Map<String, dynamic> j) => PromptSnapshot(
     positive: j['positive']?.toString() ?? '',
     negative: j['negative']?.toString() ?? '',
+    positiveRaw: j['positiveRaw']?.toString() ?? '',
+    negativeRaw: j['negativeRaw']?.toString() ?? '',
+    foldLinks: PromptFoldLink.decode(j['foldLinks']),
+    sections: decodePromptSections(j['sections']),
     useCoords: j['useCoords'] == true,
     characters: [
       for (final e in (j['characters'] as List? ?? const []))
@@ -158,32 +218,19 @@ class PromptSnapshot {
             name: e['name']?.toString() ?? '角色',
             positive: e['positive']?.toString() ?? '',
             negative: e['negative']?.toString() ?? '',
+            positiveRaw: e['positiveRaw']?.toString() ?? '',
+            negativeRaw: e['negativeRaw']?.toString() ?? '',
+            foldLinks: PromptFoldLink.decode(e['foldLinks']),
             enabled: e['enabled'] != false,
             position: e['position'] as String?,
             activeTab: CharTab.positive,
+            avatar: e['avatar'] as String?,
           ),
     ],
   );
 
-  /// 与另一份快照的正负向、角色串、站位是否一字不差。
-  /// 用来判断「用户在 AI 写回之后有没有自己又改过」—— 撤销前要问这一句。
-  bool sameAs(PromptSnapshot o) {
-    if (positive != o.positive || negative != o.negative) return false;
-    if (useCoords != o.useCoords) return false;
-    if (characters.length != o.characters.length) return false;
-    for (var i = 0; i < characters.length; i++) {
-      final a = characters[i];
-      final b = o.characters[i];
-      if (a.positive != b.positive ||
-          a.negative != b.negative ||
-          a.name != b.name ||
-          a.position != b.position ||
-          a.enabled != b.enabled) {
-        return false;
-      }
-    }
-    return true;
-  }
+  bool sameAs(PromptSnapshot o) =>
+      jsonEncode(toJson()) == jsonEncode(o.toJson());
 }
 
 /// 把一轮 AI 回复还原成**模型当初写出来的样子**:正文 + 末尾一个 ```nai_draw 围栏。

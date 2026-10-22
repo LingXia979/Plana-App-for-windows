@@ -15,6 +15,7 @@ import '../../core/ui/image_drop.dart';
 import '../../core/util/image_pick.dart';
 import '../gallery/gallery_state.dart';
 import '../generate/generate_state.dart';
+import '../generate/style_recipes.dart';
 import '../generate/widgets/common.dart'
     show ExpandBody, confirmDialog, hintSnack, sharedAxisRoute;
 import 'artist_models.dart';
@@ -31,15 +32,16 @@ Future<void> showTagEditor(
   BuildContext context, {
   required TagCategory cat,
   TagEntry? edit,
+  TagDraft? draft,
 }) {
   final desktop = ProviderScope.containerOf(
     context,
     listen: false,
   ).read(desktopModeProvider);
   if (!desktop) {
-    return Navigator.of(
-      context,
-    ).push<void>(sharedAxisRoute(TagEditorPage(cat: cat, edit: edit)));
+    return Navigator.of(context).push<void>(
+      sharedAxisRoute(TagEditorPage(cat: cat, edit: edit, draft: draft)),
+    );
   }
   final navigator = Navigator.of(context, rootNavigator: true);
   final existing = _openTagEditors[navigator];
@@ -57,7 +59,12 @@ Future<void> showTagEditor(
       child: SizedBox(
         width: 920,
         height: 680,
-        child: TagEditorPage(cat: cat, edit: edit, floating: true),
+        child: TagEditorPage(
+          cat: cat,
+          edit: edit,
+          draft: draft,
+          floating: true,
+        ),
       ),
     ),
   );
@@ -65,6 +72,9 @@ Future<void> showTagEditor(
   _openTagEditors[navigator] = result;
   return result;
 }
+
+/// 新建时预填的名字和正负向(创作页「存到灵感库」带进来的)。
+typedef TagDraft = ({String name, String positive, String negative});
 
 /// 折叠式条目编辑器(创建/编辑统一,4 分类字段差异由配置驱动;
 /// UI 框架对齐设计稿 handoff 的手风琴方案,配色走 app 主题):
@@ -78,12 +88,16 @@ class TagEditorPage extends ConsumerStatefulWidget {
     super.key,
     required this.cat,
     this.edit,
+    this.draft,
     this.floating = false,
   });
 
   final TagCategory cat;
   final TagEntry? edit;
   final bool floating;
+
+  /// 新建时预填;[edit] 不为 null 时不看它。
+  final TagDraft? draft;
 
   @override
   ConsumerState<TagEditorPage> createState() => _TagEditorPageState();
@@ -109,14 +123,23 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
   late final bool _locked = _edit?.origin == TagOrigin.favorited;
   late final String _entryId = _edit?.id ?? TagLibrary.newId(widget.cat);
 
-  late final _name = TextEditingController(text: _edit?.name ?? '');
-  late final _positive = TextEditingController(text: _edit?.positive ?? '');
-  late final _negative = TextEditingController(text: _edit?.negative ?? '');
+  late final _name = TextEditingController(
+    text: _edit?.name ?? widget.draft?.name ?? '',
+  );
+  late final _positive = TextEditingController(
+    text: _edit?.positive ?? widget.draft?.positive ?? '',
+  );
+  late final _negative = TextEditingController(
+    text: _edit?.negative ?? widget.draft?.negative ?? '',
+  );
   late final List<String> _aliases = [...?_edit?.aliases];
   late final Set<String> _tags = {...?_edit?.tags};
 
   /// 适用模型(仅画风)。空 = 通用 —— 这是默认档,不是"没填完"。
   late final Set<String> _models = {...?_edit?.models};
+
+  /// 推荐参数(仅画风),从创作页当前那张画布导入。
+  late StyleRecipe? _recipe = _edit?.recipe;
 
   late final int _slotCount = !_hasPreview
       ? 0
@@ -152,7 +175,7 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
   @override
   void initState() {
     super.initState();
-    _showNegative = (_edit?.negative.trim().isNotEmpty ?? false);
+    _showNegative = _negative.text.trim().isNotEmpty;
     _showAliases = _aliases.isNotEmpty;
     // 必填联动进度环/校验态
     _name.addListener(() => setState(() {}));
@@ -226,6 +249,7 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
       previews: await _buildPreviews(eid),
       createdAt: _edit?.createdAt ?? DateTime.now().millisecondsSinceEpoch,
       createdBy: _edit?.createdBy,
+      recipe: widget.cat == TagCategory.artist ? _recipe : null,
     );
   }
 
@@ -272,6 +296,7 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
             _edit!.copyWith(
               tags: _tags.toList()..sort(),
               models: normalizeArtistModels(_models.toList()),
+              recipe: _recipe ?? TagEntry.clearRecipe,
             ),
           );
       if (!mounted) return;
@@ -361,9 +386,11 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
           sessionId: session.sessionId,
           name: finalName,
           artistString: _positive.text.trim(),
+          negative: _negative.text.trim(),
           previewBase64: preview,
           addedBy: session.botUserId,
           models: normalizeArtistModels(_models.toList()),
+          recipe: _recipe?.toJson(),
         );
         publicId = r.id;
         finalName = r.name;
@@ -416,9 +443,12 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
           sessionId: session.sessionId,
           id: _edit!.publicId!,
           artistString: _positive.text.trim(),
+          negative: _negative.text.trim(),
           previewBase64: preview,
           // 空列表照发:用户取消掉全部标注 = 改回通用,和「本次不改」不是一回事
           models: normalizeArtistModels(_models.toList()),
+          // 同理,清掉推荐参数要发 {}
+          recipe: _recipe?.toJson() ?? const {},
         );
       }
       await ref.read(tagLibraryProvider.notifier).upsert(await _buildEntry());
@@ -974,6 +1004,13 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
                                   ).map(artistModelShort).join(' · '),
                             body: _modelsBody(scheme),
                           ),
+                        if (widget.cat == TagCategory.artist)
+                          _section(
+                            id: 'recipe',
+                            title: '推荐参数',
+                            filled: _recipe != null,
+                            body: _recipeBody(scheme),
+                          ),
                         _section(
                           id: 'tags',
                           title: '标签',
@@ -1008,6 +1045,8 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
       ),
       if (widget.cat == TagCategory.artist)
         _desktopField('适用模型', _modelsBody(scheme)),
+      if (widget.cat == TagCategory.artist)
+        _desktopField('推荐参数', _recipeBody(scheme)),
       _desktopField('标签', _tagsBody(scheme)),
       if (_isEdit) _managementRow(scheme),
     ];
@@ -1194,6 +1233,8 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
   }
 
   /// 手风琴字段卡:同刻最多展开一张;必填缺失且校验可见时红框+「必填」。
+  /// 底色同创作页的卡(亮色是灰底上的白卡),卡里的输入框、小按钮那一档灰
+  /// 才分得出来;收起的卡不描边,展开的描主色。
   Widget _section({
     required String id,
     required String title,
@@ -1210,14 +1251,14 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
       curve: Motion.standard,
       margin: const EdgeInsets.symmetric(vertical: 5),
       decoration: BoxDecoration(
-        color: scheme.surfaceContainer,
+        color: scheme.surfaceContainerLow,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
           color: errored
               ? scheme.error.withValues(alpha: .55)
               : expanded
               ? scheme.primary.withValues(alpha: .45)
-              : scheme.outlineVariant,
+              : Colors.transparent,
         ),
       ),
       child: Column(
@@ -1931,6 +1972,63 @@ class _TagEditorPageState extends ConsumerState<TagEditorPage> {
             ],
           ),
         ],
+      ],
+    );
+  }
+
+  /// 推荐参数:从创作页当前那张画布导入,连同当前模型。用这条画风时模型
+  /// 对得上才提示套用,不切模型。
+  ///
+  /// 没导入时只摆按钮,不预览创作页的参数 —— 压暗的参数表看着像已经存了。
+  /// 按钮用预览图那排同款的整宽描边按钮。
+  Widget _recipeBody(ColorScheme scheme) {
+    final r = _recipe;
+    final importButton = OutlinedButton.icon(
+      onPressed: () =>
+          setState(() => _recipe = recipeOf(ref.read(generateProvider).params)),
+      icon: const Icon(Icons.download_outlined, size: 16),
+      label: const Text('导入创作页', maxLines: 1, softWrap: false),
+    );
+    if (r == null) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          importButton,
+          const SizedBox(height: 8),
+          Center(
+            child: Text(
+              '用这条画风时,模型对得上会问要不要套用',
+              style: context.texts.labelSmall!.copyWith(color: scheme.outline),
+            ),
+          ),
+        ],
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Container(
+          padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+          decoration: BoxDecoration(
+            color: scheme.surfaceContainerHigh,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: StyleRecipeTable(r),
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(child: importButton),
+            const SizedBox(width: 8),
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: () => setState(() => _recipe = null),
+                icon: const Icon(Icons.close, size: 16),
+                label: const Text('清除', maxLines: 1, softWrap: false),
+              ),
+            ),
+          ],
+        ),
       ],
     );
   }

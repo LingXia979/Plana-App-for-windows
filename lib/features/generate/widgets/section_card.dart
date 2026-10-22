@@ -103,38 +103,59 @@ class SectionCard extends ConsumerWidget {
         onTap: onHeaderTap,
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
-          child: Row(
+          child: OverflowBar(
+            alignment: MainAxisAlignment.spaceBetween,
+            overflowAlignment: OverflowBarAlignment.start,
+            spacing: 8,
+            overflowSpacing: 4,
             children: [
-              Icon(icon, size: 19, color: scheme.primary),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Row(
-                  children: [
-                    Flexible(
-                      child: Text(
-                        title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                          color: titleColor,
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(icon, size: 19, color: scheme.primary),
+                  const SizedBox(width: 8),
+                  Flexible(
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Flexible(
+                          child: Text(
+                            title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: titleColor,
+                            ),
+                          ),
                         ),
-                      ),
+                        if (badge != null) ...[
+                          const SizedBox(width: 5),
+                          badge!,
+                        ],
+                      ],
                     ),
-                    if (badge != null) ...[const SizedBox(width: 5), badge!],
-                  ],
-                ),
+                  ),
+                ],
               ),
-              for (final action in actions) ...[
-                action,
-                const SizedBox(width: 3),
-              ],
-              if (onHeaderTap != null || chevronPlaceholder)
-                Icon(
-                  expanded ? Icons.expand_less : Icons.expand_more,
-                  size: 18,
-                  color: scheme.outline,
+              if (actions.isNotEmpty ||
+                  onHeaderTap != null ||
+                  chevronPlaceholder)
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    for (final action in actions) ...[
+                      action,
+                      const SizedBox(width: 3),
+                    ],
+                    if (onHeaderTap != null || chevronPlaceholder)
+                      Icon(
+                        expanded ? Icons.expand_less : Icons.expand_more,
+                        size: 18,
+                        color: scheme.outline,
+                      ),
+                  ],
                 ),
             ],
           ),

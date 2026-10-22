@@ -4,7 +4,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/util/haptics.dart';
 import '../canvas_state.dart';
-import '../models.dart';
+import '../models.dart' show CharacterPrompt, GenParams, naiSupportsEffort;
+import '../prompt_sections.dart' show joinSections;
+import '../style_recipes.dart' show recipeDetail, recipeOf;
 import 'bottom_action_bar.dart';
 import 'common.dart';
 
@@ -358,7 +360,12 @@ class _CanvasTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
-    final prompt = canvas.prompts.prompt;
+    // 分过区的画布按拼好的那串预览,和发出去的一致
+    final prompt = joinSections(
+      canvas.prompts.sections,
+      canvas.prompts.prompt,
+      positive: true,
+    );
     final characters = canvas.prompts.characters;
     final sampling = canvas.prompts.sampling;
     final preview = _previewStyle(context);
@@ -491,13 +498,8 @@ TextStyle _previewStyle(BuildContext context) =>
 /// 只报当前模型那一套，写法与画风推荐参数一致。
 String _samplingLine(CanvasSampling s) {
   final p = s.writeInto(const GenParams());
-  final (cfg, sampler) = switch (providerOfModel(p.model)) {
-    GenProvider.anima => (p.animaCfg, p.animaSampler),
-    GenProvider.krea => (p.kreaCfg, p.kreaSampler),
-    GenProvider.nai => (p.cfg, p.isNaiMedium ? 'Euler Ancestral' : p.sampler),
-  };
   final effort = naiSupportsEffort(p.model) ? ' ${p.naiEffort.name}' : '';
-  return '${p.model}$effort · ${p.activeSteps} 步 · CFG $cfg · $sampler';
+  return '${s.model}$effort · ${recipeDetail(recipeOf(p))}';
 }
 
 /// 预览行：图标落在单选圆点那一列，正文与画布名左对齐。

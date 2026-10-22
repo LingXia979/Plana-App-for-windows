@@ -193,6 +193,28 @@ class AppearancePage extends ConsumerWidget {
                 ),
             ],
           ),
+          const SizedBox(height: 16),
+          const SettingsLabel('创作页'),
+          SettingsCard(
+            children: [
+              _SwitchRow(
+                key: const ValueKey('appearance-collapse-prompts'),
+                icon: Icons.view_agenda_outlined,
+                title: desktop ? '提示词卡片折叠' : '紧凑角色卡',
+                subtitle: desktop
+                    ? '允许折叠主体、分区和角色提示词，关闭后卡片始终展开'
+                    : '收起头像预览，保留名称、位置与提示词',
+                value: desktop
+                    ? ts.collapsiblePromptCards
+                    : ts.compactCharCards,
+                onChanged: (v) => notifier.patch(
+                  (x) => desktop
+                      ? x.copyWith(collapsiblePromptCards: v)
+                      : x.copyWith(compactCharCards: v),
+                ),
+              ),
+            ],
+          ),
           if (!desktop) ...[
             const SizedBox(height: 16),
             const SettingsLabel('触感'),
@@ -217,6 +239,7 @@ class AppearancePage extends ConsumerWidget {
 /// 卡片里的一行开关。整行可点。
 class _SwitchRow extends StatelessWidget {
   const _SwitchRow({
+    super.key,
     required this.icon,
     required this.title,
     required this.value,

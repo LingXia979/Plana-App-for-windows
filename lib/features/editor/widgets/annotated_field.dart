@@ -10,6 +10,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/editor_theme.dart';
 import '../data/suggestions.dart' show transCacheRev;
 import '../editor_models.dart';
+import '../chrome_scroll.dart';
 import 'rich_tag_controller.dart';
 import 'editor_body.dart';
 
@@ -159,6 +160,30 @@ class AnnotatedFieldState extends State<AnnotatedField> {
     );
   }
 
+  final _keep = KeepInViewTracker();
+  TextSelection? _lastSel;
+
+  void _onController() {
+    final selection = widget.controller.selection;
+    if (selection == _lastSel) return;
+    _lastSel = selection;
+    _keep.arm();
+  }
+
+  void _revealCaret() {
+    final point = selectionAnchor();
+    final box = _fieldKey.currentContext?.findRenderObject();
+    if (point == null || box is! RenderBox || !box.attached) return;
+    box.showOnScreen(
+      rect: _revealPadding.inflateRect(
+        Rect.fromPoints(
+          box.globalToLocal(point.topLeft),
+          box.globalToLocal(point.bottomRight),
+        ),
+      ),
+    );
+  }
+
   /// 兜底:手柄只在有焦点时挂着,焦点一丢它连同上面那层 [Listener] 一起拆掉,
   /// 松手事件就没人收了 —— 不在这里补一刀,拖动态会卡住,词条栏再也不出来。
   void _onFocusChanged() {
@@ -169,11 +194,18 @@ class AnnotatedFieldState extends State<AnnotatedField> {
   void initState() {
     super.initState();
     widget.focusNode.addListener(_onFocusChanged);
+    _lastSel = widget.controller.selection;
+    widget.controller.addListener(_onController);
   }
 
   @override
   void didUpdateWidget(AnnotatedField oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller.removeListener(_onController);
+      widget.controller.addListener(_onController);
+      _lastSel = widget.controller.selection;
+    }
     if (oldWidget.focusNode != widget.focusNode) {
       oldWidget.focusNode.removeListener(_onFocusChanged);
       widget.focusNode.addListener(_onFocusChanged);
@@ -183,6 +215,7 @@ class AnnotatedFieldState extends State<AnnotatedField> {
   @override
   void dispose() {
     widget.focusNode.removeListener(_onFocusChanged);
+    widget.controller.removeListener(_onController);
     super.dispose();
   }
 
@@ -204,154 +237,160 @@ class AnnotatedFieldState extends State<AnnotatedField> {
           height: widget.showTrans ? null : 1.5,
         );
 
-    return EditorBody(
-      controller: widget.scrollController,
-      // 一屏放得下也照样接拖动:编辑页滚动收起顶栏后,靠「顶上往下拽」
-      // 放出来(见 ChromeScrollTracker)
-      scrollable: widget.scrollable,
-      // 顶部只留 2:第一行 2 倍行高自带约 6 的上半行距,再多就和顶栏隔得太开
-      padding: widget.padding,
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final width = constraints.maxWidth;
-          return Stack(
-            children: [
-              // 折叠底纹层(最底):标题 `#名字` 一颗药丸,点它即解散。
-              // 不受权重高亮开关影响:折叠是结构,不是权重。
-              Positioned.fill(
-                child: IgnorePointer(
-                  child: AnimatedBuilder(
-                    animation: widget.controller,
-                    builder: (_, _) => CustomPaint(
-                      painter: _FoldPainter(
-                        text: widget.controller.text,
-                        bodies: widget.controller.foldBodies,
-                        base: base,
-                        maxWidth: width - _kCaretMargin,
-                        scaler: scaler,
-                        withSpacing: widget.showTrans,
-                        title: scheme.primary.withValues(alpha: .16),
-                        revision: transCacheRev,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-              // 权重底色层:贴字形高度的圆角色带,范围含权重记号,
-              // 组=开记号到闭记号整条;嵌套/叠加权重=多层半透明叠色。
-              if (widget.showWeightWash)
+    return NotificationListener<Notification>(
+      onNotification: (n) {
+        if (widget.scrollable && _keep.update(n)) _revealCaret();
+        return false;
+      },
+      child: EditorBody(
+        controller: widget.scrollController,
+        // 一屏放得下也照样接拖动:编辑页滚动收起顶栏后,靠「顶上往下拽」
+        // 放出来(见 ChromeScrollTracker)
+        scrollable: widget.scrollable,
+        // 顶部只留 2:第一行 2 倍行高自带约 6 的上半行距,再多就和顶栏隔得太开
+        padding: widget.padding,
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final width = constraints.maxWidth;
+            return Stack(
+              children: [
+                // 折叠底纹层(最底):标题 `#名字` 一颗药丸,点它即解散。
+                // 不受权重高亮开关影响:折叠是结构,不是权重。
                 Positioned.fill(
                   child: IgnorePointer(
                     child: AnimatedBuilder(
                       animation: widget.controller,
                       builder: (_, _) => CustomPaint(
-                        painter: _WeightWashPainter(
+                        painter: _FoldPainter(
                           text: widget.controller.text,
+                          bodies: widget.controller.foldBodies,
                           base: base,
                           maxWidth: width - _kCaretMargin,
                           scaler: scaler,
                           withSpacing: widget.showTrans,
-                          pal: pal,
-                          sdWash: scheme.tertiary,
-                          disabledWash: scheme.onSurface,
+                          title: scheme.primary.withValues(alpha: .16),
                           revision: transCacheRev,
                         ),
                       ),
                     ),
                   ),
                 ),
-              if (widget.showTrans)
-                Positioned.fill(
-                  child: IgnorePointer(
-                    child: AnimatedBuilder(
-                      animation: widget.controller,
-                      builder: (_, _) => CustomPaint(
-                        painter: _FuriganaPainter(
-                          text: widget.controller.text,
-                          base: base,
-                          // RenderEditable 排版时给光标留 cursorWidth+1 的边距,
-                          // 注音层必须用同一宽度重排,否则临界行折点不一致,
-                          // 折点一岔开整行注音全错位(真机截图踩过)。
-                          maxWidth: width - _kCaretMargin,
-                          color: scheme.onSurfaceVariant,
-                          scaler: scaler,
-                          revision: transCacheRev,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              // EditableText 无 textHeightBehavior 直参,靠 DefaultTextHeightBehavior
-              // 下发 even——与上面两个绘制层同款行距,底色/注音才与字严格对齐。
-              _HandleDragReveal(
-                active: () => _dragging || _revealHold,
-                padding: _revealPadding,
-                child: DefaultTextHeightBehavior(
-                  textHeightBehavior: _kEvenLeading,
-                  child: TextField(
-                    key: _fieldKey,
-                    controller: widget.controller,
-                    focusNode: widget.focusNode,
-                    style: base.copyWith(color: scheme.onSurface),
-                    maxLines: null,
-                    minLines: widget.minLines,
-                    scrollPhysics: widget.scrollable
-                        ? null
-                        : const NeverScrollableScrollPhysics(),
-                    cursorColor: pal.cursor,
-                    cursorWidth: _kCursorWidth,
-                    selectionControls: _handles,
-                    keyboardType: TextInputType.multiline,
-                    textInputAction: TextInputAction.newline,
-                    decoration: InputDecoration(
-                      isDense: true,
-                      filled: widget.scrollable ? null : false,
-                      isCollapsed: true,
-                      contentPadding: EdgeInsets.zero,
-                      border: InputBorder.none,
-                      hintText: widget.hint,
-                      hintStyle: base.copyWith(color: scheme.outline),
-                    ),
-                  ),
-                ),
-              ),
-              // 折叠标题点击层(最上):**只**覆盖 `#名字` 矩形,单击 = 一次性解散。
-              // 独立热区而不是靠光标落点驱动 —— 光标移动/方向键/选择经过折叠时
-              // 不再误触发;矩形之外没有 widget,点击照常穿透给 TextField 定位
-              // 光标。同一 controller 布局,矩形与绘制层严格对齐。
-              Positioned.fill(
-                child: AnimatedBuilder(
-                  animation: widget.controller,
-                  builder: (_, _) {
-                    final rects = _foldTitleRects(
-                      widget.controller.text,
-                      widget.controller.foldBodies,
-                      base: base,
-                      maxWidth: width - _kCaretMargin,
-                      scaler: scaler,
-                    );
-                    if (rects.isEmpty) return const SizedBox.shrink();
-                    return Stack(
-                      children: [
-                        for (final (name, r) in rects)
-                          Positioned(
-                            left: r.left,
-                            top: r.top,
-                            width: r.width,
-                            height: r.height,
-                            child: GestureDetector(
-                              behavior: HitTestBehavior.opaque,
-                              onTap: () => widget.onFoldTap?.call(name),
-                            ),
+                // 权重底色层:贴字形高度的圆角色带,范围含权重记号,
+                // 组=开记号到闭记号整条;嵌套/叠加权重=多层半透明叠色。
+                if (widget.showWeightWash)
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      child: AnimatedBuilder(
+                        animation: widget.controller,
+                        builder: (_, _) => CustomPaint(
+                          painter: _WeightWashPainter(
+                            text: widget.controller.text,
+                            base: base,
+                            maxWidth: width - _kCaretMargin,
+                            scaler: scaler,
+                            withSpacing: widget.showTrans,
+                            pal: pal,
+                            sdWash: scheme.tertiary,
+                            disabledWash: scheme.onSurface,
+                            revision: transCacheRev,
                           ),
-                      ],
-                    );
-                  },
+                        ),
+                      ),
+                    ),
+                  ),
+                if (widget.showTrans)
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      child: AnimatedBuilder(
+                        animation: widget.controller,
+                        builder: (_, _) => CustomPaint(
+                          painter: _FuriganaPainter(
+                            text: widget.controller.text,
+                            base: base,
+                            // RenderEditable 排版时给光标留 cursorWidth+1 的边距,
+                            // 注音层必须用同一宽度重排,否则临界行折点不一致,
+                            // 折点一岔开整行注音全错位(真机截图踩过)。
+                            maxWidth: width - _kCaretMargin,
+                            color: scheme.onSurfaceVariant,
+                            scaler: scaler,
+                            revision: transCacheRev,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                // EditableText 无 textHeightBehavior 直参,靠 DefaultTextHeightBehavior
+                // 下发 even——与上面两个绘制层同款行距,底色/注音才与字严格对齐。
+                _HandleDragReveal(
+                  active: () => _dragging || _revealHold,
+                  padding: _revealPadding,
+                  child: DefaultTextHeightBehavior(
+                    textHeightBehavior: _kEvenLeading,
+                    child: TextField(
+                      key: _fieldKey,
+                      controller: widget.controller,
+                      focusNode: widget.focusNode,
+                      style: base.copyWith(color: scheme.onSurface),
+                      maxLines: null,
+                      minLines: widget.minLines,
+                      scrollPhysics: widget.scrollable
+                          ? null
+                          : const NeverScrollableScrollPhysics(),
+                      cursorColor: pal.cursor,
+                      cursorWidth: _kCursorWidth,
+                      selectionControls: _handles,
+                      keyboardType: TextInputType.multiline,
+                      textInputAction: TextInputAction.newline,
+                      decoration: InputDecoration(
+                        isDense: true,
+                        filled: widget.scrollable ? null : false,
+                        isCollapsed: true,
+                        contentPadding: EdgeInsets.zero,
+                        border: InputBorder.none,
+                        hintText: widget.hint,
+                        hintStyle: base.copyWith(color: scheme.outline),
+                      ),
+                    ),
+                  ),
                 ),
-              ),
-            ],
-          );
-        },
+                // 折叠标题点击层(最上):**只**覆盖 `#名字` 矩形,单击 = 一次性解散。
+                // 独立热区而不是靠光标落点驱动 —— 光标移动/方向键/选择经过折叠时
+                // 不再误触发;矩形之外没有 widget,点击照常穿透给 TextField 定位
+                // 光标。同一 controller 布局,矩形与绘制层严格对齐。
+                Positioned.fill(
+                  child: AnimatedBuilder(
+                    animation: widget.controller,
+                    builder: (_, _) {
+                      final rects = _foldTitleRects(
+                        widget.controller.text,
+                        widget.controller.foldBodies,
+                        base: base,
+                        maxWidth: width - _kCaretMargin,
+                        scaler: scaler,
+                      );
+                      if (rects.isEmpty) return const SizedBox.shrink();
+                      return Stack(
+                        children: [
+                          for (final (name, r) in rects)
+                            Positioned(
+                              left: r.left,
+                              top: r.top,
+                              width: r.width,
+                              height: r.height,
+                              child: GestureDetector(
+                                behavior: HitTestBehavior.opaque,
+                                onTap: () => widget.onFoldTap?.call(name),
+                              ),
+                            ),
+                        ],
+                      );
+                    },
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
       ),
     );
   }

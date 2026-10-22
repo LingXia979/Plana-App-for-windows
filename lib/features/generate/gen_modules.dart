@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/store/app_stores.dart';
 import 'models.dart';
+import 'prompt_sections.dart';
 
 export 'models.dart'
     show GenProvider, isAnimaModel, providerLabel, providerOfModel;
@@ -236,11 +237,13 @@ class GenModuleSettings {
 /// 或不属当前模型父类 —— 如 anima 下的全部 NAI 模块;只影响本次快照,
 /// 不动工作区)。入库的即此剥离后快照,「重新生成」不再受当时的模块配置影响。
 ///
-/// 挂着重绘时宽高也在这里换成重绘那块的发送尺寸(见 [InpaintJob.sendSize])。
+/// 主提示词分区也在这里并成一整串(见 [composeSections]):面板发起的每条
+/// 生成路线都过这一道,快照里就只有发给 NAI 的那串。挂着重绘时宽高也在这里
+/// 换成重绘那块的发送尺寸(见 [InpaintJob.sendSize])。
 GenerateState stripHiddenModules(GenerateState s, GenModuleSettings ms) {
   final model = s.params.model;
   bool on(GenModule m) => ms.isVisibleFor(m, model);
-  var out = s;
+  var out = composeSections(s);
   if (!on(GenModule.character) && out.characters.isNotEmpty) {
     out = out.copyWith(characters: const []);
   }

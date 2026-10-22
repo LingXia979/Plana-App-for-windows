@@ -1932,6 +1932,29 @@ String appendUnit(String text, String tag) {
   return '$base$sep$add';
 }
 
+/// 在 [at] 处插入一枚单元,两侧按需补分隔:左边紧挨着词补 `, `,逗号后只补
+/// 空格,文首 / 换行后直接接;右边还有词再补 `, `。返回新正文与新单元的末尾。
+(String, int) insertUnitAt(String text, int at, String tag) {
+  final add = tag.trim();
+  if (add.isEmpty) return (text, at);
+  var l = at.clamp(0, text.length);
+  while (l > 0 && (text[l - 1] == ' ' || text[l - 1] == '\t')) {
+    l--;
+  }
+  var r = at.clamp(0, text.length);
+  while (r < text.length && (text[r] == ' ' || text[r] == '\t')) {
+    r++;
+  }
+  final lead = (l == 0 || text[l - 1] == '\n')
+      ? ''
+      : (text[l - 1] == ',' || text[l - 1] == '，')
+      ? ' '
+      : ', ';
+  final trail = (r >= text.length || _isSep(text[r])) ? '' : ', ';
+  final out = '${text.substring(0, l)}$lead$add$trail${text.substring(r)}';
+  return (out, l + lead.length + add.length);
+}
+
 /// 顶层单元重排:把第 [from] 个单元移到 [to](移除后下标)。槽位法——各单元
 /// 原文按新序填回原有槽,槽间分隔(逗号/换行)原样保留。
 String reorderUnits(String text, Map<String, String> bodies, int from, int to) {
@@ -2172,6 +2195,66 @@ String setUnitsDisabled(
     out = toggleTokDisabled(out, t);
   }
   return out;
+}
+
+/// 收了口的权重组以收口记号结尾。
+final _closedGroupEnd = RegExp(r'(\}|\]|::)$');
+
+/// 「提取为新分区」的草稿:所选单元按原顺序原样拼起来(权重、禁用、折叠占位符
+/// 都带着),逗号分隔;折叠由调用方 [expandFolds]。
+///
+/// 所选**整个盖住**的权重组连组记号一起带走(`0.8::a, b::` 两枚都选中 → 原样
+/// `0.8::a, b::`;删除那头本来就会连记号一起删,不带走权重就两边都没了)。只取
+/// 了组里一部分的照旧只取词本身 —— 组权重属于整组,拆出一两个词不该带走。
+/// 没收口的组(打到文末 / 被下一个前缀截断)不带:单独成格后会一路漏到后面
+/// 拼上的分区里。
+String extractUnitsDraft(
+  String text,
+  Map<String, String> bodies,
+  Iterable<int> sel,
+) {
+  final units = topLevelUnits(text, bodies);
+  final picked = {
+    for (final i in sel)
+      if (i >= 0 && i < units.length) i,
+  };
+  if (picked.isEmpty) return '';
+  final spans = <WeightSpan>[];
+  parseToks(text, weightSpans: spans);
+  bool holds(WeightSpan s, TopUnit u) => u.start >= s.start && u.end <= s.end;
+  final whole = <WeightSpan>[];
+  for (final s in spans) {
+    final inside = [
+      for (var i = 0; i < units.length; i++)
+        if (holds(s, units[i])) i,
+    ];
+    if (inside.isEmpty || !inside.every(picked.contains)) continue;
+    if (!_closedGroupEnd.hasMatch(text.substring(s.start, s.end).trimRight())) {
+      continue;
+    }
+    whole.add(s);
+  }
+  final pieces = <String>[];
+  final taken = <WeightSpan>{};
+  for (var i = 0; i < units.length; i++) {
+    final u = units[i];
+    WeightSpan? outer;
+    for (final s in whole) {
+      if (holds(s, u) &&
+          (outer == null || (s.start <= outer.start && s.end >= outer.end))) {
+        outer = s;
+      }
+    }
+    if (outer != null) {
+      if (taken.add(outer)) pieces.add(text.substring(outer.start, outer.end));
+    } else if (picked.contains(i)) {
+      pieces.add(text.substring(u.start, u.end));
+    }
+  }
+  return [
+    for (final p in pieces)
+      if (p.trim().isNotEmpty) p.trim(),
+  ].join(', ');
 }
 
 /// 顶层单元多选删除 → (新文本, 光标)。折叠走 [deleteFoldRef](整只删,

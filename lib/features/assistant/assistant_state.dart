@@ -25,6 +25,8 @@ import '../../core/net/backend_client.dart';
 import '../../core/net/backend_config.dart';
 import '../../core/store/app_stores.dart';
 import '../generate/agent_chars.dart';
+import '../generate/prompt_sections.dart' show composeSections;
+import '../editor/editor_state.dart' show editorSessionsProvider;
 import '../generate/canvas_state.dart';
 import '../generate/char_position.dart';
 import '../gallery/gallery_state.dart' show galleryProvider;
@@ -188,6 +190,7 @@ GenerateState proposalSendState(
     negativePrompt: r.negative,
     promptRaw: '',
     negativePromptRaw: '',
+    sections: const [],
     characters: built.chars,
     charRefs: const [],
     img2img: null,
@@ -199,10 +202,12 @@ GenerateState proposalSendState(
 /// 创作页有没有可带给 AI 的东西。全空时「引用创作页」那颗按钮没意义,置灰。
 ///
 /// 角色要连正向词一起看:一个刚加出来、名字都还没填的空角色带过去等于噪音。
-bool canvasHasContent(GenerateState g) =>
-    g.prompt.trim().isNotEmpty ||
-    g.negativePrompt.trim().isNotEmpty ||
-    g.characters.any((c) => c.enabled && c.positive.trim().isNotEmpty);
+bool canvasHasContent(GenerateState g) {
+  final composed = composeSections(g);
+  return composed.prompt.trim().isNotEmpty ||
+      composed.negativePrompt.trim().isNotEmpty ||
+      composed.characters.any((c) => c.enabled && c.positive.trim().isNotEmpty);
+}
 
 final assistantProvider = NotifierProvider<AssistantNotifier, AssistantState>(
   AssistantNotifier.new,
@@ -496,7 +501,8 @@ class AssistantNotifier extends Notifier<AssistantState> {
 
       // 画布是空的就当没勾 —— 记在消息上的也是这个结果,免得气泡挂着「引用了创作页」
       // 而实际什么都没发出去。
-      final g = ref.read(generateProvider);
+      ref.read(editorSessionsProvider).flushPending();
+      final g = composeSections(ref.read(generateProvider));
       final canvas = withCanvas && canvasHasContent(g);
       // 回复回来时人可能已经切去别的画布,自动导入 / 出图只对发问时这张生效
       final sourceCanvasId = ref.read(canvasWorkspaceProvider).activeId;
@@ -1005,13 +1011,8 @@ class AssistantNotifier extends Notifier<AssistantState> {
   // ---- 写回 / 撤销 ----
 
   PromptSnapshot _snapshot() {
-    final g = ref.read(generateProvider);
-    return PromptSnapshot(
-      positive: g.prompt,
-      negative: g.negativePrompt,
-      characters: List.of(g.characters),
-      useCoords: g.params.useCoords,
-    );
+    ref.read(editorSessionsProvider).flushPending();
+    return PromptSnapshot.of(ref.read(generateProvider));
   }
 
   /// 某张画布眼下那组词。null = 当前画布(切画布之前的老记录没记画布);
@@ -1021,12 +1022,7 @@ class AssistantNotifier extends Notifier<AssistantState> {
     if (canvasId == null || canvasId == w.activeId) return _snapshot();
     final p = w.find(canvasId)?.prompts;
     if (p == null) return null;
-    return PromptSnapshot(
-      positive: p.prompt,
-      negative: p.negativePrompt,
-      characters: List.of(p.characters),
-      useCoords: p.useCoords,
-    );
+    return PromptSnapshot.of(p.applyTo(ref.read(generateProvider)));
   }
 
   /// 这条提议**如果拿去生成**会发出什么 —— 不改任何状态。
@@ -1054,7 +1050,7 @@ class AssistantNotifier extends Notifier<AssistantState> {
   ///
   /// 幂等:已经导入且没撤销过就直接返回 true。撤销之后可以再导入一次。
   ///
-  /// **空值不覆盖**:AI 常常只给正向、负向留空,照写会把用户的负面词洗掉。
+  /// 完整替换提示词；原有分区、折叠和草稿保存在撤销快照中。
   bool applyProposal(String msgId) {
     final i = state.msgs.indexWhere((m) => m.id == msgId);
     if (i < 0) return false;
@@ -1073,7 +1069,7 @@ class AssistantNotifier extends Notifier<AssistantState> {
     //
     // Vibe、角色参考、图生图这些 AI 不产出的东西**不动** —— 导入写的是 AI 那份
     // 提示词,不是清空你的工作区。和直接生成是同一条线(见 [proposalSendState])。
-    gen.setPrompts(positive: r.positive, negative: r.negative);
+    gen.replacePrompts(positive: r.positive, negative: r.negative);
     final placed = gen.applyAgentCharacters([
       for (final c in r.characters)
         (
@@ -1120,32 +1116,10 @@ class AssistantNotifier extends Notifier<AssistantState> {
     if (!force && !inSyncWith(c)) return false;
 
     // 回滚到导入的那张画布上,不碰眼下这张;画布删了就只记成已撤销。
-    final target = c.canvasId;
-    final w = ref.read(canvasWorkspaceProvider);
-    if (target == null || target == w.activeId) {
-      final gen = ref.read(generateProvider.notifier);
-      gen.setPrompts(positive: c.before.positive, negative: c.before.negative);
-      gen.replaceCharacters(c.before.characters);
-      gen.setUseCoords(c.before.useCoords);
-    } else if (w.find(target) != null) {
-      final b = c.before;
-      ref
-          .read(canvasWorkspaceProvider.notifier)
-          .updatePrompts(
-            target,
-            (p) => p.copyWith(
-              prompt: b.positive,
-              // 同 setPrompts:词变了,编辑器草稿随之作废
-              promptRaw: b.positive == p.prompt ? p.promptRaw : '',
-              negativePrompt: b.negative,
-              negativePromptRaw: b.negative == p.negativePrompt
-                  ? p.negativePromptRaw
-                  : '',
-              characters: List.of(b.characters),
-              useCoords: b.useCoords,
-            ),
-          );
-    }
+    final target = c.canvasId ?? ref.read(canvasWorkspaceProvider).activeId;
+    ref
+        .read(canvasWorkspaceProvider.notifier)
+        .updatePrompts(target, c.before.restoreTo);
 
     final msgs = [...state.msgs];
     msgs[i] = msgs[i].copyWith(change: c.copyWith(undone: true));

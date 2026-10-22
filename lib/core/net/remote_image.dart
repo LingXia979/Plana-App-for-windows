@@ -461,6 +461,7 @@ class RemoteImage extends StatelessWidget {
     this.height,
     this.decodeWidth,
     this.decodeHeight,
+    this.filterQuality = FilterQuality.medium,
     this.gaplessPlayback = false,
     this.frameBuilder,
     this.loadingBuilder,
@@ -479,6 +480,7 @@ class RemoteImage extends StatelessWidget {
   /// Optional height cap for contained thumbnails. Limiting width alone can
   /// decode tall images far beyond the height actually displayed in a card.
   final double? decodeHeight;
+  final FilterQuality filterQuality;
 
   final bool gaplessPlayback;
   final ImageFrameBuilder? frameBuilder;
@@ -508,6 +510,7 @@ class RemoteImage extends StatelessWidget {
       fit: fit,
       width: width,
       height: height,
+      filterQuality: filterQuality,
       gaplessPlayback: gaplessPlayback,
       frameBuilder: frameBuilder,
       loadingBuilder: loadingBuilder,

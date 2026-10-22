@@ -193,6 +193,7 @@ class WorkspaceStore {
         for (final r in full.kreaStyleRefs) r.id,
         for (final canvas in initialCanvases!.canvases) ...[
           for (final c in canvas.prompts.characters) c.id,
+          for (final s in canvas.prompts.sections) s.id,
         ],
       ]) {
         final m = _idNumRe.firstMatch(id);
@@ -292,6 +293,7 @@ class WorkspaceStore {
     'promptRaw',
     'negativePromptRaw',
     'promptFoldLinks',
+    'sections',
     'characters',
     'promptPresetId',
   ];

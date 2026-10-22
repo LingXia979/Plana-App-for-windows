@@ -21,6 +21,7 @@ class CanvasPrompts {
     this.negativePrompt = '',
     this.negativePromptRaw = '',
     this.promptFoldLinks = const [],
+    this.sections = const [],
     this.characters = const [],
     this.useCoords = false,
     this.promptPresetId = kDefaultPromptPresetId,
@@ -34,6 +35,7 @@ class CanvasPrompts {
     negativePrompt: s.negativePrompt,
     negativePromptRaw: s.negativePromptRaw,
     promptFoldLinks: s.promptFoldLinks,
+    sections: s.sections,
     characters: s.characters,
     useCoords: s.params.useCoords,
     promptPresetId: s.promptPresetId,
@@ -46,6 +48,8 @@ class CanvasPrompts {
   final String negativePromptRaw;
   final List<PromptFoldLink> promptFoldLinks;
 
+  /// 主提示词分区(见 [GenerateState.sections])。
+  final List<PromptSection> sections;
   final List<CharacterPrompt> characters;
 
   /// 角色定位开关(`params.useCoords`):跟角色站位绑在一起,所以随画布走。
@@ -75,19 +79,21 @@ class CanvasPrompts {
       negativePrompt: negativePrompt,
       negativePromptRaw: negativePromptRaw,
       promptFoldLinks: promptFoldLinks,
+      sections: sections,
       characters: characters,
       params: identical(params, base.params) ? null : params,
       promptPresetId: promptPresetId,
     );
   }
 
-  /// 角色列表按引用比:创作状态改别的字段时列表原样沿用,改它们必换新列表。
+  /// 角色、分区列表按引用比:创作状态改别的字段时列表原样沿用,改它们必换新列表。
   bool sameAs(CanvasPrompts o) =>
       prompt == o.prompt &&
       promptRaw == o.promptRaw &&
       negativePrompt == o.negativePrompt &&
       negativePromptRaw == o.negativePromptRaw &&
       identical(promptFoldLinks, o.promptFoldLinks) &&
+      identical(sections, o.sections) &&
       identical(characters, o.characters) &&
       useCoords == o.useCoords &&
       promptPresetId == o.promptPresetId &&
@@ -103,6 +109,7 @@ class CanvasPrompts {
     String? negativePrompt,
     String? negativePromptRaw,
     List<PromptFoldLink>? promptFoldLinks,
+    List<PromptSection>? sections,
     List<CharacterPrompt>? characters,
     bool? useCoords,
     String? promptPresetId,
@@ -127,6 +134,7 @@ class CanvasPrompts {
             ),
             promptFoldLinks ?? this.promptFoldLinks,
           ),
+    sections: sections ?? this.sections,
     characters: characters ?? this.characters,
     useCoords: useCoords ?? this.useCoords,
     promptPresetId: promptPresetId ?? this.promptPresetId,
@@ -140,6 +148,7 @@ class CanvasPrompts {
     negativePrompt: negativePrompt,
     negativePromptRaw: negativePromptRaw,
     promptFoldLinks: promptFoldLinks,
+    sections: sections,
     characters: characters,
     useCoords: useCoords,
     promptPresetId: promptPresetId,

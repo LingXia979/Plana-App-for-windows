@@ -1,10 +1,12 @@
 import 'dart:typed_data';
 
 import '../../core/store/blob_store.dart';
-import '../editor/editor_models.dart' show PromptFoldLink;
+import '../editor/editor_models.dart'
+    show PromptFoldLink, pickEditorText, validPromptFoldLinks;
 import 'char_position.dart';
 import 'models.dart';
 import 'nai_request.dart' show kLegacyAutoCenters;
+import 'prompt_sections.dart' show normalizeSections;
 
 /// GenerateState ⇄ JSON。图片字节不进 JSON——写入 [BlobStore] 后只存
 /// 内容哈希引用;[EncodedState.refs] 汇总本快照引用的全部 blob,
@@ -150,6 +152,27 @@ Future<EncodedState> encodeGenerateState(
       'negativePromptRaw': s.negativePromptRaw,
     if (s.promptFoldLinks.isNotEmpty)
       'promptFoldLinks': [for (final link in s.promptFoldLinks) link.toJson()],
+    // 主提示词分区:没分区就不写(生成快照里已拼进 prompt,也不会带这个键)
+    if (s.sections.isNotEmpty)
+      'sections': [
+        for (final x in s.sections)
+          x.isMain
+              ? {'id': x.id, 'name': x.name, if (!x.enabled) 'enabled': false}
+              : {
+                  'id': x.id,
+                  'name': x.name,
+                  'positive': x.positive,
+                  'negative': x.negative,
+                  if (x.positiveRaw.isNotEmpty) 'positiveRaw': x.positiveRaw,
+                  if (x.negativeRaw.isNotEmpty) 'negativeRaw': x.negativeRaw,
+                  if (x.foldLinks.isNotEmpty)
+                    'foldLinks': [
+                      for (final link in x.foldLinks) link.toJson(),
+                    ],
+                  if (!x.enabled) 'enabled': false,
+                  if (x.artist) 'artist': true,
+                },
+      ],
     'characters': [
       for (final c in s.characters)
         {
@@ -164,6 +187,7 @@ Future<EncodedState> encodeGenerateState(
           'enabled': c.enabled,
           if (c.position != null) 'position': c.position,
           'activeTab': c.activeTab.name,
+          if (c.avatar != null) 'avatar': c.avatar,
         },
     ],
     'vibes': vibes,
@@ -351,6 +375,7 @@ Future<GenerateState> decodeGenerateState(
           position: e['position'] as String?,
           activeTab:
               _enumByName(CharTab.values, e['activeTab']) ?? CharTab.positive,
+          avatar: e['avatar'] is String ? e['avatar'] as String : null,
         ).copyWith(foldLinks: PromptFoldLink.decode(e['foldLinks'])),
       );
     }
@@ -639,6 +664,7 @@ Future<GenerateState> decodeGenerateState(
     negativePromptRaw: j['negativePromptRaw'] is String
         ? j['negativePromptRaw'] as String
         : '',
+    sections: decodePromptSections(j['sections']),
     characters: characters,
     vibes: vibes,
     charRefs: charRefs,
@@ -700,4 +726,40 @@ List<ActiveLora> _decodeLoras(Object? raw) {
           type: e['type'] is String ? e['type'] as String : 'concept',
         ),
   ];
+}
+
+List<PromptSection> decodePromptSections(Object? raw) {
+  if (raw is! List) return const [];
+  String str(Object? v) => v is String ? v : '';
+  final out = <PromptSection>[];
+  final seen = <String>{};
+  for (final e in raw) {
+    if (e is! Map) continue;
+    final id = e['id'];
+    if (id is! String || !seen.add(id)) continue;
+    final name = str(e['name']);
+    out.add(
+      id == kMainSectionId
+          ? PromptSection.main(
+              name: name.isEmpty ? '主体' : name,
+              enabled: e['enabled'] != false,
+            )
+          : PromptSection(
+              id: id,
+              name: name,
+              positive: str(e['positive']),
+              negative: str(e['negative']),
+              positiveRaw: str(e['positiveRaw']),
+              negativeRaw: str(e['negativeRaw']),
+              foldLinks: validPromptFoldLinks(
+                pickEditorText(str(e['positiveRaw']), str(e['positive'])),
+                pickEditorText(str(e['negativeRaw']), str(e['negative'])),
+                PromptFoldLink.decode(e['foldLinks']),
+              ),
+              enabled: e['enabled'] != false,
+              artist: e['artist'] == true,
+            ),
+    );
+  }
+  return normalizeSections(out);
 }
