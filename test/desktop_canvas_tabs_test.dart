@@ -352,6 +352,74 @@ void main() {
   }
 
   testWidgets(
+    'close button confirms, cancels and restores the active canvas with its draft',
+    (tester) async {
+      container.read(canvasWorkspaceProvider.notifier).select(ids[1]);
+      await mount(tester, width: 1200);
+      expect(key('desktop-canvas-close-${ids.first}'), findsNothing);
+      await tester.tap(key('desktop-canvas-close-${ids[1]}'));
+      await tester.pumpAndSettle();
+      expect(find.text('删除「画布 1」？'), findsOneWidget);
+      expect(container.read(canvasWorkspaceProvider).find(ids[1]), isNotNull);
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+      expect(container.read(generateProvider).prompt, 'draft 1');
+      await shortcut(tester, LogicalKeyboardKey.f2);
+      await tester.enterText(editor, '关闭前改名');
+      await tester.tap(key('desktop-canvas-close-${ids[1]}'));
+      await tester.pumpAndSettle();
+      expect(find.text('删除「关闭前改名」？'), findsOneWidget);
+      await tester.tap(find.text('删除'));
+      await tester.pumpAndSettle();
+      expect(container.read(canvasWorkspaceProvider).find(ids[1]), isNull);
+      expect(container.read(canvasWorkspaceProvider).activeId, ids[2]);
+      await tester.tap(find.text('撤销'));
+      await tester.pumpAndSettle();
+      expect(container.read(canvasWorkspaceProvider).activeId, ids[1]);
+      expect(container.read(canvasWorkspaceProvider).active.name, '关闭前改名');
+      expect(container.read(generateProvider).prompt, 'draft 1');
+      await finish(tester);
+    },
+  );
+
+  testWidgets(
+    'closing a background tab preserves current editing and its close button never reorders',
+    (tester) async {
+      container.read(canvasWorkspaceProvider.notifier).select(ids[1]);
+      await mount(tester, width: 1200);
+      final close = key('desktop-canvas-close-${ids[2]}');
+      await tester.drag(
+        close,
+        const Offset(100, 0),
+        kind: PointerDeviceKind.mouse,
+      );
+      await tester.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsNothing);
+      expect(
+        container.read(canvasWorkspaceProvider).canvases.map((c) => c.id),
+        ids,
+      );
+      await tester.tap(close);
+      await tester.pumpAndSettle();
+      expect(find.text('删除「画布 2」？'), findsOneWidget);
+      expect(container.read(canvasWorkspaceProvider).activeId, ids[1]);
+      await tester.tap(find.text('删除'));
+      await tester.pumpAndSettle();
+      expect(container.read(canvasWorkspaceProvider).find(ids[2]), isNull);
+      expect(container.read(canvasWorkspaceProvider).activeId, ids[1]);
+      expect(container.read(generateProvider).prompt, 'draft 1');
+      await tester.tap(find.text('撤销'));
+      await tester.pumpAndSettle();
+      expect(container.read(canvasWorkspaceProvider).activeId, ids[1]);
+      expect(
+        container.read(canvasWorkspaceProvider).find(ids[2])!.prompts.prompt,
+        'draft 2',
+      );
+      await finish(tester);
+    },
+  );
+
+  testWidgets(
     'right click selects its canvas; menu F2 renames inline with all text selected',
     (tester) async {
       await mount(tester, width: 1200);

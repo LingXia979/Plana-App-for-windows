@@ -204,8 +204,9 @@ class _DesktopWorkspaceState extends ConsumerState<DesktopWorkspace>
 
   void _canvasCommand(void Function(DesktopCanvasTabsState tabs) action) {
     final tabs = _canvasTabs.currentState;
-    if (tabs != null && ref.read(shellIndexProvider) == kTabCreate)
+    if (tabs != null && ref.read(shellIndexProvider) == kTabCreate) {
       action(tabs);
+    }
   }
 
   @override
