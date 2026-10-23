@@ -20,6 +20,7 @@ import 'package:plana_app/core/store/app_stores.dart';
 import 'package:plana_app/features/desktop/desktop_library_state.dart';
 import 'package:plana_app/features/editor/widgets/chip_flow_view.dart';
 import 'package:plana_app/features/assistant/agent_model.dart';
+import 'package:plana_app/features/assistant/assistant_settings.dart';
 import 'package:plana_app/features/assistant/assistant_state.dart';
 import 'package:plana_app/features/assistant/custom_endpoint.dart';
 import 'package:plana_app/features/gallery/albums/album_state.dart';
@@ -79,6 +80,12 @@ void main() {
     await stores.prefs.write(
       key: 'editor_settings',
       value: '{"enableCompletion":false}',
+    );
+    // These workspace interactions start after onboarding; first-use behavior
+    // is covered separately in desktop_assistant_intro_test.dart.
+    await stores.prefs.write(
+      key: 'assistant_settings',
+      value: '{"introVersion":$kAssistantIntroVersion}',
     );
     disposed = false;
     for (final key in [

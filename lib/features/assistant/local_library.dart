@@ -96,9 +96,7 @@ List<LibArtist> libArtistsOf(List<Map<String, dynamic>> raw) {
       name: name.isNotEmpty ? name : id,
       prompt: prompt,
     );
-    if (seen.add(
-      '${a.id.toUpperCase()}|${a.name.toUpperCase()}|${a.prompt}',
-    )) {
+    if (seen.add('${a.id.toUpperCase()}|${a.name.toUpperCase()}|${a.prompt}')) {
       out.add(a);
     }
   }
@@ -197,7 +195,8 @@ List<(String, String)> matchOcs(String text, List<LibOc> ocs) {
     ];
     final hit = [
       for (final n in names)
-        if (normalizeName(n) case final k when k.isNotEmpty && textNorm.contains(k))
+        if (normalizeName(n) case final k
+            when k.isNotEmpty && textNorm.contains(k))
           n,
     ];
     if (hit.isEmpty) continue;
@@ -220,6 +219,7 @@ List<(String, String)> matchOcs(String text, List<LibOc> ocs) {
 
 const kArtistBlock = '[画师串]';
 const kOcBlock = '[OC 角色]';
+const kOcBlockNote = '直接写 OC 占位符，出图时换成完整 tag 组；需要改 OC 设定时请先关闭 OC 占位符设置';
 const kRoleBlock = '[角色候选]';
 
 /// [画师串] 块头下面那行说明,与服务端 `artist_placeholder.BLOCK_NOTE` 逐字一致。
@@ -289,6 +289,46 @@ class ArtistPlan {
   };
 }
 
+/// 可选的 OC 占位符映射。模型只看名字和 token，完整 tag 组留在本机。
+final ocTokenRe = RegExp(
+  r'__\s*OC\s*_\s*([^\s,，_]+(?:_[^\s,，_]+)*)\s*__',
+  caseSensitive: false,
+);
+
+String ocPlaceholder(String name) => '__OC_${artistTokenBody(name)}__';
+
+class OcPlan {
+  final _entries = <String, ArtistHit>{};
+
+  String add(String name, String tags) {
+    final key = _tokenKey(name);
+    if (key.isNotEmpty && tags.isNotEmpty) {
+      _entries.putIfAbsent(key, () => (name: name, content: tags));
+    }
+    return ocPlaceholder(name);
+  }
+
+  ArtistHit? get(String body) => _entries[_tokenKey(body)];
+
+  Map<String, String> get tokens => {
+    for (final e in _entries.values) ocPlaceholder(e.name): e.content,
+  };
+}
+
+/// search_character 的 OC 结果只把占位符交给模型，完整内容记在本轮映射里。
+Object? maskOcToolResults(Object? result, OcPlan plan) {
+  if (result is! List) return result;
+  return [
+    for (final row in result)
+      if (row is Map &&
+          row['source'] == 'oc' &&
+          '${row['tags'] ?? ''}'.isNotEmpty)
+        {...row, 'tags': plan.add('${row['name'] ?? ''}', '${row['tags']}')}
+      else
+        row,
+  ];
+}
+
 /// 工具查到的画师串记进映射:模型照着返回的 placeholder 写,出图前要认得出来。
 void rememberToolArtists(ArtistPlan plan, Object? result) {
   if (result is! List) return;
@@ -309,21 +349,25 @@ class LocalPrequery {
     required this.block,
     required this.thisTurn,
     required this.plan,
+    required this.ocPlan,
   });
 
-  /// 附在用户消息后面的资料块:画师串是占位符,OC 是完整 tag 组,角色候选是服务端给的。
+  /// 附在用户消息后面的资料块：画师串是占位符；OC 按设置决定是否使用占位符。
   final String block;
 
-  /// 本轮命中的(完整内容)。收尾记账只收里面的画师串(见 [mergeLedger])。
+  /// 本轮命中的(完整内容)。收尾记账收里面的画师串,OC 用占位符时连 OC 一起
+  /// (见 [mergeLedger])。
   final Map<String, Map<String, String>> thisTurn;
 
   final ArtistPlan plan;
+  final OcPlan ocPlan;
 }
 
 /// 拼这一轮的资料块。
 ///
 /// 本轮没点到画师串,把账本里记着的补上(预匹配逐条消息做,用户这轮没再提「A1」块就不出现,
-/// 出处断在那儿)。OC 不记账,只出本轮点到的。[useLibrary] 为 false(资料库范围「不使用」)
+/// 出处断在那儿)。OC 默认不记账,只出本轮点到的;用占位符时([ocPlaceholders])同画师串,
+/// 本轮没点到就补账本里记着的。[useLibrary] 为 false(资料库范围「不使用」)
 /// 时不匹配也不补,但记着的画师串照样进映射 —— 历史里的完整串还得折回占位符。
 ///
 /// [publicArtists] / [publicOcs] 是服务端公共库命中的,排在本地的后面、同名以本地为准;
@@ -337,6 +381,7 @@ LocalPrequery buildLocalPrequery({
   Map<String, String> publicArtists = const {},
   Map<String, String> publicOcs = const {},
   String roleBlock = '',
+  bool ocPlaceholders = false,
   Random? random,
 }) {
   final artistHits = <String, String>{};
@@ -364,6 +409,16 @@ LocalPrequery buildLocalPrequery({
       : artistHits;
 
   final plan = ArtistPlan();
+  final ocPlan = OcPlan();
+  if (ocPlaceholders && useLibrary) {
+    for (final oc in ocs) {
+      ocPlan.add(oc.enName, oc.tagGroup);
+      if (oc.zhName.isNotEmpty) ocPlan.add(oc.zhName, oc.tagGroup);
+    }
+    for (final e in (remembered['oc'] ?? const <String, String>{}).entries) {
+      ocPlan.add(e.key, e.value);
+    }
+  }
   final artistLines = [
     for (final e in artistEntries.entries)
       if (e.key.isNotEmpty && e.value.isNotEmpty)
@@ -372,19 +427,35 @@ LocalPrequery buildLocalPrequery({
   for (final e in (remembered['artist'] ?? const <String, String>{}).entries) {
     if (e.key.isNotEmpty && e.value.isNotEmpty) plan.add(e.key, e.value);
   }
+  final ocEntries = ocPlaceholders && useLibrary && ocHits.isEmpty
+      ? remembered['oc'] ?? const <String, String>{}
+      : ocHits;
   final ocLines = [
-    for (final e in ocHits.entries)
+    for (final e in ocEntries.entries)
       if (e.key.isNotEmpty && e.value.isNotEmpty) '${e.key} → ${e.value}',
   ];
+  final shownOcLines = ocPlaceholders
+      ? [
+          for (final e in ocEntries.entries)
+            if (e.key.isNotEmpty && e.value.isNotEmpty)
+              '${e.key} → ${ocPlan.add(e.key, e.value)}',
+        ]
+      : ocLines;
   return LocalPrequery(
     block: [
       if (artistLines.isNotEmpty)
         [kArtistBlock, kArtistBlockNote, ...artistLines].join('\n'),
-      if (ocLines.isNotEmpty) [kOcBlock, ...ocLines].join('\n'),
+      if (shownOcLines.isNotEmpty)
+        [
+          kOcBlock,
+          if (ocPlaceholders) kOcBlockNote,
+          ...shownOcLines,
+        ].join('\n'),
       if (roleBlock.trim().isNotEmpty) roleBlock.trim(),
     ].join('\n\n'),
     thisTurn: {'artist': artistHits, 'oc': ocHits},
     plan: plan,
+    ocPlan: ocPlan,
   );
 }
 
@@ -559,15 +630,58 @@ Map<String, dynamic>? expandDraw(
   };
 }
 
+String expandOcText(String text, OcPlan plan) {
+  if (!ocTokenRe.hasMatch(text)) return text;
+  final seen = <String>{};
+  final fills = <String>[];
+  var out = text.replaceAllMapped(ocTokenRe, (m) {
+    final body = m[1]!;
+    final hit = plan.get(body);
+    if (hit == null ||
+        !seen.add(_tokenKey(body)) ||
+        text.contains(hit.content)) {
+      return _drop;
+    }
+    fills.add(hit.content);
+    return '$_keep${fills.length - 1}$_keep';
+  });
+  if (out.contains(_drop)) out = _dropMarks(out).trim();
+  return out.replaceAllMapped(_keepRe, (m) => fills[int.parse(m[1]!)]);
+}
+
+Map<String, dynamic>? expandOcDraw(Map<String, dynamic>? draw, OcPlan plan) {
+  if (draw == null || !drawTexts(draw).any(ocTokenRe.hasMatch)) return draw;
+  String fix(Object? v) => expandOcText('$v', plan);
+  return {
+    ...draw,
+    if (draw['positive'] != null) 'positive': fix(draw['positive']),
+    if (draw['negative'] != null) 'negative': fix(draw['negative']),
+    if (draw['characters'] is List)
+      'characters': [
+        for (final c in draw['characters'] as List)
+          c is Map<String, dynamic>
+              ? {
+                  ...c,
+                  if (c['positive'] != null) 'positive': fix(c['positive']),
+                  if (c['negative'] != null) 'negative': fix(c['negative']),
+                }
+              : c,
+      ],
+  };
+}
+
+String namesInOcReply(String text, OcPlan plan) =>
+    text.replaceAllMapped(ocTokenRe, (m) => plan.get(m[1]!)?.name ?? m[1]!);
+
 /// 给用户看的正文里出现的占位符换成名字(`A1`),不换成一长串 tag。
-String namesInReply(String text, ArtistResolver resolve) => text.replaceAllMapped(
-  artistTokenRe,
-  (m) => resolve(m[1]!)?.name ?? m[1]!,
-);
+String namesInReply(String text, ArtistResolver resolve) =>
+    text.replaceAllMapped(artistTokenRe, (m) => resolve(m[1]!)?.name ?? m[1]!);
 
 // ---- 账本 ----
 
-final _wPrefix = RegExp(r'^\s*-?\d*\.?\d+\s*::'); // 1.2::tag:: / -1::tag:: / .8::tag::
+final _wPrefix = RegExp(
+  r'^\s*-?\d*\.?\d+\s*::',
+); // 1.2::tag:: / -1::tag:: / .8::tag::
 final _wSuffix = RegExp(r':\s*-?\d*\.?\d+\s*\)?$'); // (tag:1.2)
 final _spaces = RegExp(r'\s+');
 
@@ -657,12 +771,12 @@ bool resourceStillInUse(String value, Map<String, dynamic> spec) {
 Map<String, Map<String, String>> mergeLedger(
   Map<String, Map<String, String>> remembered,
   Map<String, Map<String, String>> thisTurn,
-  Map<String, dynamic>? spec,
-) {
+  Map<String, dynamic>? spec, {
+  bool rememberOcs = false,
+}) {
   final out = <String, Map<String, String>>{};
-  // 只记画师串(服务端 RESOURCE_KINDS)。OC 2026-09-19 起不记账,只活在点到它的那一轮;
-  // 旧账里的 oc 到这儿就丢。
-  for (final kind in const ['artist']) {
+  // 默认只记画师串；OC 占位符模式下才保留仍在使用的 OC。
+  for (final kind in [if (rememberOcs) 'oc', 'artist']) {
     final slot = {...?remembered[kind], ...?thisTurn[kind]};
     if (spec != null) slot.removeWhere((_, v) => !resourceStillInUse(v, spec));
     if (slot.isNotEmpty) out[kind] = slot;

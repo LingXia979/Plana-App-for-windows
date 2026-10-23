@@ -130,6 +130,10 @@ final poolUsageProvider = FutureProvider.autoDispose<NaiUsage?>((ref) async {
   }
 });
 
+/// 金额:整数照 [fmtInt],带角分的保留两位。
+String fmtFee(double v) =>
+    v == v.roundToDouble() ? fmtInt(v) : v.toStringAsFixed(2);
+
 /// 千分位(App 无 intl 依赖,手搓)。
 String fmtInt(num v) {
   final s = v.round().abs().toString();

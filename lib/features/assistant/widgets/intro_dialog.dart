@@ -15,11 +15,36 @@ import '../../../core/ui/setting_row.dart';
 import '../agent_model.dart' show assistantBotAuthorizedProvider;
 import '../assistant_settings.dart';
 
-Future<void> showAssistantIntro(BuildContext context) => showDialog<void>(
-  context: context,
-  barrierDismissible: false,
-  builder: (_) => const _IntroDialog(),
-);
+final _introCoordinatorProvider = Provider((ref) => _IntroCoordinator());
+
+/// The desktop sidebar and full page share one pending introduction, including
+/// settings loading. Completing it commits one draft for both entry points.
+Future<void> showAssistantIntro(BuildContext context) {
+  final container = ProviderScope.containerOf(context, listen: false);
+  return container.read(_introCoordinatorProvider).show(context, container);
+}
+
+class _IntroCoordinator {
+  Future<void>? _pending;
+
+  Future<void> show(BuildContext context, ProviderContainer container) =>
+      _pending ??= _show(
+        context,
+        container,
+      ).whenComplete(() => _pending = null);
+
+  Future<void> _show(BuildContext context, ProviderContainer container) async {
+    final settings =
+        container.read(assistantSettingsProvider).value ??
+        await container.read(assistantSettingsProvider.future);
+    if (!context.mounted || settings == null || settings.introDone) return;
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const _IntroDialog(),
+    );
+  }
+}
 
 class _IntroDialog extends ConsumerStatefulWidget {
   const _IntroDialog();

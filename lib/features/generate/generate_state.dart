@@ -708,7 +708,11 @@ class GenerateNotifier extends Notifier<GenerateState> {
     required Uint8List image,
     required int width,
     required int height,
+    String? canvasId,
   }) {
+    final workspace = ref.read(canvasWorkspaceProvider);
+    if (canvasId != null && workspace.find(canvasId) == null) return;
+    final background = canvasId != null && canvasId != workspace.activeId;
     final cur = state.img2img;
     state = state.copyWith(
       img2img: Img2ImgConfig(
@@ -716,8 +720,18 @@ class GenerateNotifier extends Notifier<GenerateState> {
         strength: cur?.strength ?? 0.7,
         noise: cur?.noise ?? 0.0,
       ),
-      params: state.params.copyWith(width: width, height: height),
+      params: background
+          ? state.params
+          : state.params.copyWith(width: width, height: height),
     );
+    if (background) {
+      ref
+          .read(canvasWorkspaceProvider.notifier)
+          .updateSampling(
+            canvasId,
+            (p) => p.copyWith(width: width, height: height),
+          );
+    }
     openPanel(Panel.i2i);
   }
 

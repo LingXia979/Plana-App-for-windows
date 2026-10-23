@@ -9,6 +9,7 @@ import '../../core/store/app_stores.dart';
 import '../../core/ui/image_drop.dart';
 import '../../core/theme/app_theme.dart';
 import '../assistant/assistant_page.dart';
+import '../assistant/widgets/intro_dialog.dart';
 import '../gallery/gallery_page.dart';
 import '../generate/gen_modules.dart';
 import '../generate/generate_page.dart';
@@ -130,6 +131,7 @@ class _DesktopWorkspaceState extends ConsumerState<DesktopWorkspace>
       tool = value;
       compactTool = true;
     });
+    if (value == 0) unawaited(showAssistantIntro(context));
   }
 
   Widget _tabs({bool compact = false}) => SizedBox(

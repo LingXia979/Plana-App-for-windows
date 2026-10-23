@@ -144,6 +144,19 @@ sections:
       }
     });
 
+    test('YAML 写坏了,报错带上第几行(全文编辑里好找)', () {
+      expect(
+        () => decodeRulesFile('sections:\n  - name: role\n    content: a: b\n'),
+        throwsA(
+          isA<FormatException>().having(
+            (e) => e.message,
+            'message',
+            contains('第 3 行'),
+          ),
+        ),
+      );
+    });
+
     test('超过服务端上限的在导入时就拦下', () {
       final text = encodeRulesFile(
         name: 'x',
@@ -286,6 +299,37 @@ sections:
       final lib = c.read(rulesLibraryProvider).value!;
       expect(lib.activeFor(RulesFamily.nai5).isDefault, isTrue);
       expect(lib.active, isEmpty);
+    });
+
+    test('全文编辑存回原处:还是那一份、照旧在用;不再支持的模型回到默认', () async {
+      final stores = await AppStores.open(rootOverride: _tempRoot());
+      final c = ProviderContainer(
+        overrides: [appStoresProvider.overrideWithValue(stores)],
+      );
+      addTearDown(c.dispose);
+      await c.read(rulesLibraryProvider.future);
+      final n = c.read(rulesLibraryProvider.notifier);
+      final id = await n.add(
+        name: '漫画特化',
+        author: '',
+        models: {RulesFamily.nai45, RulesFamily.nai5},
+        rules: const [PresetRule(name: 'role', content: 'R')],
+      );
+      await n.use(RulesFamily.nai45, id);
+      await n.use(RulesFamily.nai5, id);
+      await n.replace(
+        id,
+        name: '漫画特化 2',
+        author: '某某',
+        models: {RulesFamily.nai5},
+        rules: const [PresetRule(name: 'role', content: 'R2')],
+      );
+      final lib = c.read(rulesLibraryProvider).value!;
+      expect(lib.presets.single.id, id);
+      expect(lib.presets.single.name, '漫画特化 2');
+      expect(lib.customRulesFor(RulesFamily.nai5)!.single.content, 'R2');
+      expect(lib.activeFor(RulesFamily.nai45).isDefault, isTrue);
+      expect(lib.active, {RulesFamily.nai5: id});
     });
   });
 

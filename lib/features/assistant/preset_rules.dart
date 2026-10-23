@@ -340,7 +340,11 @@ RulesFile decodeRulesFile(String text, {String fileName = ''}) {
   try {
     doc = loadYaml(text);
   } on YamlException catch (e) {
-    throw FormatException('文件格式不对:${e.message}');
+    // 带上行号:全文编辑里改坏了,几万字的规则光说一句「格式不对」没法找
+    final line = e.span?.start.line;
+    throw FormatException(
+      '文件格式不对${line == null ? '' : '(第 ${line + 1} 行)'}:${e.message}',
+    );
   }
   if (doc is! Map) throw const FormatException('文件格式不对:找不到 sections');
 
@@ -517,6 +521,33 @@ class RulesLibraryNotifier extends AsyncNotifier<RulesLibrary> {
     );
     return id;
   }
+
+  /// 改一份预设(规则页的全文编辑)。id 不变,在用它的模型照旧用它;
+  /// 改完不再支持的模型回到默认规则。
+  Future<void> replace(
+    String id, {
+    required String name,
+    required String author,
+    required Set<RulesFamily> models,
+    required List<PresetRule> rules,
+  }) => _save(
+    RulesLibrary(
+      presets: [
+        for (final p in _lib.presets)
+          p.id == id
+              ? RulesPreset(
+                  id: id,
+                  name: name,
+                  author: author,
+                  models: Set.unmodifiable(models),
+                  rules: List.unmodifiable(rules),
+                )
+              : p,
+      ],
+      active: {..._lib.active}
+        ..removeWhere((f, v) => v == id && !models.contains(f)),
+    ),
+  );
 
   /// 删一份预设。正在用它的模型回落默认规则。
   Future<void> remove(String id) => _save(

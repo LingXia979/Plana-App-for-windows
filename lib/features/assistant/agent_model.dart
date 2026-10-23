@@ -8,7 +8,8 @@
 /// `_normalize_model_key` 认不出就回落全局默认,最坏结果是「换了个模型答」,
 /// 不会报错。
 ///
-/// **没有 Bot 授权时后端渠道一概不给**,只能用自定义接口(见 [assistantBotAuthorizedProvider])。
+/// **没有 Bot 授权时只列后端标了 `free` 的渠道**(免费模型),再加自定义接口
+/// (见 [assistantBotAuthorizedProvider])。后端一条都没标就只剩自定义接口。
 library;
 
 import 'dart:async';
@@ -29,6 +30,7 @@ class AgentModelChoice {
     required this.key,
     required this.name,
     this.recommended = false,
+    this.free = false,
   });
 
   /// 发给后端的 `model`(MODEL_CHOICES 的 key)。
@@ -40,6 +42,9 @@ class AgentModelChoice {
 
   /// 后端标了推荐:列表里挂角标并排在前面。纯展示,别的照常能选。
   final bool recommended;
+
+  /// 后端标了免费:没有 Bot 授权也能用。
+  final bool free;
 }
 
 class AgentModelList {
@@ -56,6 +61,25 @@ class AgentModelList {
       if (c.key == key) return c;
     }
     return null;
+  }
+
+  /// 没有 Bot 授权时能选的。
+  List<AgentModelChoice> get free => [
+    for (final c in choices)
+      if (c.free) c,
+  ];
+
+  /// 该用哪一条:选过的 [pinned] 能用就是它,否则后端默认。
+  ///
+  /// 没授权时只在免费的里挑,默认那条不免费就取第一条免费的(推荐在前);
+  /// 一条免费的都没有就是 null。
+  AgentModelChoice? pick(String pinned, {required bool authorized}) {
+    final pool = authorized ? choices : free;
+    for (final k in [pinned, active]) {
+      final c = byKey(k);
+      if (c != null && pool.contains(c)) return c;
+    }
+    return authorized ? null : pool.firstOrNull;
   }
 }
 
@@ -75,7 +99,7 @@ String modelDisplayName(String key, Map<String, dynamic> choice) {
 /// `GET /api/agent/models` 的响应 → 选项列表。
 ///
 /// 后端那张表是给 bot 和 web 一起用的,字段比 app 需要的多(别名、registry key、
-/// 预设变体),这里只挑三样。缺字段一律 fail-soft:少一条选项好过整页打不开。
+/// 预设变体),这里只挑四样。缺字段一律 fail-soft:少一条选项好过整页打不开。
 AgentModelList parseAgentModels(Map<String, dynamic> j) {
   final raw = j['choices'];
   if (raw is! Map) return const AgentModelList();
@@ -89,6 +113,7 @@ AgentModelList parseAgentModels(Map<String, dynamic> j) {
         key: key,
         name: modelDisplayName(key, choice),
         recommended: choice['recommended'] == true,
+        free: choice['free'] == true,
       ),
     );
   });
@@ -162,20 +187,36 @@ class AssistantModelPrefNotifier extends AsyncNotifier<String> {
 
 /// 这一轮实际要发的 `model`。没选过就发空串,让后端用它的全局默认。
 /// 选的是自定义接口时后端渠道用不上,发空串即可(那条根本不打后端出词)。
+///
+/// 没有 Bot 授权时发界面上显示的那条免费模型,不发空串:后端的全局默认未必免费。
 final assistantModelKeyProvider = Provider<String>((ref) {
   final k = ref.watch(assistantModelPrefProvider).value ?? '';
-  return customEndpointIdOf(k) == null ? k : '';
+  if (ref.watch(assistantBotAuthorizedProvider)) {
+    return customEndpointIdOf(k) == null ? k : '';
+  }
+  final shown = ref.watch(assistantModelProvider);
+  return shown == null || customEndpointIdOf(shown.key) != null
+      ? ''
+      : shown.key;
 });
 
-/// 有没有 Bot 授权。没有也能用助手,但只能用自定义接口,资料只给本地库;
+/// 有没有 Bot 授权。没有也能用助手,但只能用免费模型和自定义接口,资料只给本地库;
 /// 预设照常从后端取。
 final assistantBotAuthorizedProvider = Provider<bool>(
   (ref) => ref.watch(botSessionProvider).value != null,
 );
 
+/// 能不能走 Plana 后端:有 Bot 授权,或者后端下放了免费模型。
+/// 列表还没到货时没授权的按不能算。
+final assistantBackendAvailableProvider = Provider<bool>((ref) {
+  if (ref.watch(assistantBotAuthorizedProvider)) return true;
+  return ref.watch(agentModelsProvider).value?.free.isNotEmpty ?? false;
+});
+
 /// 界面上该显示哪一条。选过就是选的那条;没选过显示后端默认那条;
 /// 列表还没到货(或拿不到)就是 null,界面按「未知」显示。
-/// 没有 Bot 授权时后端渠道不算:没选自定义接口就是 null。
+/// 没有 Bot 授权时只认免费的(见 [AgentModelList.pick]),选着的那条不免费也不改存档,
+/// 授权回来就还是它。
 final assistantModelProvider = Provider<AgentModelChoice?>((ref) {
   final pinned = ref.watch(assistantModelPrefProvider).value ?? '';
   // 自定义接口不在后端那张表里,名字从本机的接口列表取
@@ -187,10 +228,10 @@ final assistantModelProvider = Provider<AgentModelChoice?>((ref) {
       }
     }
   }
-  if (!ref.watch(assistantBotAuthorizedProvider)) return null;
-  final list = ref.watch(agentModelsProvider).value;
-  if (list == null) return null;
-  return list.byKey(pinned) ?? list.byKey(list.active);
+  return ref
+      .watch(agentModelsProvider)
+      .value
+      ?.pick(pinned, authorized: ref.watch(assistantBotAuthorizedProvider));
 });
 
 /// 这一轮该走哪条路:非 null = 直连这个自定义接口,null = 走 Plana 后端。

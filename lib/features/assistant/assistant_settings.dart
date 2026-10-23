@@ -97,21 +97,29 @@ class AssistantSettings {
     this.autoImport = false,
     this.thinkLevel = ThinkLevel.auto,
     this.libraryScope = LibraryScope.local,
+    this.ocPlaceholders = false,
     this.noDraw = false,
     this.introVersion = 0,
     this.fontSize = fontSizeDefault,
     this.historyTurns = historyTurnsDefault,
     this.stream = true,
+    this.showSidebarImagePicker = true,
+    this.showSidebarHistoryPicker = true,
+    this.showSidebarClipboardButton = true,
   });
 
-  /// 上下文轮数的默认值与可调范围。
+  /// 上下文轮数的默认值、可调范围与步长。
   ///
   /// 默认 20 与服务端原先写死的窗口一样(`history_adapter.WEB_HISTORY_MAX_TURNS`)。
-  /// 上界 50 是服务端肯收的上限:走后端渠道时 token 是服务端付的,再往上一个请求
-  /// 光历史就上万。自定义接口那条没人替它截,也按同一个上限走。
+  /// 上界 200 对齐服务端肯收的上限(`WEB_HISTORY_TURNS_MAX`):走后端渠道时 token 是
+  /// 服务端付的,拉满一个请求光历史就三万多;老版服务端封顶更低,要多了照样截回去。
+  /// 自定义接口那条没人替它截,也按同一个上限走。
+  ///
+  /// 每次调整一轮，保留已有的精确轮数。
   static const historyTurnsDefault = 20;
   static const historyTurnsMin = 1;
-  static const historyTurnsMax = 50;
+  static const historyTurnsMax = 200;
+  static const historyTurnsStep = 1;
 
   /// 消息字号的默认值、可调范围与步长。
   ///
@@ -151,6 +159,9 @@ class AssistantSettings {
   /// 拿全量去和一句话做匹配,捞上来的多半是他没见过的东西。
   final LibraryScope libraryScope;
 
+  /// 自定义接口渠道：本地和公共库 OC 只给 AI 占位符，结果落地前展开。默认关闭。
+  final bool ocPlaceholders;
+
   /// 纯文本格式:AI 照常写提示词,提议只显示成纯文本给复制,不出结果卡、不导入、不出图
   /// (见 [AssistantMsg.promptAsText])。什么都不发给模型。
   ///
@@ -183,28 +194,44 @@ class AssistantSettings {
   /// 字段、或者就是不想看字一个个蹦的人。
   final bool stream;
 
+  /// 创作页侧栏输入框的图片按钮。保留 Windows 原有默认显示，可在设置中隐藏。
+  final bool showSidebarImagePicker;
+  final bool showSidebarHistoryPicker;
+  final bool showSidebarClipboardButton;
+
   AssistantSettings copyWith({
     bool? autoGenerate,
     bool? inlineImage,
     bool? autoImport,
     ThinkLevel? thinkLevel,
     LibraryScope? libraryScope,
+    bool? ocPlaceholders,
     bool? noDraw,
     int? introVersion,
     double? fontSize,
     int? historyTurns,
     bool? stream,
+    bool? showSidebarImagePicker,
+    bool? showSidebarHistoryPicker,
+    bool? showSidebarClipboardButton,
   }) => AssistantSettings(
     autoGenerate: autoGenerate ?? this.autoGenerate,
     inlineImage: inlineImage ?? this.inlineImage,
     autoImport: autoImport ?? this.autoImport,
     thinkLevel: thinkLevel ?? this.thinkLevel,
     libraryScope: libraryScope ?? this.libraryScope,
+    ocPlaceholders: ocPlaceholders ?? this.ocPlaceholders,
     noDraw: noDraw ?? this.noDraw,
     introVersion: introVersion ?? this.introVersion,
     fontSize: fontSize ?? this.fontSize,
     historyTurns: historyTurns ?? this.historyTurns,
     stream: stream ?? this.stream,
+    showSidebarImagePicker:
+        showSidebarImagePicker ?? this.showSidebarImagePicker,
+    showSidebarHistoryPicker:
+        showSidebarHistoryPicker ?? this.showSidebarHistoryPicker,
+    showSidebarClipboardButton:
+        showSidebarClipboardButton ?? this.showSidebarClipboardButton,
   );
 
   Map<String, dynamic> toJson() => {
@@ -213,11 +240,15 @@ class AssistantSettings {
     'autoImport': autoImport,
     'thinkLevel': thinkLevel.name,
     'libraryScope': libraryScope.name,
+    'ocPlaceholders': ocPlaceholders,
     'noDraw': noDraw,
     'introVersion': introVersion,
     'fontSize': fontSize,
     'historyTurns': historyTurns,
     'stream': stream,
+    'showSidebarImagePicker': showSidebarImagePicker,
+    'showSidebarHistoryPicker': showSidebarHistoryPicker,
+    'showSidebarClipboardButton': showSidebarClipboardButton,
   };
 
   factory AssistantSettings.fromJson(Map<String, dynamic> j) =>
@@ -232,9 +263,13 @@ class AssistantSettings {
         libraryScope:
             LibraryScope.values.asNameMap()[j['libraryScope']] ??
             LibraryScope.local,
+        ocPlaceholders: j['ocPlaceholders'] == true,
         noDraw: j['noDraw'] == true,
         // 缺键 = 老存档,按开算:新行为更好,不必等用户自己去翻设置
         stream: j['stream'] != false,
+        showSidebarImagePicker: j['showSidebarImagePicker'] != false,
+        showSidebarHistoryPicker: j['showSidebarHistoryPicker'] != false,
+        showSidebarClipboardButton: j['showSidebarClipboardButton'] != false,
         introVersion: switch (j['introVersion']) {
           final num v => v.toInt(),
           _ => 0,
@@ -246,7 +281,7 @@ class AssistantSettings {
           _ => fontSizeDefault,
         },
         historyTurns: switch (j['historyTurns']) {
-          final num v when v.isFinite => v.round().clamp(
+          final num v when v.isFinite => v.toInt().clamp(
             historyTurnsMin,
             historyTurnsMax,
           ),

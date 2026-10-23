@@ -7,9 +7,9 @@ import '../net/nai_endpoint.dart';
 import '../store/app_stores.dart';
 import 'secure_storage.dart';
 
-/// 能存几把。这个上限只管**存**,不管并发 —— 直连并发等于勾了「并发生成」的
-/// 把数([NaiGate]),存进来没勾的不占并发。所以备用号(过期 / 欠费时换着用的
-/// 那些)尽管存,不会把出图流拖成十几条。
+/// 能存几把。这个上限只管**存**,不管并发 —— 直连并发等于参与出图的把数
+/// ([NaiGate]),存进来两个条件都没勾的不占并发。所以备用号(过期 / 欠费时换着
+/// 用的那些)尽管存,不会把出图流拖成十几条。
 const kMaxNaiKeys = 16;
 
 /// 一把已保存的 NAI Key。
@@ -21,8 +21,8 @@ class NaiKey {
     this.accessKey,
     this.endpoint = '',
     this.primary = false,
-    this.forGenerate = true,
-    this.usePoints = true,
+    this.joinFree = true,
+    this.joinPaid = true,
   });
 
   /// 本机稳定 id。**不能拿 token 当 id** —— JWT 续期会换掉 token,
@@ -59,18 +59,21 @@ class NaiKey {
   /// 恒有且只有一把为真(空列表除外),见 [NaiKeysNotifier._normalized]。
   final bool primary;
 
-  /// 参与出图。**主账号恒为 true**,见 [NaiKeysNotifier]。
-  /// 副账号关掉 = 这把完全不用,也不占并发;条目留着 —— 令牌过期/账号欠费时
-  /// 先关掉比删掉稳妥,修好了勾回来就行。
-  final bool forGenerate;
+  /// 参与免费生成:这一单落在它身上**不花它的点**(Opus 免费尺寸、V5 额度没见底)
+  /// 时可以派给它。**主账号恒为 true**,见 [NaiKeysNotifier]。
+  /// 只勾这一个 = 只用它的免费额度,点数一分不动 —— 留着白嫖号的点数用。
+  final bool joinFree;
 
-  /// 允许花这把的点数。**主账号恒为 true**。副账号关掉 = 只让它跑**不花钱**的
-  /// 活(Opus 免费尺寸),一旦这一单要扣 Anlas 就跳过它 —— 留着白嫖号的点数用。
-  final bool usePoints;
+  /// 参与点数生成:要花点数的单可以派给它、花它的点。**主账号恒为 true**。
+  /// 只勾这一个 = 平时不动它,出大图、超分这类要花点数的活才叫上它。
+  ///
+  /// 「要花点数的单」按主账号算,也就是生成按钮上显示的那个口径:按钮写着免费
+  /// 的单,宁可排队等能免费出的号,也不花副账号的点(见 [naiKeysForJob])。
+  final bool joinPaid;
 
-  /// 出图能不能用它([paid] 时还要看点数开关)。
-  bool availableForGenerate({required bool paid}) =>
-      forGenerate && (!paid || usePoints);
+  /// 参与出图(两个条件勾了任一个)。两个都不勾 = 这把完全不用,也不占并发;
+  /// 条目留着 —— 令牌过期/账号欠费时先关掉比删掉稳妥,修好了勾回来就行。
+  bool get joins => joinFree || joinPaid;
 
   NaiKey copyWith({
     String? token,
@@ -78,8 +81,8 @@ class NaiKey {
     Object? accessKey = const Object(),
     String? endpoint,
     bool? primary,
-    bool? forGenerate,
-    bool? usePoints,
+    bool? joinFree,
+    bool? joinPaid,
   }) => NaiKey(
     id: id,
     token: token ?? this.token,
@@ -87,8 +90,8 @@ class NaiKey {
     accessKey: accessKey is String? ? accessKey : this.accessKey,
     endpoint: endpoint ?? this.endpoint,
     primary: primary ?? this.primary,
-    forGenerate: forGenerate ?? this.forGenerate,
-    usePoints: usePoints ?? this.usePoints,
+    joinFree: joinFree ?? this.joinFree,
+    joinPaid: joinPaid ?? this.joinPaid,
   );
 
   Map<String, dynamic> toJson() => {
@@ -99,10 +102,11 @@ class NaiKey {
     // 官方那几把不落这个字段,老条目读出来就是官方 —— 正好等于升级前的行为。
     if (endpoint.isNotEmpty) 'ep': endpoint,
     if (primary) 'primary': true,
-    // 两个开关只在**非默认**时落盘:默认全开,老条目缺字段读出来就是全开,
-    // 正好等于升级前的行为。
-    if (!forGenerate) 'noGen': true,
-    if (!usePoints) 'noPts': true,
+    // 两个条件只在**非默认**时落盘:默认全开,老条目缺字段读出来就是全开,
+    // 正好等于升级前的行为。`noPts` 沿用上一版「允许花点数」的键:那时关掉
+    // 就是「花点数的单不接」,和现在不勾「参与点数生成」一个意思。
+    if (!joinFree) 'noFree': true,
+    if (!joinPaid) 'noPts': true,
   };
 
   static NaiKey? fromJson(Object? j) {
@@ -112,17 +116,18 @@ class NaiKey {
     if (id is! String || id.isEmpty) return null;
     if (token is! String || token.isEmpty) return null;
     final ak = j['accessKey'];
+    // 老版本的总开关:`off`(停用)和 `noGen`(不参与并发生成)关掉时都是「这把
+    // 完全不用」,读成两个条件都不勾。
+    final out = j['off'] == true || j['noGen'] == true;
     return NaiKey(
       id: id,
       token: token,
       label: j['label'] is String ? j['label'] as String : '',
       accessKey: ak is String && ak.isNotEmpty ? ak : null,
       endpoint: j['ep'] is String ? normalizeNaiBase(j['ep'] as String) : '',
-      // `off` 是上一版的总开关,已并入 forGenerate:那时「停用」就是「完全不用」,
-      // 现在「不参与出图」也是完全不用(别的活只找主账号),语义正好对上。
       primary: j['primary'] == true,
-      forGenerate: j['noGen'] != true && j['off'] != true,
-      usePoints: j['noPts'] != true,
+      joinFree: !out && j['noFree'] != true,
+      joinPaid: !out && j['noPts'] != true,
     );
   }
 }
@@ -141,23 +146,42 @@ const _keysKey = 'nai_access_keys';
 const _legacyTokenKey = 'nai_access_token';
 const _legacyAccessKeyKey = 'nai_login_access_key';
 
-/// 出图可用的 Key。**主账号排头**(它的点数先被花),其余按列表顺序。
-/// [paid] = 这一单要扣 Anlas。
+/// 这一单能交给哪几把、谁先谁后。
 ///
-/// 主账号恒在里面 —— 它的两个开关由 [NaiKeysNotifier] 强制为真。
-List<NaiKey> naiKeysForGenerate(List<NaiKey> all, {required bool paid}) {
-  final usable = [
-    for (final k in all)
-      if (k.availableForGenerate(paid: paid)) k,
+/// [freeOn] = 这一单落在那把上免不免费(true 免费 / false 要扣点 / null 那个号的
+/// 状态查不到)。免不免费是**每个号自己的事**:同一张免费尺寸图,在 Opus 且 V5
+/// 额度没见底的号上是 0 点,在额度见底或不是 Opus 的号上照扣 Anlas(NAI 不报错)。
+///
+/// [paidJob] = 这一单算不算「要花点数的单」—— 按主账号算,也就是生成按钮上
+/// 显示的那个口径。
+///
+///  · 在它身上免费的,勾了「参与免费生成」才接;查不到状态的不算免费;
+///  · 在它身上要扣点的,勾了「参与点数生成」**而且**这一单本来就要花点数才接 ——
+///    按钮上写着免费的单,宁可排队等能免费出的号,也不花副账号的点;
+///  · 能免费出的号排在要扣点的前面:一单在主账号上要扣点、在某个副账号上免费
+///    时,先派给那个副账号,不去花主账号的点;
+///  · 同一档里主账号排头(要扣点时先花它的),其余按列表顺序。主账号什么单都接。
+List<NaiKey> naiKeysForJob(
+  List<NaiKey> all,
+  bool? Function(NaiKey k) freeOn, {
+  required bool paidJob,
+}) {
+  final free = <NaiKey>[];
+  final paid = <NaiKey>[];
+  for (final k in all) {
+    if (freeOn(k) == true) {
+      if (k.joinFree) free.add(k);
+    } else if (k.joinPaid && (paidJob || k.primary)) {
+      paid.add(k);
+    }
+  }
+  List<NaiKey> primaryFirst(List<NaiKey> ks) => [
+    for (final k in ks)
+      if (k.primary) k,
+    for (final k in ks)
+      if (!k.primary) k,
   ];
-  final i = usable.indexWhere((k) => k.primary);
-  return i <= 0
-      ? usable
-      : [
-          usable[i],
-          for (final k in usable)
-            if (!k.primary) k,
-        ];
+  return [...primaryFirst(free), ...primaryFirst(paid)];
 }
 
 /// 主账号那把;一把都没存时 null。
@@ -173,12 +197,12 @@ NaiKey? naiPrimaryKey(List<NaiKey> all) {
 ///
 /// 主账号是「一定会被用到」的那个:
 ///  · 「一次只能对一个账号」的操作(点数读数、超分、标签预览、JWT 续期)认它;
-///  · 出图必参与、点数必可花 —— 这两个开关被强制为真(见 [_normalized]),
-///    界面上也不给开关;出图取 Key 时它排头,点数先花它的。
+///  · 什么单都接 —— 两个参与条件被强制为真(见 [_normalized]),界面上也不给
+///    勾选项;出图取 Key 时它排头,点数先花它的。
 ///
-/// 其余是副账号,各自决定要不要**参与并发出图**、要不要**花自己的点数**。
-/// 这样才不会出现「主账号也能关掉出图」这种自相矛盾的状态 —— 那时点数读数
-/// 认的还是它,却又不给它出图。
+/// 其余是副账号,各自勾选**参与免费生成**(只用它的免费额度)、**参与点数生成**
+/// (花它的点),两个互不牵连,都不勾就是不参与。这样才不会出现「主账号也能
+/// 关掉出图」这种自相矛盾的状态 —— 那时点数读数认的还是它,却又不给它出图。
 final naiKeysStoreProvider =
     AsyncNotifierProvider<NaiKeysNotifier, List<NaiKey>>(NaiKeysNotifier.new);
 
@@ -278,7 +302,7 @@ class NaiKeysNotifier extends AsyncNotifier<List<NaiKey>> {
   /// 两条不变式收在这一处 —— 删掉主账号、首次添加、老数据读入都可能破坏它们,
   /// 散在各处补一定会漏:
   ///   1. 恰有一把是主账号(没人认领就让第一把当);
-  ///   2. 主账号的两个开关强制为真。
+  ///   2. 主账号的两个参与条件强制为真。
   static List<NaiKey> _normalized(List<NaiKey> list) {
     if (list.isEmpty) return list;
     var at = list.indexWhere((k) => k.primary);
@@ -286,7 +310,7 @@ class NaiKeysNotifier extends AsyncNotifier<List<NaiKey>> {
     return [
       for (var i = 0; i < list.length; i++)
         if (i == at)
-          list[i].copyWith(primary: true, forGenerate: true, usePoints: true)
+          list[i].copyWith(primary: true, joinFree: true, joinPaid: true)
         else if (list[i].primary)
           list[i].copyWith(primary: false) // 多认领的一律降为副账号
         else
@@ -359,18 +383,15 @@ class NaiKeysNotifier extends AsyncNotifier<List<NaiKey>> {
       if (k.id == id) k.copyWith(token: token.trim()) else k,
   ]);
 
-  /// 改一把的开关(null = 不动那一项)。主账号那把会被 [_normalized] 拨回全开。
-  Future<void> setFlags(
-    String id, {
-    bool? forGenerate,
-    bool? usePoints,
-  }) async => _persist([
-    for (final k in _cur)
-      if (k.id == id)
-        k.copyWith(forGenerate: forGenerate, usePoints: usePoints)
-      else
-        k,
-  ]);
+  /// 改一把的参与条件(null = 不动那一项)。主账号那把会被 [_normalized] 拨回全开。
+  Future<void> setFlags(String id, {bool? joinFree, bool? joinPaid}) async =>
+      _persist([
+        for (final k in _cur)
+          if (k.id == id)
+            k.copyWith(joinFree: joinFree, joinPaid: joinPaid)
+          else
+            k,
+      ]);
 
   /// 拖动排序。顺序是**出图取 Key 的先后**(主账号除外,它恒排头),也决定账号页
   /// 那张卡摆的是哪几块(那里只摆得下前几个)。主账号标记跟着那把 Key 走,

@@ -232,8 +232,9 @@ Stream<AgentEvent> streamDirectPrompt({
   /// 本地的画师串库 / OC 库([libArtistsOf] / [libOcsOf] 认的形状)。只在本机用,不发出去。
   List<Map<String, dynamic>> webArtists = const [],
   List<Map<String, dynamic>> webOcs = const [],
+  bool ocPlaceholders = false,
 
-  /// 上一轮记下的沿用资源(画师串 / OC)。本轮没点到的补进资料块,收尾时连同本轮命中的
+  /// 上一轮记下的沿用资源(画师串 / 占位符模式下的 OC)。本轮没点到的补进资料块,收尾时连同本轮命中的
   /// 一起并成新账本,随 [AgentResult.resources] 回去。
   Map<String, Map<String, String>> resources = const {},
 
@@ -280,8 +281,12 @@ Stream<AgentEvent> streamDirectPrompt({
       publicArtists: server.artists,
       publicOcs: server.ocs,
       roleBlock: server.roleBlock,
+      ocPlaceholders: ocPlaceholders,
     );
     final tokens = pre.plan.tokens;
+    final ocTokens = pre.ocPlan.tokens;
+    String collapseResources(String value) =>
+        collapseArtistStrings(collapseArtistStrings(value, tokens), ocTokens);
     // 判模式看这一轮发出去的全部文字:用户原话、画布、历史(「上一轮画过分格图」)。
     // 资料块不算 —— 画师串里带个 comic 不代表这轮在画漫画。
     final modes = detectPromptModes([
@@ -289,38 +294,43 @@ Stream<AgentEvent> streamDirectPrompt({
       canvasBlock,
       for (final h in history) h['content'] ?? '',
     ]);
-    final system = directSystemPrompt(
-      rules: rules,
-      modes: modes,
-      chosen: chosenModes,
-      outputFormat: outputFormat,
-      toolsBlock: toolsBlock,
-    );
+    final system =
+        directSystemPrompt(
+          rules: rules,
+          modes: modes,
+          chosen: chosenModes,
+          outputFormat: outputFormat,
+          toolsBlock: toolsBlock,
+        ) +
+        (ocPlaceholders
+            ? '\n\n[OC 占位符模式]\n$kOcBlockNote。search_character 返回的 OC tags 也是占位符；不要猜测或展开其内容。'
+            : '');
     trace
       ?..prequery = {
         'block': pre.block,
         'this_turn': pre.thisTurn,
         'modes': modes,
         'artist_placeholders': tokens,
+        if (ocPlaceholders) 'oc_placeholders': ocTokens,
       }
       ..system = system;
 
     // 消息流:历史 + 本轮。工具结果以 user 文本回灌,与服务端那条同一种形状。
     // 用户那段 + 画布拼成一条 user 消息,资料块跟在后面。
-    // 画布和历史里认得出的完整画师串折成占位符 —— 模型看到的「自己上次写的」就是占位符,
+    // 用户输入、画布和历史里认得出的完整资源折成占位符 —— 模型看到的「自己上次写的」就是占位符,
     // 不会照着抄完整串(服务端那条在 run_chat_with_retries 里做同一件事)。
     final msgs = <DirectMsg>[
       for (final h in history)
         (
           role: h['role'] ?? 'user',
-          content: collapseArtistStrings(h['content'] ?? '', tokens),
+          content: collapseResources(h['content'] ?? ''),
           images: const [],
         ),
       (
         role: 'user',
         content: [
-          userRequest,
-          collapseArtistStrings(canvasBlock, tokens),
+          ocPlaceholders ? collapseResources(userRequest) : userRequest,
+          collapseResources(canvasBlock),
           pre.block,
         ].where((s) => s.isNotEmpty).join('\n\n'),
         images: attached,
@@ -377,9 +387,18 @@ Stream<AgentEvent> streamDirectPrompt({
             plan: pre.plan,
           );
         }
-        final draw = expandDraw(parsed.draw, resolve);
-        final reply = namesInReply(parsed.reply, resolve);
-        final ledger = mergeLedger(remembered, pre.thisTurn, draw);
+        final draw = ocPlaceholders
+            ? expandOcDraw(expandDraw(parsed.draw, resolve), pre.ocPlan)
+            : expandDraw(parsed.draw, resolve);
+        final reply = ocPlaceholders
+            ? namesInOcReply(namesInReply(parsed.reply, resolve), pre.ocPlan)
+            : namesInReply(parsed.reply, resolve);
+        final ledger = mergeLedger(
+          remembered,
+          pre.thisTurn,
+          draw,
+          rememberOcs: ocPlaceholders,
+        );
         trace?.event('final', {
           'reply': reply,
           'draw': parsed.draw,
@@ -411,6 +430,20 @@ Stream<AgentEvent> streamDirectPrompt({
           );
           if (c.name == 'search_artist' || c.name == 'random_artist') {
             rememberToolArtists(pre.plan, result);
+          }
+          if (ocPlaceholders && c.name == 'search_character') {
+            if (result is List) {
+              for (final row in result) {
+                if (row is Map && row['source'] == 'oc') {
+                  final name = '${row['name'] ?? ''}'.trim();
+                  final tags = '${row['tags'] ?? ''}'.trim();
+                  if (name.isNotEmpty && tags.isNotEmpty) {
+                    pre.thisTurn['oc']![name] = tags;
+                  }
+                }
+              }
+            }
+            result = maskOcToolResults(result, pre.ocPlan);
           }
           summary = result is List ? '${result.length} 条' : '已返回';
         } catch (e) {

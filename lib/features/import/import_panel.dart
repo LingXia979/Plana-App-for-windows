@@ -195,6 +195,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
 
   // AI 反推结果模式:非空时面板只显示一条正向提示词(内容=反推标签)。
   String? _reverseTags;
+  String? _reverseCanvasId;
   bool _useReverse = true;
 
   /// 已展开全文的提示词行(按标题键)。默认全收起 —— 面板要先让人一眼看全
@@ -887,6 +888,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
       }
     }
 
+    // 整串替换:分区里同一侧的词一并清掉(这串本身就是一张图的全部)
     if (pos != null || neg != null) {
       notifier.replacePrompts(positive: pos, negative: neg);
     }
@@ -1028,10 +1030,16 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     );
   }
 
-  ({GenerateState state, String canvasId}) _before() => (
-    state: ref.read(generateProvider),
-    canvasId: ref.read(canvasWorkspaceProvider).activeId,
-  );
+  /// 写创作页之前记一份整体状态和当时的画布,给提示条上的「撤销」用。
+  ({GenerateState state, String canvasId}) _before({String? canvasId}) {
+    final workspace = ref.read(canvasWorkspaceProvider);
+    final target = canvasId ?? workspace.activeId;
+    final state = ref.read(generateProvider);
+    return (
+      state: workspace.find(target)?.prompts.applyTo(state) ?? state,
+      canvasId: target,
+    );
+  }
 
   /// 顶部 toast 提示并关闭面板(toast 挂 root overlay,pop 后仍然在)。
   /// 导入/用作都是写创作页,按硬约束自动切回创作 tab(从图库进来时生效)。
@@ -1062,14 +1070,20 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
 
   // ---- 用作 ----
   Future<void> _useAsImg2img() async {
+    final before = _before();
     final bytes = widget.bytes;
     final (rw, rh) = await decodeImageSize(bytes);
     if (!mounted) return;
     final res = img2imgResolution(rw, rh);
-    final before = _before();
+    if (ref.read(canvasWorkspaceProvider).find(before.canvasId) == null) return;
     ref
         .read(generateProvider.notifier)
-        .setImg2ImgImage(image: bytes, width: res.w, height: res.h);
+        .setImg2ImgImage(
+          image: bytes,
+          width: res.w,
+          height: res.h,
+          canvasId: before.canvasId,
+        );
     final p = before.state.params;
     final changed = p.width != res.w || p.height != res.h;
     _finish(
@@ -1080,6 +1094,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   }
 
   Future<void> _useAsVibe() async {
+    final before = _before();
     final bytes = widget.bytes;
     final hash = await compute(_sha256Hex, bytes);
     if (!mounted) return;
@@ -1089,7 +1104,6 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
           .importImageBytes(bytes, widget.displayName, knownHash: hash);
     } catch (_) {}
     if (!mounted) return;
-    final before = _before();
     final hadCharRefs = before.state.enabledCharRefs > 0;
     ref
         .read(generateProvider.notifier)
@@ -1102,6 +1116,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   }
 
   Future<void> _useAsCharRef() async {
+    final before = _before();
     final bytes = widget.bytes;
     final hash = await compute(_sha256Hex, bytes);
     if (!mounted) return;
@@ -1111,7 +1126,6 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
           .importImageBytes(bytes, widget.displayName, knownHash: hash);
     } catch (_) {}
     if (!mounted) return;
-    final before = _before();
     final hadVibes = before.state.enabledVibes > 0;
     ref
         .read(generateProvider.notifier)
@@ -1165,6 +1179,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
 
   /// AI 反推:弹窗选模型 → 反推 → 成功后关弹窗,面板切到「反推结果」单条正向页。
   Future<void> _reverse() async {
+    final canvasId = ref.read(canvasWorkspaceProvider).activeId;
     final tags = await showDialog<String>(
       context: context,
       builder: (_) => _ReverseDialog(bytes: widget.bytes),
@@ -1172,6 +1187,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     if (tags == null || tags.isEmpty || !mounted) return;
     setState(() {
       _reverseTags = tags;
+      _reverseCanvasId = canvasId;
       _useReverse = true;
     });
   }
@@ -1180,8 +1196,21 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   void _importReverse() {
     final tags = _reverseTags;
     if (tags == null || !_useReverse) return;
-    final before = _before();
-    ref.read(generateProvider.notifier).replacePrompts(positive: tags);
+    final before = _before(canvasId: _reverseCanvasId);
+    if (ref.read(canvasWorkspaceProvider).find(before.canvasId) == null) return;
+    ref
+        .read(canvasWorkspaceProvider.notifier)
+        .updatePrompts(
+          before.canvasId,
+          (p) => p.copyWith(
+            prompt: tags,
+            promptRaw: '',
+            sections: [
+              for (final s in p.sections)
+                s.isMain ? s : s.copyWith(positive: '', positiveRaw: ''),
+            ],
+          ),
+        );
     _finish('已导入反推结果到正向提示词', Icons.download_done, before);
   }
 
@@ -2209,7 +2238,9 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
                       ],
                     ),
                   ),
-                  const SizedBox(width: 10),
+                  const SizedBox(width: 6),
+                  _copyButton(scheme, text: preview, what: title),
+                  const SizedBox(width: 2),
                   // 勾选:自带点击域,不连带展开
                   InkResponse(
                     key: ValueKey('import-select-$title'),
@@ -2301,6 +2332,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
               tag: autoPos ? 'AUTO' : positionChipLabel(positions[i]),
               tagColor: scheme.tertiary,
               text: m.characters[i].prompt,
+              copyWhat: '角色提示词',
               checked: _charChecked.contains(i),
               onTap: () => setState(() {
                 _charChecked.contains(i)
@@ -2548,6 +2580,16 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
                 ),
               ),
               const SizedBox(width: 8),
+              if (e.label == 'Seed') ...[
+                _copyButton(
+                  scheme,
+                  text: e.value,
+                  what: '种子',
+                  done: '已复制种子 ${e.value}',
+                  size: 28,
+                ),
+                const SizedBox(width: 4),
+              ],
               if (blocked)
                 Icon(Icons.block, size: 18, color: scheme.outline)
               else
@@ -2560,6 +2602,32 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   }
 
   // ---- 通用小部件 ----
+
+  /// 复制按钮。整行 / 整格的点击是展开或勾选,复制单独一颗,自带点击域不抢它们。
+  Widget _copyButton(
+    ColorScheme scheme, {
+    required String text,
+    required String what,
+    String? done,
+    double size = 34,
+  }) => IconButton(
+    tooltip: '复制$what',
+    onPressed: () async {
+      await Clipboard.setData(ClipboardData(text: text));
+      if (!mounted) return;
+      hintSnack(context, done ?? '已复制$what', icon: Icons.check);
+    },
+    style: IconButton.styleFrom(
+      fixedSize: Size.square(size),
+      minimumSize: Size.square(size),
+      padding: EdgeInsets.zero,
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+    ),
+    iconSize: size >= 34 ? 18 : 16,
+    color: scheme.onSurfaceVariant,
+    icon: const Icon(Icons.content_copy),
+  );
+
   Widget _checkBox(ColorScheme scheme, bool on, {double size = 22}) {
     return AnimatedContainer(
       duration: Motion.fast,
@@ -2681,11 +2749,17 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     required String text,
     required bool checked,
     required VoidCallback onTap,
+    String? copyWhat,
   }) {
+    final copyable = copyWhat != null && text.isNotEmpty;
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 11),
+        // 带复制钮时上下各让 4:28 高的按钮正好补回来,行高不变
+        padding: EdgeInsets.symmetric(
+          horizontal: 11,
+          vertical: copyable ? 7 : 11,
+        ),
         decoration: BoxDecoration(
           color: scheme.surfaceContainerHigh,
           borderRadius: BorderRadius.circular(11),
@@ -2716,7 +2790,12 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
                 style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
               ),
             ),
-            const SizedBox(width: 8),
+            if (copyable) ...[
+              const SizedBox(width: 4),
+              _copyButton(scheme, text: text, what: copyWhat, size: 28),
+              const SizedBox(width: 4),
+            ] else
+              const SizedBox(width: 8),
             _checkBox(scheme, checked, size: 20),
           ],
         ),
@@ -2777,7 +2856,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
         _useAsBtn(
           scheme,
           Icons.palette_outlined,
-          '风格',
+          'Vibe',
           _useAsVibe,
           blocked: _moduleBlocked(GenModule.vibe),
         ),
@@ -2785,7 +2864,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
         _useAsBtn(
           scheme,
           Icons.face_retouching_natural,
-          '角色',
+          '参考',
           _useAsCharRef,
           blocked: _moduleBlocked(GenModule.charRef),
         ),

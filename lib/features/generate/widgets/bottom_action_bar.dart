@@ -17,6 +17,7 @@ import '../vibe_encoder.dart';
 import '../../import/import_panel.dart';
 import 'advanced_sheet.dart';
 import 'common.dart' show hintSnack;
+import 'desktop_generation_actions.dart';
 import 'loop_sheet.dart';
 import 'resolution_sheet.dart';
 
@@ -215,51 +216,25 @@ class _BottomActionBarState extends ConsumerState<BottomActionBar> {
                 ),
               ),
               const SizedBox(height: 8),
-              Row(
-                children: [
-                  Expanded(
-                    child: _GenerateButton(
-                      cost: totalCost,
-                      onGenerate: () {
-                        _hintDisabledVibes(context, ref);
-                        ref.read(generationProvider.notifier).generate();
-                      },
-                      progress: pool.busy ? gen.progress : null,
-                      runningCount: pool.busy ? pool.jobs.length : 0,
-                      stopIcon: loop.active && !loop.stopping
-                          ? Icons.stop_rounded
-                          : Icons.close_rounded,
-                      onStop: loop.active && !loop.stopping
-                          ? () => ref.read(loopStatusProvider.notifier).stop()
-                          : () =>
-                                ref.read(generationProvider.notifier).cancel(),
-                    ),
-                  ),
-                  const SizedBox(width: 6),
-                  SizedBox(
-                    height: 52,
-                    width: 42,
-                    child: IconButton.filledTonal(
-                      tooltip: '循环生成',
-                      onPressed: () => showLoopSheet(context),
-                      isSelected: loop.active,
-                      icon: const Icon(Icons.autorenew, size: 21),
-                    ),
-                  ),
-                  const SizedBox(width: 6),
-                  SizedBox(
-                    height: 52,
-                    width: 42,
-                    child: IconButton.outlined(
-                      tooltip: '导入图片',
-                      onPressed: () => openImportPanel(context),
-                      icon: const Icon(
-                        Icons.add_photo_alternate_outlined,
-                        size: 21,
-                      ),
-                    ),
-                  ),
-                ],
+              DesktopGenerationActions(
+                generateButton: _GenerateButton(
+                  cost: totalCost,
+                  onGenerate: () {
+                    _hintDisabledVibes(context, ref);
+                    ref.read(generationProvider.notifier).generate();
+                  },
+                  progress: pool.busy ? gen.progress : null,
+                  runningCount: pool.busy ? pool.jobs.length : 0,
+                  stopIcon: loop.active && !loop.stopping
+                      ? Icons.stop_rounded
+                      : Icons.close_rounded,
+                  onStop: loop.active && !loop.stopping
+                      ? () => ref.read(loopStatusProvider.notifier).stop()
+                      : () => ref.read(generationProvider.notifier).cancel(),
+                ),
+                loopActive: loop.active,
+                onLoop: () => showLoopSheet(context),
+                onImport: () => openImportPanel(context),
               ),
             ],
           ),

@@ -6,7 +6,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../stats/stats_providers.dart' show fmtInt;
 
 /// 令牌在线校验的状态行(引导页与「账号与接入」共用)。
-/// 四态同高:档位+点数+额度 / 查询中 / 失败可重试 / 空占位——出现或消失都不改版高。
+/// 四态同高:档位+点数+额度 / 查询中 / 失败(令牌被拒或可重试) / 空占位——出现或消失都不改版高。
 /// 读数与令牌列表那行(`NaiKeyStatusLine`)同一口径。
 Widget tokenStatusLine(
   BuildContext context,
@@ -44,7 +44,7 @@ Widget tokenStatusLine(
       onTap: onRetry,
       borderRadius: BorderRadius.circular(6),
       child: Text(
-        '账户状态查询失败,点按重试',
+        probe.rejected ? '令牌无效' : '账户状态查询失败,点按重试',
         style: context.texts.labelSmall!.copyWith(color: scheme.error),
       ),
     );

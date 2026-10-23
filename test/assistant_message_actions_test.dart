@@ -360,6 +360,7 @@ void main() {
         appStoresProvider.overrideWithValue(stores),
         botSessionProvider.overrideWith(() => _TestSession(authorized)),
         assistantEndpointProvider.overrideWithValue(null),
+        agentModelsProvider.overrideWith((_) async => const AgentModelList()),
         assistantSettingsProvider.overrideWith(_TestSettings.new),
         rulesLibraryProvider.overrideWith(_TestRules.new),
       ],

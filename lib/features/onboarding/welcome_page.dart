@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/app_info.dart';
 import '../../core/auth/auth_mode.dart';
 import '../../core/auth/bot_session_store.dart';
 import '../../core/auth/nai_keys.dart';
@@ -12,22 +13,25 @@ import '../../core/live_progress/live_progress.dart';
 import '../../core/net/nai_client.dart';
 import '../../core/net/nai_endpoint.dart';
 import '../../core/net/nai_proxy.dart';
+import '../../core/platform/desktop.dart';
 import '../../core/store/gen_settings.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/theme/theme_settings.dart';
 import '../profile/widgets/credential_login_sheet.dart';
 import '../profile/widgets/token_status.dart';
 import 'bot_auth_panel.dart';
+import 'desktop_welcome_layout.dart';
 import '../../core/util/haptics.dart';
 
-/// 首启欢迎流程:欢迎 → 外观 → 接入 → 通知,共 4 页。
-/// 内容居中,页间横滑,元素错峰浮现;凭据在本页内就地配完,不再跳出去。
+/// 欢迎流程:欢迎 → 外观 → 接入 → 扩展 → 完成。
+/// 移动端在完成前另有通知说明。
+/// 桌面采用分步设置面板,移动端保留横滑;凭据在本页内就地配完。
 class WelcomePage extends ConsumerStatefulWidget {
   const WelcomePage({super.key, this.replay = false});
 
   /// 从关于页「重新查看引导」进来的重看模式。
   ///
-  /// 首启时这个页面是 gate 的直接子级,走完只需置 `notifyPrimed`,gate 自己会
+  /// 移动端首启时这个页面是 gate 的直接子级,走完置 `notifyPrimed`,gate 自己会
   /// 换成主界面 —— 没人 pop 它,也不该 pop。重看是 push 出来的路由,gate 早就
   /// 停在主界面了,不自己退就卡在完成页。
   final bool replay;
@@ -37,9 +41,10 @@ class WelcomePage extends ConsumerStatefulWidget {
 }
 
 class _WelcomePageState extends ConsumerState<WelcomePage> {
-  static const _pageCount = 6;
+  int get _pageCount => ref.read(desktopModeProvider) ? 5 : 6;
 
   final _pager = PageController();
+  final _desktopFocus = FocusNode(debugLabel: 'Desktop welcome guide');
   int _index = 0;
   bool _finishing = false;
 
@@ -64,19 +69,41 @@ class _WelcomePageState extends ConsumerState<WelcomePage> {
       ..removeListener(_onScroll)
       ..dispose();
     _active.dispose();
+    _desktopFocus.dispose();
     super.dispose();
   }
 
   /// 每页外面套一层:激活状态变化时,页内元素重放错峰入场。
-  Widget _page(int index, Widget Function(bool active) build) =>
-      ValueListenableBuilder<int>(
-        valueListenable: _active,
-        builder: (_, a, _) => build(a == index),
+  Widget _page(int index, Widget Function(bool active) build) {
+    if (ref.read(desktopModeProvider)) return build(_index == index);
+    return ValueListenableBuilder<int>(
+      valueListenable: _active,
+      builder: (_, a, _) => build(a == index),
+    );
+  }
+
+  void _goTo(int index) {
+    if (index == _index || index < 0 || index >= _pageCount) return;
+    if (ref.read(desktopModeProvider)) {
+      setState(() => _index = index);
+      _desktopFocus.requestFocus();
+    } else {
+      FocusScope.of(context).unfocus();
+      _pager.animateToPage(
+        index,
+        duration: Motion.medium,
+        curve: Motion.emphasized,
       );
+    }
+  }
 
   void _next() {
-    if (_index >= _pageCount - 1) return;
-    _pager.nextPage(duration: Motion.medium, curve: Motion.emphasized);
+    _goTo(_index + 1);
+  }
+
+  void _skipAccess() {
+    ref.read(authModeProvider.notifier).set(AuthMode.token);
+    _next();
   }
 
   /// 通知那页的选择:开则拉系统权限,记下开关,进完成页。
@@ -106,6 +133,7 @@ class _WelcomePageState extends ConsumerState<WelcomePage> {
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
+    final desktop = ref.watch(desktopModeProvider);
     final last = _index == _pageCount - 1;
     final mode = ref.watch(authModeProvider).value;
     final hasToken = (ref.watch(tokenProvider).value ?? '').isNotEmpty;
@@ -120,7 +148,57 @@ class _WelcomePageState extends ConsumerState<WelcomePage> {
     final botPage = _index == 3 && !hasBot;
     final mustAuth = botPage && mode == AuthMode.bot;
     final skipBot = botPage && !mustAuth;
-    final notifyPage = _index == 4;
+    final notifyPage = !desktop && _index == 4;
+    final pages = [
+      _page(0, (a) => _IntroStep(active: a)),
+      _page(1, (a) => _AppearanceStep(active: a)),
+      _page(2, (a) => _AccessStep(active: a)),
+      _page(3, (a) => _BotStep(active: a)),
+      if (!desktop) _page(4, (a) => _NotifyStep(active: a)),
+      _page(_pageCount - 1, (a) => _DoneStep(active: a)),
+    ];
+
+    if (desktop) {
+      final canAdvance = !needPick && !mustAuth && !_finishing;
+      return CallbackShortcuts(
+        bindings: {
+          if (widget.replay)
+            const SingleActivator(LogicalKeyboardKey.escape): () =>
+                Navigator.of(context).pop(),
+        },
+        child: Focus(
+          focusNode: _desktopFocus,
+          autofocus: true,
+          child: Scaffold(
+            body: SafeArea(
+              child: DesktopWelcomeLayout(
+                index: _index,
+                pages: pages,
+                onStepSelected: (i) {
+                  if (i <= _index || (i == _index + 1 && canAdvance)) _goTo(i);
+                },
+                onBack: _index > 0 ? () => _goTo(_index - 1) : null,
+                onNext: canAdvance ? (last ? _finish : _next) : null,
+                nextLabel: last
+                    ? '完成设置'
+                    : skipBot
+                    ? '跳过扩展'
+                    : '下一步',
+                onSkip: needPick ? _skipAccess : null,
+                onClose: widget.replay
+                    ? () => Navigator.of(context).pop()
+                    : null,
+                hint: needPick
+                    ? '请保存令牌，或暂时跳过接入设置。'
+                    : mustAuth
+                    ? '使用 Bot 生成需要先完成授权。'
+                    : null,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
 
     return Scaffold(
       body: SafeArea(
@@ -130,14 +208,7 @@ class _WelcomePageState extends ConsumerState<WelcomePage> {
               child: PageView(
                 controller: _pager,
                 onPageChanged: (i) => setState(() => _index = i),
-                children: [
-                  _page(0, (a) => _IntroStep(active: a)),
-                  _page(1, (a) => _AppearanceStep(active: a)),
-                  _page(2, (a) => _AccessStep(active: a)),
-                  _page(3, (a) => _BotStep(active: a)),
-                  _page(4, (a) => _NotifyStep(active: a)),
-                  _page(5, (a) => _DoneStep(active: a)),
-                ],
+                children: pages,
               ),
             ),
             Padding(
@@ -197,12 +268,7 @@ class _WelcomePageState extends ConsumerState<WelcomePage> {
                           )
                         : needPick
                         ? TextButton(
-                            onPressed: () {
-                              ref
-                                  .read(authModeProvider.notifier)
-                                  .set(AuthMode.token);
-                              _next();
-                            },
+                            onPressed: _skipAccess,
                             child: const Text('暂时跳过'),
                           )
                         : null,
@@ -217,8 +283,8 @@ class _WelcomePageState extends ConsumerState<WelcomePage> {
   }
 }
 
-/// 每页统一骨架:内容整体居中,翻到本页时元素自下而上错峰淡入。
-class _Step extends StatelessWidget {
+/// 桌面表单顶部左对齐并限制宽度;移动端居中并保留错峰入场。
+class _Step extends ConsumerWidget {
   const _Step({
     required this.icon,
     required this.title,
@@ -241,7 +307,11 @@ class _Step extends StatelessWidget {
   final String? descBold;
 
   /// desc 正文;[descBold] 命中就把那一段加粗,其余照常。
-  Widget _descText(BuildContext context, ColorScheme scheme) {
+  Widget _descText(
+    BuildContext context,
+    ColorScheme scheme, {
+    TextAlign align = TextAlign.center,
+  }) {
     final base = context.texts.bodyMedium!.copyWith(
       color: scheme.onSurfaceVariant,
     );
@@ -261,70 +331,119 @@ class _Step extends StatelessWidget {
               TextSpan(text: text.substring(at + bold.length)),
             ],
           ),
-          textAlign: TextAlign.center,
+          textAlign: align,
           style: base,
         );
       }
     }
-    return Text(text, textAlign: TextAlign.center, style: base);
+    return Text(text, textAlign: align, style: base);
   }
 
   final Widget? child;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final scheme = context.scheme;
-    return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(26, 20, 26, 12),
-      child: ConstrainedBox(
-        // 撑满可视高度才能真正居中,内容超高时退化为可滚
-        constraints: BoxConstraints(
-          minHeight:
-              MediaQuery.sizeOf(context).height -
-              MediaQuery.paddingOf(context).vertical -
-              200,
+    if (ref.watch(desktopModeProvider)) {
+      return SingleChildScrollView(
+        key: PageStorageKey('desktop-welcome-scroll-$title'),
+        primary: false,
+        padding: const EdgeInsets.fromLTRB(24, 24, 24, 32),
+        child: Align(
+          alignment: Alignment.topLeft,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 600),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      width: 40,
+                      height: 40,
+                      decoration: BoxDecoration(
+                        color: scheme.primaryContainer,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Icon(
+                        icon,
+                        size: 22,
+                        color: scheme.onPrimaryContainer,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        title,
+                        style: context.texts.titleLarge!.copyWith(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                if (desc != null && desc!.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  _descText(context, scheme, align: TextAlign.left),
+                ],
+                if (child != null) ...[const SizedBox(height: 24), child!],
+              ],
+            ),
+          ),
         ),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            _Rise(
-              active: active,
-              delayMs: 0,
-              child: Container(
-                width: 68,
-                height: 68,
-                decoration: BoxDecoration(
-                  color: scheme.primaryContainer,
-                  shape: BoxShape.circle,
-                ),
-                child: Icon(icon, size: 32, color: scheme.onPrimaryContainer),
-              ),
-            ),
-            const SizedBox(height: 20),
-            _Rise(
-              active: active,
-              delayMs: 90,
-              child: Text(
-                title,
-                textAlign: TextAlign.center,
-                style: context.texts.headlineSmall!.copyWith(
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-            ),
-            if (desc != null) ...[
-              const SizedBox(height: 8),
+      );
+    }
+    return LayoutBuilder(
+      builder: (context, constraints) => SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(26, 20, 26, 12),
+        child: ConstrainedBox(
+          // 撑满可视高度才能真正居中,内容超高时退化为可滚
+          constraints: BoxConstraints(
+            minHeight: (constraints.maxHeight - 32).clamp(0.0, double.infinity),
+          ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
               _Rise(
                 active: active,
-                delayMs: 160,
-                child: _descText(context, scheme),
+                delayMs: 0,
+                child: Container(
+                  width: 68,
+                  height: 68,
+                  decoration: BoxDecoration(
+                    color: scheme.primaryContainer,
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(icon, size: 32, color: scheme.onPrimaryContainer),
+                ),
               ),
+              const SizedBox(height: 20),
+              _Rise(
+                active: active,
+                delayMs: 90,
+                child: Text(
+                  title,
+                  textAlign: TextAlign.center,
+                  style: context.texts.headlineSmall!.copyWith(
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+              if (desc != null) ...[
+                const SizedBox(height: 8),
+                _Rise(
+                  active: active,
+                  delayMs: 160,
+                  child: _descText(context, scheme),
+                ),
+              ],
+              if (child != null) ...[
+                const SizedBox(height: 26),
+                _Rise(active: active, delayMs: 230, child: child!),
+              ],
             ],
-            if (child != null) ...[
-              const SizedBox(height: 26),
-              _Rise(active: active, delayMs: 230, child: child!),
-            ],
-          ],
+          ),
         ),
       ),
     );
@@ -396,37 +515,42 @@ class _RiseState extends State<_Rise> with SingleTickerProviderStateMixin {
 
 // ── 1 欢迎 ────────────────
 
-class _IntroStep extends StatelessWidget {
+class _IntroStep extends ConsumerWidget {
   const _IntroStep({required this.active});
 
   final bool active;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final scheme = context.scheme;
+    final desktop = ref.watch(desktopModeProvider);
     return _Step(
       active: active,
       icon: Icons.auto_awesome,
-      title: '欢迎使用 Plana',
-      desc: 'NovelAI 移动创作端',
+      title: desktop ? '欢迎使用 $kAppName' : '欢迎使用 Plana',
+      desc: desktop ? kAppTagline : 'NovelAI 移动创作端',
       child: Column(
         children: [
-          for (final f in const [
-            (Icons.edit_note, '全屏提示词编辑器'),
+          for (final f in [
+            (Icons.edit_note, desktop ? '提示词、画布与助手同屏' : '全屏提示词编辑器'),
             (Icons.photo_library_outlined, '图库留参数,随时复现'),
             (Icons.auto_fix_high, 'Vibe · 参考 · 重绘 · 超分'),
           ])
             Padding(
               padding: const EdgeInsets.only(bottom: 10),
               child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
+                mainAxisAlignment: desktop
+                    ? MainAxisAlignment.start
+                    : MainAxisAlignment.center,
                 children: [
                   Icon(f.$1, size: 17, color: scheme.onSurfaceVariant),
                   const SizedBox(width: 9),
-                  Text(
-                    f.$2,
-                    style: context.texts.bodySmall!.copyWith(
-                      color: scheme.onSurfaceVariant,
+                  Flexible(
+                    child: Text(
+                      f.$2,
+                      style: context.texts.bodySmall!.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
                     ),
                   ),
                 ],
@@ -450,11 +574,14 @@ class _AppearanceStep extends ConsumerWidget {
     final ts = ref.watch(themeSettingsProvider);
     final notifier = ref.read(themeSettingsProvider.notifier);
     final scheme = context.scheme;
+    final desktop = ref.watch(desktopModeProvider);
     return _Step(
       active: active,
       icon: Icons.color_lens_outlined,
       title: '外观配色',
+      desc: desktop ? '选择明暗模式和主题色，修改会立即生效。' : null,
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           SizedBox(
             width: double.infinity,
@@ -474,45 +601,48 @@ class _AppearanceStep extends ConsumerWidget {
           Wrap(
             spacing: 12,
             runSpacing: 12,
-            alignment: WrapAlignment.center,
+            alignment: desktop ? WrapAlignment.start : WrapAlignment.center,
             children: [
               for (final s in themeSeeds)
-                InkWell(
-                  onTap: () =>
-                      notifier.patch((x) => x.copyWith(seedKey: s.key)),
-                  customBorder: const CircleBorder(),
-                  child: AnimatedContainer(
-                    duration: Motion.fast,
-                    width: 42,
-                    height: 42,
-                    padding: const EdgeInsets.all(3),
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        width: 2,
-                        color: s.key == ts.seed.key
-                            ? scheme.onSurface
-                            : Colors.transparent,
-                      ),
-                    ),
-                    child: DecoratedBox(
+                Tooltip(
+                  message: s.label,
+                  child: InkWell(
+                    onTap: () =>
+                        notifier.patch((x) => x.copyWith(seedKey: s.key)),
+                    customBorder: const CircleBorder(),
+                    child: AnimatedContainer(
+                      duration: Motion.fast,
+                      width: 42,
+                      height: 42,
+                      padding: const EdgeInsets.all(3),
                       decoration: BoxDecoration(
-                        color: s.color,
                         shape: BoxShape.circle,
+                        border: Border.all(
+                          width: 2,
+                          color: s.key == ts.seed.key
+                              ? scheme.onSurface
+                              : Colors.transparent,
+                        ),
                       ),
-                      child: s.key == ts.seed.key
-                          ? Icon(
-                              Icons.check,
-                              size: 17,
-                              color:
-                                  ThemeData.estimateBrightnessForColor(
-                                        s.color,
-                                      ) ==
-                                      Brightness.dark
-                                  ? Colors.white
-                                  : Colors.black87,
-                            )
-                          : null,
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: s.color,
+                          shape: BoxShape.circle,
+                        ),
+                        child: s.key == ts.seed.key
+                            ? Icon(
+                                Icons.check,
+                                size: 17,
+                                color:
+                                    ThemeData.estimateBrightnessForColor(
+                                          s.color,
+                                        ) ==
+                                        Brightness.dark
+                                    ? Colors.white
+                                    : Colors.black87,
+                              )
+                            : null,
+                      ),
                     ),
                   ),
                 ),
@@ -764,7 +894,7 @@ class _AccessStepState extends ConsumerState<_AccessStep>
                       ? Padding(
                           padding: const EdgeInsets.fromLTRB(0, 9, 0, 9),
                           child: Text(
-                            '兼容 NovelAI 接口的中转站或自建反代,地址跟这把 key 一起存',
+                            '兼容 NovelAI 接口的中转站或自建反代',
                             style: context.texts.labelSmall!.copyWith(
                               color: scheme.outline,
                             ),
@@ -1146,15 +1276,92 @@ class _NotifyStep extends StatelessWidget {
 
 // ── 6 完成 ────────────────
 
-/// 庆祝页:一个放大浮现的对勾 + 一句「全部完成」,再无别的。
-class _DoneStep extends StatelessWidget {
+/// 桌面显示实际配置摘要,移动端保留庆祝页。
+class _DoneStep extends ConsumerWidget {
   const _DoneStep({required this.active});
 
   final bool active;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final scheme = context.scheme;
+    if (ref.watch(desktopModeProvider)) {
+      final theme = ref.watch(themeSettingsProvider);
+      final mode = ref.watch(authModeProvider).value;
+      final hasToken = (ref.watch(tokenProvider).value ?? '').isNotEmpty;
+      final hasBot = ref.watch(botSessionProvider).value != null;
+      final ready = mode == AuthMode.bot ? hasBot : hasToken;
+      final appearance = switch (theme.mode) {
+        ThemeMode.system => '跟随系统',
+        ThemeMode.light => '浅色',
+        ThemeMode.dark => '深色',
+      };
+      return _Step(
+        active: active,
+        icon: Icons.check_rounded,
+        title: '设置完成',
+        desc: ready ? '接入已配置，可以返回工作台开始创作。' : '已完成引导，添加令牌后即可开始生成。',
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            DecoratedBox(
+              decoration: BoxDecoration(
+                color: scheme.surfaceContainerLow,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: scheme.outlineVariant),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    for (final row in [
+                      ('外观', '$appearance · ${theme.seed.label}'),
+                      (
+                        '生成接入',
+                        ready
+                            ? mode == AuthMode.bot
+                                  ? 'Bot 账户 · 已授权'
+                                  : '直连 Token · 已保存'
+                            : '暂未配置',
+                      ),
+                      ('扩展功能', hasBot ? '已授权' : '暂未授权，可按需开启'),
+                    ])
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 6),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            SizedBox(
+                              width: 88,
+                              child: Text(
+                                row.$1,
+                                style: context.texts.bodyMedium!.copyWith(
+                                  color: scheme.onSurfaceVariant,
+                                ),
+                              ),
+                            ),
+                            Expanded(child: Text(row.$2)),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            if (!ready) ...[
+              const SizedBox(height: 16),
+              Text(
+                '稍后可在「我的 → 账号与接入」添加官方令牌或第三方接口。',
+                style: context.texts.bodySmall!.copyWith(
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ],
+        ),
+      );
+    }
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,

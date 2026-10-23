@@ -4,7 +4,7 @@ import 'package:flutter/foundation.dart';
 
 import '../net/nai_client.dart';
 
-/// NAI 令牌在线校验:输入防抖 → 查订阅 → 暴露(档位 + 点数 / 查询中 / 失败)。
+/// NAI 令牌在线校验:输入防抖 → 查订阅 → 暴露(档位 + 点数 / 查询中 / 失败 / 令牌被拒)。
 /// 引导页与「账号与接入」共用一套判定,避免两处规则漂移。
 ///
 /// 只读订阅接口,不写任何存储,也不动全局 anlasProvider(那个跟接入方式走)。
@@ -16,6 +16,9 @@ class TokenProbe extends ChangeNotifier {
   NaiSubscription? sub;
   bool loading = false;
   bool failed = false;
+
+  /// [failed] 的原因是令牌被拒(见 [naiTokenRejected]),不是没查通。
+  bool rejected = false;
 
   Timer? _debounce;
 
@@ -44,6 +47,7 @@ class TokenProbe extends ChangeNotifier {
       if (sub != null || failed || loading) {
         sub = null;
         failed = false;
+        rejected = false;
         loading = false;
         notifyListeners();
       }
@@ -60,16 +64,18 @@ class TokenProbe extends ChangeNotifier {
     _queried = t;
     loading = true;
     failed = false;
+    rejected = false;
     notifyListeners();
     try {
       final s = await _fetch(t);
       if (_current != t) return; // 输入已变,结果作废
       sub = s;
       loading = false;
-    } catch (_) {
+    } catch (e) {
       if (_current != t) return;
       sub = null;
       failed = true;
+      rejected = naiTokenRejected(e);
       loading = false;
     }
     notifyListeners();
@@ -83,6 +89,7 @@ class TokenProbe extends ChangeNotifier {
     sub = null;
     loading = false;
     failed = false;
+    rejected = false;
     notifyListeners();
   }
 

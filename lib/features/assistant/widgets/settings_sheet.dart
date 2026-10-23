@@ -15,7 +15,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/platform/desktop.dart';
 import '../../../core/ui/setting_row.dart';
 import '../../generate/widgets/common.dart' show dropFocusSoon, hintSnack;
-import '../agent_model.dart' show assistantBotAuthorizedProvider;
+import '../agent_model.dart'
+    show assistantBotAuthorizedProvider, assistantEndpointProvider;
 import '../assistant_settings.dart';
 import '../assistant_state.dart';
 import '../preset_rules.dart';
@@ -68,6 +69,7 @@ class _DesktopSettingsPanel extends ConsumerWidget {
     final s = ref.watch(assistantSettingsProvider).value;
     final n = ref.read(assistantSettingsProvider.notifier);
     final authorized = ref.watch(assistantBotAuthorizedProvider);
+    final customEndpoint = ref.watch(assistantEndpointProvider) != null;
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     Widget section(String title, List<Widget> rows) => Padding(
@@ -247,6 +249,56 @@ class _DesktopSettingsPanel extends ConsumerWidget {
                                         value: s.inlineImage,
                                         onChanged: (v) => n.patch(
                                           (o) => o.copyWith(inlineImage: v),
+                                        ),
+                                      ),
+                                    ]),
+                                    section('侧栏图片按钮', [
+                                      SettingRow(
+                                        icon: Icons.image_outlined,
+                                        title: '添加图片',
+                                        desc: '在创作页侧栏显示文件选择按钮，支持多选',
+                                        value: s.showSidebarImagePicker,
+                                        onChanged: (v) => n.patch(
+                                          (o) => o.copyWith(
+                                            showSidebarImagePicker: v,
+                                          ),
+                                        ),
+                                      ),
+                                      SettingRow(
+                                        icon: Icons.photo_library_outlined,
+                                        title: '从历史选择',
+                                        desc: '在创作页侧栏显示历史图片按钮',
+                                        value: s.showSidebarHistoryPicker,
+                                        onChanged: (v) => n.patch(
+                                          (o) => o.copyWith(
+                                            showSidebarHistoryPicker: v,
+                                          ),
+                                        ),
+                                      ),
+                                      SettingRow(
+                                        icon: Icons.content_paste,
+                                        title: '从剪贴板粘贴',
+                                        desc: '在创作页侧栏显示图片粘贴按钮',
+                                        value: s.showSidebarClipboardButton,
+                                        onChanged: (v) => n.patch(
+                                          (o) => o.copyWith(
+                                            showSidebarClipboardButton: v,
+                                          ),
+                                        ),
+                                      ),
+                                    ]),
+                                    section('OC 引用', [
+                                      SettingRow(
+                                        icon: Icons.person_outline,
+                                        title: 'OC 使用占位符',
+                                        desc: customEndpoint
+                                            ? '只给 AI 占位符，出图前还原完整设定；修改设定时请关闭'
+                                            : '仅自定义接口渠道可用',
+                                        value:
+                                            customEndpoint && s.ocPlaceholders,
+                                        enabled: customEndpoint,
+                                        onChanged: (v) => n.patch(
+                                          (o) => o.copyWith(ocPlaceholders: v),
                                         ),
                                       ),
                                     ]),
@@ -453,6 +505,7 @@ class _SettingsSheet extends ConsumerWidget {
     final s = ref.watch(assistantSettingsProvider).value;
     final n = ref.read(assistantSettingsProvider.notifier);
     final authorized = ref.watch(assistantBotAuthorizedProvider);
+    final customEndpoint = ref.watch(assistantEndpointProvider) != null;
     return SettingSheet(
       title: '助手设置',
       children: [
@@ -522,7 +575,7 @@ class _SettingsSheet extends ConsumerWidget {
             value: s.historyTurns.toDouble(),
             min: AssistantSettings.historyTurnsMin.toDouble(),
             max: AssistantSettings.historyTurnsMax.toDouble(),
-            step: 1,
+            step: AssistantSettings.historyTurnsStep.toDouble(),
             format: (v) => v.toStringAsFixed(0),
             onChanged: (v) =>
                 n.patch((o) => o.copyWith(historyTurns: v.round())),
@@ -544,6 +597,16 @@ class _SettingsSheet extends ConsumerWidget {
                 ? libraryScopeDesc(o)
                 : '需要 Bot 授权',
             onChanged: (v) => n.patch((o) => o.copyWith(libraryScope: v)),
+          ),
+          SettingRow(
+            icon: Icons.person_outline,
+            title: 'OC 使用占位符',
+            desc: customEndpoint
+                ? '本地与公共 OC 只给 AI 占位符，出图时还原；调整原设时请关闭'
+                : '仅自定义接口渠道可用',
+            value: customEndpoint && s.ocPlaceholders,
+            enabled: customEndpoint,
+            onChanged: (v) => n.patch((o) => o.copyWith(ocPlaceholders: v)),
           ),
           settingSection(context, '规则'),
           SettingNavRow(

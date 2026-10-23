@@ -192,7 +192,8 @@ Stream<AgentEvent> streamAgentPrompt({
           ..headers.addAll({
             'Content-Type': 'application/json',
             'Accept': 'text/event-stream',
-            'Authorization': 'Bearer $sessionId',
+            // 没有 Bot 授权(免费模型)就不带
+            if (sessionId.isNotEmpty) 'Authorization': 'Bearer $sessionId',
           })
           ..bodyBytes = utf8.encode(jsonEncode(body));
 

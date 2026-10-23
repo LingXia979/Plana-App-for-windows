@@ -1,4 +1,5 @@
 /// 选 AI 助手用哪个模型:Plana 后端的渠道,或者自己填的接口。
+/// 没有 Bot 授权时后端那组只列免费模型。
 ///
 /// 两组共用**同一种行**:左边一个图标、中间完整型号名、右边留给「编辑」。
 /// 不写 `short_label`(「GLM」「豆包」这种简称看不出是哪一代),也不写线路说明
@@ -106,11 +107,11 @@ class _AssistantModelDropdownState
         ),
       ),
       menuChildren: [
-        if (authorized) ...[
-          settingSection(context, 'Plana 后端'),
+        if (authorized || (models.value?.free.isNotEmpty ?? false)) ...[
+          settingSection(context, authorized ? 'Plana 后端' : '免费模型'),
           ...switch (models) {
             AsyncData(:final value) when value.choices.isNotEmpty => [
-              for (final c in value.choices)
+              for (final c in authorized ? value.choices : value.free)
                 choice(c.key, c.name, recommended: c.recommended),
             ],
             AsyncLoading() => [
@@ -214,19 +215,22 @@ class _ModelSheet extends ConsumerWidget {
     final async = ref.watch(agentModelsProvider);
     final currentKey = ref.watch(assistantModelProvider)?.key ?? '';
     final endpoints = ref.watch(customEndpointsProvider).value ?? const [];
-    // 没有 Bot 授权时后端渠道用不了,整组不列
+    // 没有 Bot 授权时只列免费的;后端一条免费的都没有就整组不列
     final authorized = ref.watch(assistantBotAuthorizedProvider);
+    List<AgentModelChoice> shown(AgentModelList l) =>
+        authorized ? l.choices : l.free;
+    final hidden = !authorized && async.hasValue && shown(async.value!).isEmpty;
 
     return SettingSheet(
       title: '选择模型',
       children: [
-        if (authorized) ...[
-          settingSection(context, 'Plana 后端'),
+        if (!hidden) ...[
+          settingSection(context, authorized ? 'Plana 后端' : '免费模型'),
           switch (async) {
-            AsyncData(:final value) when value.choices.isNotEmpty => Column(
+            AsyncData(:final value) when shown(value).isNotEmpty => Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                for (final c in value.choices)
+                for (final c in shown(value))
                   _row(
                     context,
                     icon: Icons.cloud_outlined,

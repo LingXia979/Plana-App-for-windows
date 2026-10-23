@@ -16,6 +16,7 @@ library;
 
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -42,8 +43,8 @@ import 'assistant_state.dart';
 import 'preset_rules.dart' show RulesFamily, rulesFamilyOf;
 import 'widgets/history_sheet.dart';
 import 'widgets/inline_images.dart';
-import 'widgets/message_image.dart';
 import 'widgets/intro_dialog.dart';
+import 'widgets/message_image.dart';
 import 'widgets/mode_sheet.dart';
 import 'widgets/model_sheet.dart';
 import 'widgets/proposal_actions.dart';
@@ -68,6 +69,9 @@ const _suggests = <({String text, bool canvas})>[
 class AssistantPage extends ConsumerStatefulWidget {
   const AssistantPage({super.key, this.embedded = false, this.imageDropKey});
   final bool embedded;
+
+  /// 这块粘贴接收区的 key,供 [ImagePasteProxy] 把标签栏那一行也指过来
+  /// (嵌在工作台右栏时用,见 desktop_workspace.dart)。
   final GlobalKey? imageDropKey;
 
   @override
@@ -80,6 +84,7 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
   final _scroll = ScrollController();
   final _pending = <PickedImage>[];
   bool _sending = false;
+  bool _choosingFiles = false;
   bool _choosingHistory = false;
 
   /// 这一条要不要把创作页的提示词带上。**纯一次性:每发一次回到关**,和带图一样。
@@ -152,6 +157,11 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
     setState(() => _sending = true);
     _toBottom();
     try {
+      await showAssistantIntro(context);
+      if (!mounted ||
+          ref.read(assistantSettingsProvider).value?.introDone != true) {
+        return;
+      }
       await ref
           .read(assistantProvider.notifier)
           .send(
@@ -177,8 +187,28 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
   }
 
   Future<void> _pick() async {
-    final images = await pickImageFiles(context);
-    _addImages(images);
+    if (_choosingFiles || _sending || ref.read(assistantProvider).running) {
+      return;
+    }
+    setState(() => _choosingFiles = true);
+    try {
+      final images = await pickImageFiles(context);
+      _addImages(images);
+    } on PlatformException catch (error) {
+      if (mounted) {
+        hintSnack(
+          context,
+          error.code.startsWith('ENTITLEMENT_')
+              ? '当前应用无法打开文件选择器，请更新应用后重试'
+              : '无法打开图片选择器，请重试',
+          icon: Icons.error_outline,
+        );
+      }
+    } catch (_) {
+      if (mounted) hintSnack(context, '读取图片失败，请重新选择');
+    } finally {
+      if (mounted) setState(() => _choosingFiles = false);
+    }
   }
 
   Future<void> _pickHistory() async {
@@ -214,6 +244,11 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
     }
   }
 
+  /// 从剪贴板取图加进附件。
+  ///
+  /// 和 ⌘V 那条路的分工:快捷键走 [ImageDropRegion],剪贴板里**同时有文本就不
+  /// 抢**(焦点在输入框里,用户多半想粘文字);这颗按钮是明确的「我要图」,
+  /// 所以 [DesktopClipboard.readImage] 传 preferImage —— 有没有文本都要图。
   Future<void> _pasteImage() async {
     List<ClipboardImageBytes> images;
     try {
@@ -239,6 +274,10 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
     ]);
   }
 
+  /// 快捷键提示按平台写:macOS 是 ⌘V,Windows / Linux 是 Ctrl+V。
+  String get _pasteShortcutLabel =>
+      defaultTargetPlatform == TargetPlatform.macOS ? '⌘V' : 'Ctrl+V';
+
   void _addImages(List<PickedImage> images) {
     // A picker or drop started before Send may finish reading afterwards.
     // Keep those late attachments for the next message.
@@ -262,13 +301,15 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
   /// 第一次进 AI 页:先确认资料库范围和使用习惯([showAssistantIntro])。
   /// 只在 AI 页真在前台时弹 —— 页面是保活的,停在别的 tab 时也可能重建。
   void _maybeShowIntro() {
-    if (_introOpen) return;
+    if (widget.embedded || _introOpen) return;
     final s = ref.watch(assistantSettingsProvider).value;
     if (s == null || s.introDone) return;
     if (ref.watch(shellIndexProvider) != kTabAssistant) return;
     _introOpen = true;
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      if (mounted) await showAssistantIntro(context);
+      if (mounted && ref.read(shellIndexProvider) == kTabAssistant) {
+        await showAssistantIntro(context);
+      }
       _introOpen = false;
     });
   }
@@ -277,9 +318,9 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     final st = ref.watch(assistantProvider);
-    // 没有 Bot 授权也能用,但只能走自定义接口:一个都没选就先挡住
+    // 没有 Bot 授权也能用,但只能走免费模型或自定义接口:两样都没有就先挡住
     final usable =
-        ref.watch(assistantBotAuthorizedProvider) ||
+        ref.watch(assistantBackendAvailableProvider) ||
         ref.watch(assistantEndpointProvider) != null;
     final supported = assistantSupportsModel(
       ref.watch(generateProvider.select((g) => g.params.model)),
@@ -320,8 +361,8 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
     return ImageDropRegion(
       key: widget.imageDropKey ?? const ValueKey('assistant-image-drop'),
       label: '将图片添加到对话框',
-      pasteDefault: !widget.embedded,
       multiple: true,
+      pasteDefault: !widget.embedded,
       enabled:
           ref.watch(desktopModeProvider) &&
           usable &&
@@ -373,6 +414,12 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
                     ],
                   );
                 },
+              )
+            : widget.embedded
+            ? Material(
+                key: const ValueKey('assistant-sidebar-background'),
+                color: scheme.surface,
+                child: chat(),
               )
             : chat(),
       ),
@@ -758,6 +805,11 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
   /// 从某一句提问重来。和 [_send] 一样先回到底部:重来的那一轮出在最下面,
   /// 而长按菜单多半是停在上面某条消息上点的。
   Future<void> _retryFrom(String askId, {String? text}) async {
+    await showAssistantIntro(context);
+    if (!mounted ||
+        ref.read(assistantSettingsProvider).value?.introDone != true) {
+      return;
+    }
     _toBottom();
     await ref.read(assistantProvider.notifier).retryFrom(askId, text: text);
     if (mounted) _toBottom();
@@ -953,6 +1005,10 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
     bool enabled = true,
   }) {
     final running = st.running || _sending;
+    final desktop = ref.watch(desktopModeProvider);
+    final sidebar = desktop && widget.embedded;
+    final settings =
+        ref.watch(assistantSettingsProvider).value ?? const AssistantSettings();
     final canSend =
         enabled &&
         !running &&
@@ -967,7 +1023,7 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
     }
     final attachment = IconButton(
       tooltip: '添加图片（可多选）',
-      onPressed: !enabled || running ? null : _pick,
+      onPressed: !enabled || running || _choosingFiles ? null : _pick,
       icon: Icon(
         Icons.image_outlined,
         color: _pending.isNotEmpty ? scheme.primary : null,
@@ -979,9 +1035,12 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
       onPressed: !enabled || running || _choosingHistory ? null : _pickHistory,
       icon: const Icon(Icons.photo_library_outlined),
     );
+    // 桌面端专有:截图 / 网页里复制来的图直接进附件,不用先存成文件。
+    // 快捷键本身由 [ImageDropRegion] 兜着(焦点在对话框里就行),这颗是给它
+    // 一个看得见的入口 —— 光有快捷键的功能等于没有。
     final pasteAttachment = IconButton(
       key: const ValueKey('assistant-paste-image'),
-      tooltip: '从剪贴板粘贴图片 (Ctrl+V)',
+      tooltip: '从剪贴板粘贴图片 ($_pasteShortcutLabel)',
       onPressed: !enabled || running ? null : _pasteImage,
       icon: const Icon(Icons.content_paste),
     );
@@ -1138,9 +1197,12 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
             Row(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                attachment,
-                historyAttachment,
-                if (ref.watch(desktopModeProvider)) pasteAttachment,
+                if (!sidebar || settings.showSidebarImagePicker) attachment,
+                if (!sidebar || settings.showSidebarHistoryPicker)
+                  historyAttachment,
+                if (desktop &&
+                    (!sidebar || settings.showSidebarClipboardButton))
+                  pasteAttachment,
                 const SizedBox(width: 1),
                 Expanded(child: input),
                 const SizedBox(width: 8),

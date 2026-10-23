@@ -25,9 +25,9 @@ import '../../core/net/backend_client.dart';
 import '../../core/net/backend_config.dart';
 import '../../core/store/app_stores.dart';
 import '../generate/agent_chars.dart';
+import '../generate/canvas_state.dart';
 import '../generate/prompt_sections.dart' show composeSections;
 import '../editor/editor_state.dart' show editorSessionsProvider;
-import '../generate/canvas_state.dart';
 import '../generate/char_position.dart';
 import '../gallery/gallery_state.dart' show galleryProvider;
 import '../generate/gen_modules.dart';
@@ -35,7 +35,7 @@ import '../generate/generate_state.dart';
 import '../generate/generation_controller.dart'
     show GenOutcome, generationProvider;
 import '../generate/models.dart'
-    show GenerateState, isAnimaModel, isKreaModel, isNai5Model;
+    show GenerateState, Panel, isAnimaModel, isKreaModel, isNai5Model;
 import '../inspiration/tag_library.dart';
 import '../inspiration/tag_models.dart';
 import 'agent_model.dart';
@@ -459,6 +459,9 @@ class AssistantNotifier extends Notifier<AssistantState> {
         ? original.length
         : original.indexOf(replacing);
     if (replaceAt < 0) return;
+    ref.read(editorSessionsProvider).flushPending();
+    final sourceCanvasId = ref.read(canvasWorkspaceProvider).activeId;
+    final sourceState = ref.read(generateProvider);
     _preparing = true;
     int? startedSeq;
     try {
@@ -469,7 +472,7 @@ class AssistantNotifier extends Notifier<AssistantState> {
         throw StateError('图片附件为空，未发送本轮消息。');
       }
       // 界面已经挡了(见 _ModelGate),这儿再挡一道:自动生成、重试这些不经过界面。
-      final model = ref.read(generateProvider).params.model;
+      final model = sourceState.params.model;
       if (!assistantSupportsModel(model)) {
         _pushError(
           'AI 助手暂不支持 Anima / Krea,去创作页换成 NAI 再来',
@@ -487,8 +490,16 @@ class AssistantNotifier extends Notifier<AssistantState> {
       // 没有 Bot 授权只能走前一条:后端渠道要授权(界面上也不列)。
       final endpoint = ref.read(assistantEndpointProvider);
       if (sid.isEmpty && endpoint == null) {
-        _pushError('没有 Bot 授权时只能用自定义接口,先在顶部选一个', AssistErrorKind.auth);
-        return;
+        try {
+          await ref.read(agentModelsProvider.future);
+        } catch (_) {}
+        if (!ref.mounted || !identical(state.msgs, original) || state.running) {
+          return;
+        }
+        if (ref.read(assistantModelKeyProvider).isEmpty) {
+          _pushError('没有 Bot 授权时只能用免费模型或自定义接口,先在顶部选一个', AssistErrorKind.auth);
+          return;
+        }
       }
       if (endpoint == null && base.trim().isEmpty) {
         _pushError('未配置后端地址，原对话已保留。', AssistErrorKind.unknown);
@@ -501,11 +512,8 @@ class AssistantNotifier extends Notifier<AssistantState> {
 
       // 画布是空的就当没勾 —— 记在消息上的也是这个结果,免得气泡挂着「引用了创作页」
       // 而实际什么都没发出去。
-      ref.read(editorSessionsProvider).flushPending();
-      final g = composeSections(ref.read(generateProvider));
+      final g = composeSections(sourceState);
       final canvas = withCanvas && canvasHasContent(g);
-      // 回复回来时人可能已经切去别的画布,自动导入 / 出图只对发问时这张生效
-      final sourceCanvasId = ref.read(canvasWorkspaceProvider).activeId;
       final picked = state.mode;
       final noDraw = assistantSettingsOf(ref).noDraw;
 
@@ -613,6 +621,8 @@ class AssistantNotifier extends Notifier<AssistantState> {
         'mode_keys': modeKeys,
         'no_draw': noDraw,
         'library_scope': scope.name,
+        'oc_placeholders':
+            endpoint != null && assistantSettingsOf(ref).ocPlaceholders,
         'history_turns': assistantSettingsOf(ref).historyTurns,
         'history_entries': history.length,
         'with_canvas': canvas,
@@ -653,6 +663,7 @@ class AssistantNotifier extends Notifier<AssistantState> {
               // 不发给后端(见 local_library.dart)
               webArtists: lib.artists,
               webOcs: lib.ocs,
+              ocPlaceholders: assistantSettingsOf(ref).ocPlaceholders,
               resources: latestResources(state.msgs),
               libraryScope: libraryScopeWire(scope),
               chosenModes: modeKeys,
@@ -742,6 +753,12 @@ class AssistantNotifier extends Notifier<AssistantState> {
         },
         onError: (Object e) {
           if (seq != _seq) return;
+          if (sid.isEmpty &&
+              endpoint == null &&
+              e is BackendException &&
+              (e.status == 401 || e.status == 403)) {
+            ref.invalidate(agentModelsProvider);
+          }
           final msg = e is BackendException ? e.message : '$e';
           _pushError(msg, _kindOf(e));
         },
@@ -931,14 +948,13 @@ class AssistantNotifier extends Notifier<AssistantState> {
   /// 顺序是**先导入再出图**:两件事各自独立(不导入也能照 AI 那份出图),但
   /// 如果两个开关都开着,先导入能让画布和这张图对得上 —— 出完图回创作页一看
   /// 提示词还是旧的,那才叫见鬼。
-  ///
-  /// 发问之后切去了别的画布,两样都不自动做:回复是照着原来那张要的,自动写进
-  /// (或照它出图到)眼下这张都不对。提议照常挂在消息上,用户自己点导入 / 生成。
-  void _autoAfterDraw(String msgId, String sourceCanvasId) {
-    if (ref.read(canvasWorkspaceProvider).activeId != sourceCanvasId) return;
+  void _autoAfterDraw(String msgId, String canvasId) {
+    if (ref.read(canvasWorkspaceProvider).find(canvasId) == null) return;
     final settings = assistantSettingsOf(ref);
-    if (settings.autoImport) applyProposal(msgId);
-    if (settings.autoGenerate) unawaited(generateFrom(msgId));
+    if (settings.autoImport) applyProposal(msgId, canvasId: canvasId);
+    if (settings.autoGenerate) {
+      unawaited(generateFrom(msgId, canvasId: canvasId));
+    }
   }
 
   /// 拿某条消息的提议出一张图。**这是出图的唯一入口** —— 结果卡上的「生成」和
@@ -946,9 +962,9 @@ class AssistantNotifier extends Notifier<AssistantState> {
   ///
   /// 显示成纯文本的那种提议([AssistantMsg.promptAsText])不出图。界面上本来就没有
   /// 按钮,这里再挡一道:以后加的入口也都得从这儿过。
-  Future<void> generateFrom(String msgId) async {
+  Future<void> generateFrom(String msgId, {String? canvasId}) async {
     if (_msg(msgId)?.promptAsText ?? false) return;
-    final sent = previewSendState(msgId);
+    final sent = previewSendState(msgId, canvasId: canvasId);
     if (sent == null) return;
     final inline = assistantSettingsOf(ref).inlineImage;
     // 出图前记下库里最新那张,回来一比就知道这一单产出的是哪张。
@@ -960,7 +976,10 @@ class AssistantNotifier extends Notifier<AssistantState> {
           .read(generationProvider.notifier)
           .generate(
             using: sent,
-            stay: inline,
+            stay:
+                inline ||
+                (canvasId != null &&
+                    canvasId != ref.read(canvasWorkspaceProvider).activeId),
             // 只有内联显示才跟单:不然页面已经切去图库看进度了,
             // 对话里再画一条进度条是重复。
             onJob: inline ? (jobId) => _trackJob(msgId, jobId) : null,
@@ -1015,14 +1034,13 @@ class AssistantNotifier extends Notifier<AssistantState> {
     return PromptSnapshot.of(ref.read(generateProvider));
   }
 
-  /// 某张画布眼下那组词。null = 当前画布(切画布之前的老记录没记画布);
-  /// 画布已经删了返回 null。
   PromptSnapshot? _snapshotOf(String? canvasId) {
-    final w = ref.read(canvasWorkspaceProvider);
-    if (canvasId == null || canvasId == w.activeId) return _snapshot();
-    final p = w.find(canvasId)?.prompts;
-    if (p == null) return null;
-    return PromptSnapshot.of(p.applyTo(ref.read(generateProvider)));
+    final workspace = ref.read(canvasWorkspaceProvider);
+    if (canvasId == null || canvasId == workspace.activeId) return _snapshot();
+    final prompts = workspace.find(canvasId)?.prompts;
+    return prompts == null
+        ? null
+        : PromptSnapshot.of(prompts.applyTo(ref.read(generateProvider)));
   }
 
   /// 这条提议**如果拿去生成**会发出什么 —— 不改任何状态。
@@ -1031,16 +1049,17 @@ class AssistantNotifier extends Notifier<AssistantState> {
   /// 那一份共用规则,所以「直接生成」和「导入后再生成」出的是同一张图。
   ///
   /// 尺寸 / 采样 / Vibe / LoRA 全部沿用创作页现在的设置,AI 只负责画面内容。
-  GenerateState? previewSendState(String msgId) {
+  GenerateState? previewSendState(String msgId, {String? canvasId}) {
+    final workspace = ref.read(canvasWorkspaceProvider);
+    final target = canvasId == null ? null : workspace.find(canvasId);
+    if (canvasId != null && target == null) return null;
+    final current = ref.read(generateProvider);
+    final base = target == null ? current : target.prompts.applyTo(current);
     final msg = state.msgs.where((m) => m.id == msgId).firstOrNull;
     final r = msg?.draw;
     if (r == null) return null;
     var seq = 0;
-    final sent = proposalSendState(
-      ref.read(generateProvider),
-      r,
-      newId: () => 'preview${seq++}',
-    );
+    final sent = proposalSendState(base, r, newId: () => 'preview${seq++}');
     final mods =
         ref.read(genModulesProvider).value ?? const GenModuleSettings();
     return stripHiddenModules(sent, mods);
@@ -1050,8 +1069,8 @@ class AssistantNotifier extends Notifier<AssistantState> {
   ///
   /// 幂等:已经导入且没撤销过就直接返回 true。撤销之后可以再导入一次。
   ///
-  /// 完整替换提示词；原有分区、折叠和草稿保存在撤销快照中。
-  bool applyProposal(String msgId) {
+  /// 整份替换 AI 的提示词与角色；参考图等共享资源保留，撤销恢复原画布。
+  bool applyProposal(String msgId, {String? canvasId}) {
     final i = state.msgs.indexWhere((m) => m.id == msgId);
     if (i < 0) return false;
     final msg = state.msgs[i];
@@ -1060,43 +1079,54 @@ class AssistantNotifier extends Notifier<AssistantState> {
     if (r == null || msg.promptAsText) return false;
     if (msg.change != null && !msg.change!.undone) return true;
 
-    final before = _snapshot();
+    final workspace = ref.read(canvasWorkspaceProvider);
+    final targetId = canvasId ?? workspace.activeId;
+    final target = workspace.find(targetId);
+    if (target == null) return false;
+    final before = _snapshotOf(targetId)!;
     final gen = ref.read(generateProvider.notifier);
-    // **整份替换,不留画布上的旧值**:AI 没给负向就是空负向,没给角色分区就是
-    // 没有分区。「空值不覆盖」那条撤了 —— 它等于导入时悄悄读了一次画布,把你的
-    // 旧词和 AI 的新词拼成一份谁都没写过的提示词。导入本身就是手动的那次交集,
-    // 误导入了按撤销,before 快照里提示词、角色、坐标开关一样不少。
-    //
-    // Vibe、角色参考、图生图这些 AI 不产出的东西**不动** —— 导入写的是 AI 那份
-    // 提示词,不是清空你的工作区。和直接生成是同一条线(见 [proposalSendState])。
-    gen.replacePrompts(positive: r.positive, negative: r.negative);
-    final placed = gen.applyAgentCharacters([
-      for (final c in r.characters)
-        (
-          name: c.name,
-          positive: c.positive,
-          negative: c.negative,
-          position: c.position,
-        ),
-    ]);
-    // 坐标开关同样跟着 AI 这份走:摆了位就开,没摆就关。只开不关的话,
-    // 画布上留着的开关会让 AI 那几个默认空格被当成真站位发出去。
-    gen.setUseCoords(placed);
+    // Flushing the active editor may have updated the workspace draft.
+    final base = ref
+        .read(canvasWorkspaceProvider)
+        .find(targetId)!
+        .prompts
+        .applyTo(ref.read(generateProvider));
+    final proposed = proposalSendState(base, r, newId: gen.allocateItemId)
+        .copyWith(
+          sections: [
+            for (final section in base.sections)
+              section.isMain
+                  ? section.copyWith(enabled: true)
+                  : section.copyWith(
+                      positive: '',
+                      negative: '',
+                      positiveRaw: '',
+                      negativeRaw: '',
+                      foldLinks: const [],
+                    ),
+          ],
+        );
+    ref
+        .read(canvasWorkspaceProvider.notifier)
+        .updatePrompts(targetId, (_) => CanvasPrompts.of(proposed));
+    if (targetId == ref.read(canvasWorkspaceProvider).activeId &&
+        proposed.characters.isNotEmpty) {
+      gen.openPanel(Panel.characters);
+    }
     final msgs = [...state.msgs];
     msgs[i] = msg.copyWith(
       // 撤销过再导入:非空的 change 直接覆盖掉那条 undone 的记录。
       change: AssistantChange(
         before: before,
-        after: _snapshot(),
-        canvasId: ref.read(canvasWorkspaceProvider).activeId,
+        after: _snapshotOf(targetId)!,
+        canvasId: targetId,
       ),
     );
     _set(state.copyWith(msgs: msgs, changedUnseen: true));
     return true;
   }
 
-  /// 导入的那张画布与那一轮写回时是否还一致。false = 用户之后自己又改过。
-  /// 那张画布已经删了就无从比较,按一致算(撤销只是把这条记成已撤销)。
+  /// 当前画面与那一轮写回时是否还一致。false = 用户之后自己又改过。
   bool inSyncWith(AssistantChange c) =>
       _snapshotOf(c.canvasId)?.sameAs(c.after) ?? true;
 
@@ -1115,11 +1145,10 @@ class AssistantNotifier extends Notifier<AssistantState> {
     if (c == null || c.undone) return true;
     if (!force && !inSyncWith(c)) return false;
 
-    // 回滚到导入的那张画布上,不碰眼下这张;画布删了就只记成已撤销。
-    final target = c.canvasId ?? ref.read(canvasWorkspaceProvider).activeId;
+    final targetId = c.canvasId ?? ref.read(canvasWorkspaceProvider).activeId;
     ref
         .read(canvasWorkspaceProvider.notifier)
-        .updatePrompts(target, c.before.restoreTo);
+        .updatePrompts(targetId, c.before.restoreTo);
 
     final msgs = [...state.msgs];
     msgs[i] = msgs[i].copyWith(change: c.copyWith(undone: true));

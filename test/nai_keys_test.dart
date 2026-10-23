@@ -224,9 +224,10 @@ void main() {
       await s.add('c');
       await s.makePrimary(c.read(naiKeysStoreProvider).value![2].id);
 
-      final order = naiKeysForGenerate(
+      final order = naiKeysForJob(
         c.read(naiKeysStoreProvider).value!,
-        paid: false,
+        (_) => true,
+        paidJob: false,
       );
       expect([for (final k in order) k.token], ['c', 'a', 'b']);
     });
@@ -301,10 +302,10 @@ void main() {
     });
   });
 
-  // 主账号(首位)是「一定会被用到」的那个:出图必参与、点数必可花。
+  // 主账号(首位)是「一定会被用到」的那个:什么单都接。
   // 这条不变式收在存储层,换主账号/删主账号/首次添加都由它兜住。
   group('主账号强制全开', () {
-    test('主账号那把的两个开关被拨回真', () async {
+    test('主账号那把的两个参与条件被拨回真', () async {
       final c = _container();
       final s = await _store(c);
       await s.add('a');
@@ -312,52 +313,125 @@ void main() {
       final second = c.read(naiKeysStoreProvider).value![1];
 
       // 副账号可以关
-      await s.setFlags(second.id, forGenerate: false, usePoints: false);
-      expect(c.read(naiKeysStoreProvider).value![1].forGenerate, isFalse);
+      await s.setFlags(second.id, joinFree: false, joinPaid: false);
+      expect(c.read(naiKeysStoreProvider).value![1].joins, isFalse);
 
       // 提成主账号 → 立刻全开(位置不动,还在第二个)
       await s.makePrimary(second.id);
       final now = c.read(naiKeysStoreProvider).value![1];
       expect(now.id, second.id);
       expect(now.primary, isTrue);
-      expect(now.forGenerate, isTrue);
-      expect(now.usePoints, isTrue);
+      expect(now.joinFree, isTrue);
+      expect(now.joinPaid, isTrue);
     });
 
-    test('关不掉主账号自己的开关', () async {
+    test('关不掉主账号自己的参与条件', () async {
       final c = _container();
       final s = await _store(c);
       final a = (await s.add('a'))!;
 
-      await s.setFlags(a.id, forGenerate: false, usePoints: false);
+      await s.setFlags(a.id, joinFree: false, joinPaid: false);
       final now = c.read(naiKeysStoreProvider).value!.single;
-      expect(now.forGenerate, isTrue);
-      expect(now.usePoints, isTrue);
+      expect(now.joinFree, isTrue);
+      expect(now.joinPaid, isTrue);
     });
 
-    // 删掉主账号 → 下一把顶上来,它的开关也得跟着全开。
+    // 删掉主账号 → 下一把顶上来,它的参与条件也得跟着全开。
     test('删掉主账号:接班的那把自动全开', () async {
       final c = _container();
       final s = await _store(c);
       final a = (await s.add('a'))!;
       final b = (await s.add('b'))!;
-      await s.setFlags(b.id, forGenerate: false);
+      await s.setFlags(b.id, joinFree: false, joinPaid: false);
 
       await s.remove(a.id);
       final now = c.read(naiKeysStoreProvider).value!.single;
       expect(now.id, b.id);
-      expect(now.forGenerate, isTrue);
+      expect((now.joinFree, now.joinPaid), (true, true));
     });
+  });
 
-    // 上一版的总开关 `off` 并进了 forGenerate:那时「停用」就是「完全不用」。
-    test('老数据里的 off 读成不参与出图', () async {
+  // 上一版是「并发生成」总开关 + 其下的「允许花点数」,表达不了「只参与点数
+  // 生成」;现在是两个互不牵连的条件。
+  group('参与条件的存取', () {
+    test('老数据:off / noGen 读成不参与,noPts 读成只参与免费生成', () async {
       FlutterSecureStorage.setMockInitialValues({
         'nai_access_keys':
-            '[{"id":"k0","token":"a"},{"id":"k1","token":"b","off":true}]',
+            '[{"id":"k0","token":"a"},'
+            '{"id":"k1","token":"b","off":true},'
+            '{"id":"k2","token":"c","noGen":true},'
+            '{"id":"k3","token":"d","noPts":true}]',
       });
       final keys = await _container().read(naiKeysStoreProvider.future);
-      expect(keys.first.forGenerate, isTrue);
-      expect(keys[1].forGenerate, isFalse);
+      expect(
+        [for (final k in keys) (k.joinFree, k.joinPaid)],
+        [(true, true), (false, false), (false, false), (true, false)],
+      );
+    });
+
+    test('只参与点数生成:落盘再读回来还是它', () async {
+      final c = _container();
+      final s = await _store(c);
+      await s.add('a');
+      final b = (await s.add('b'))!;
+      await s.setFlags(b.id, joinFree: false);
+
+      final again = await _container().read(naiKeysStoreProvider.future);
+      expect((again[1].joinFree, again[1].joinPaid), (false, true));
+    });
+  });
+
+  // 免不免费是每个号自己的事:同一张免费尺寸图,在额度还有的 Opus 号上是 0 点,
+  // 在额度见底或不是 Opus 的号上照扣,而且 NAI 不报错。「算不算要花点数的单」
+  // 则按主账号算,也就是生成按钮上的口径。
+  group('按号挑', () {
+    const p = NaiKey(id: 'p', token: 'p', primary: true);
+    const a = NaiKey(id: 'a', token: 'a', joinPaid: false); // 只参与免费生成
+    const w = NaiKey(id: 'w', token: 'w', joinFree: false); // 只参与点数生成
+    const b = NaiKey(id: 'b', token: 'b'); // 都勾
+    const off = NaiKey(id: 'x', token: 'x', joinFree: false, joinPaid: false);
+
+    List<String> pick(Map<String, bool?> free) => [
+      for (final k in naiKeysForJob(
+        [a, p, w, b, off],
+        (k) => free[k.id],
+        paidJob: free['p'] != true, // 同闸门:看这一单在主账号上免不免费
+      ))
+        k.id,
+    ];
+
+    test('参与免费生成:确定在它身上免费才接,查不到的不接', () {
+      expect(pick({'p': true, 'a': true, 'w': true, 'b': true}), [
+        'p',
+        'a',
+        'b',
+      ]);
+      expect(pick({'p': true, 'a': null, 'b': true}), ['p', 'b']);
+    });
+
+    // 主账号额度见底、副账号还能白出:先派给副账号,别去花主账号的点。
+    test('要花点数的单:只参与点数生成的也接,能免费出的号排前面', () {
+      expect(pick({'p': false, 'a': false, 'w': false, 'b': false}), [
+        'p',
+        'w',
+        'b',
+      ]);
+      expect(pick({'p': false, 'a': true, 'w': false, 'b': false}), [
+        'a',
+        'p',
+        'w',
+        'b',
+      ]);
+    });
+
+    // 按钮上写着免费的单,落到副账号上要扣它的点:不接,宁可排队。
+    test('在主账号上免费的单:不花副账号的点', () {
+      expect(pick({'p': true, 'a': false, 'w': false, 'b': false}), ['p']);
+    });
+
+    test('两个都没勾的一律不用', () {
+      expect(pick({'x': true, 'p': true}), isNot(contains('x')));
+      expect(pick({'x': false, 'p': false}), isNot(contains('x')));
     });
   });
 

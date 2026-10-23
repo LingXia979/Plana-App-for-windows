@@ -171,6 +171,14 @@ class NaiException implements Exception {
   String toString() => 'NaiException($status): $message';
 }
 
+/// 服务端明确不认这把令牌(401):账号删了、令牌重置了、JWT 过期了,或者压根
+/// 贴错了。官方对这几种回的是同一句(image 子域都回 `Unauthorized`,api 子域都回
+/// `User not found.`),分不出是哪种 —— 所以界面只说「令牌失效」,不替它猜原因。
+///
+/// 要跟「查询失败」分开摆:那边是网络/服务器的事,点按重试有意义;这边重查多少
+/// 遍都一样,只能换令牌。
+bool naiTokenRejected(Object? e) => e is NaiException && e.status == 401;
+
 /// V5 扩散超分用的模型:官方前端写死这个。
 /// 实测只有 nai-diffusion-5-full / -curated 支持 standalone upscaling。
 const kNaiV5UpscaleModel = 'nai-diffusion-5-curated';

@@ -15,9 +15,10 @@ import 'widgets/token_add_sheet.dart';
 
 /// 令牌管理(账号页二级)。一把一块:单选钮 + 名字 + 账户读数 + 两个勾选项。
 ///
-/// **一个主账号 + 若干副账号**:主账号强制参与出图并花点数(那些「一次只能对
-/// 一个账号」的操作也认它),副账号各自决定要不要参与并发生成、要不要花点数。
-/// 换主账号 = 点别人那整块。复制、改名、删除各一颗小图标,不套菜单。
+/// **一个主账号 + 若干副账号**:主账号什么单都接(那些「一次只能对一个账号」
+/// 的操作也认它),副账号各自勾选参与免费生成、参与点数生成,两个互不牵连,
+/// 都不勾就是不参与。换主账号 = 点别人那整块。复制、改名、删除各一颗小图标,
+/// 不套菜单。
 ///
 /// **长按整块可拖动排序**。顺序不是摆着看的:出图按它取 Key(主账号除外,
 /// 它恒排头),账号页那张卡也只摆得下前几块 —— 常用的拖到前面去。
@@ -37,14 +38,14 @@ class _TokenManagePageState extends ConsumerState<TokenManagePage> {
     if (await showTokenAddSheet(context) && mounted) Haptics.selection();
   }
 
-  /// 拨副账号的某个选项(主账号没有开关,拨不到这里)。
+  /// 拨副账号的某个参与条件(主账号没有勾选项,拨不到这里)。
   Future<void> _toggle(NaiKey k, String flag, bool on) async {
     await ref
         .read(naiKeysStoreProvider.notifier)
         .setFlags(
           k.id,
-          forGenerate: flag == 'gen' ? on : null,
-          usePoints: flag == 'pts' ? on : null,
+          joinFree: flag == 'free' ? on : null,
+          joinPaid: flag == 'paid' ? on : null,
         );
     if (mounted) Haptics.selection();
   }
@@ -252,11 +253,12 @@ class _Empty extends StatelessWidget {
 /// 一把令牌一块:
 ///   ◉ 名字 [主账号] ………… ⧉ ✎ 🗑
 ///   尾号 · 档位 · Anlas · 额度
-///   ☑ 并发生成   ☑ 允许花点数
+///   ☑ 参与免费生成   ☑ 参与点数生成
 ///
 /// 整块可点 = 设为主账号,长按 = 拾起来拖动排序。主账号那块**没有开关**,只有
 /// 一句「生成与点数都用它」—— 它是一定会被用到的那个,给它「不参与生成」的开关
-/// 就自相矛盾了。副账号才有两个勾选项:要不要参与并发生成、要不要花自己的点数。
+/// 就自相矛盾了。副账号才有两个勾选项,各管一件、互不牵连:这一单在它身上免费
+/// 时接不接、要花点数时让不让花它的点。只勾后一个 = 平时不动它,要花点数才叫上。
 class _KeyTile extends ConsumerWidget {
   const _KeyTile({
     required this.k,
@@ -275,7 +277,7 @@ class _KeyTile extends ConsumerWidget {
   /// ② 出图取 Key 时它排头,点数**先被花**;③ 必定参与出图、必定可花点数。
   final bool primary;
 
-  /// (哪个选项, 新值)。选项名:gen / pts。
+  /// (哪个选项, 新值)。选项名:free / paid。
   final void Function(String flag, bool on) onToggle;
 
   /// 点整块 = 把这把设为主账号(已经是主账号时不接手势)。
@@ -344,12 +346,12 @@ class _KeyTile extends ConsumerWidget {
                               ),
                             ),
                             const SizedBox(width: 6),
-                            // 完全不参与的(副账号取消了生成)压暗:它还在列表里,
-                            // 但一眼要能看出「这把现在不干活」。
+                            // 完全不参与的(副账号两个条件都没勾)压暗:它还在列表
+                            // 里,但一眼要能看出「这把现在不干活」。
                             Flexible(
                               child: AnimatedOpacity(
                                 duration: Motion.fast,
-                                opacity: primary || k.forGenerate ? 1 : .45,
+                                opacity: primary || k.joins ? 1 : .45,
                                 child: Text(
                                   naiKeyTitle(k),
                                   maxLines: 1,
@@ -456,7 +458,7 @@ class _KeyTile extends ConsumerWidget {
                   padding: const EdgeInsets.fromLTRB(32, 0, 4, 6),
                   child: AnimatedOpacity(
                     duration: Motion.fast,
-                    opacity: primary || k.forGenerate ? 1 : .45,
+                    opacity: primary || k.joins ? 1 : .45,
                     child: NaiKeyStatusLine(
                       k: k,
                       // 起过名的才补尾号:没起名时标题本身就是尾号,写两遍是复述。
@@ -502,19 +504,16 @@ class _KeyTile extends ConsumerWidget {
                               children: [
                                 Expanded(
                                   child: _CheckOption(
-                                    label: '并发生成',
-                                    value: k.forGenerate,
-                                    enabled: true,
-                                    onChanged: (v) => onToggle('gen', v),
+                                    label: '参与免费生成',
+                                    value: k.joinFree,
+                                    onChanged: (v) => onToggle('free', v),
                                   ),
                                 ),
                                 Expanded(
                                   child: _CheckOption(
-                                    label: '允许花点数',
-                                    value: k.forGenerate && k.usePoints,
-                                    // 都不生成了,花不花点数无从谈起
-                                    enabled: k.forGenerate,
-                                    onChanged: (v) => onToggle('pts', v),
+                                    label: '参与点数生成',
+                                    value: k.joinPaid,
+                                    onChanged: (v) => onToggle('paid', v),
                                   ),
                                 ),
                               ],
@@ -539,15 +538,11 @@ class _CheckOption extends StatelessWidget {
   const _CheckOption({
     required this.label,
     required this.value,
-    required this.enabled,
     required this.onChanged,
   });
 
   final String label;
   final bool value;
-
-  /// 可不可点;不可点时整项灰掉(如「不出图就无所谓花不花点数」)。
-  final bool enabled;
   final ValueChanged<bool> onChanged;
 
   @override
@@ -558,14 +553,14 @@ class _CheckOption extends StatelessWidget {
       borderRadius: BorderRadius.circular(10),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
-        onTap: enabled ? () => onChanged(!value) : null,
+        onTap: () => onChanged(!value),
         child: Padding(
           padding: const EdgeInsets.only(right: 6),
           child: Row(
             children: [
               Checkbox(
                 value: value,
-                onChanged: enabled ? (v) => onChanged(v ?? false) : null,
+                onChanged: (v) => onChanged(v ?? false),
                 visualDensity: VisualDensity.compact,
                 materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
               ),
@@ -577,9 +572,7 @@ class _CheckOption extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: context.texts.labelLarge!.copyWith(
                     fontWeight: FontWeight.w600,
-                    color: enabled
-                        ? scheme.onSurfaceVariant
-                        : scheme.outline.withValues(alpha: .6),
+                    color: scheme.onSurfaceVariant,
                   ),
                 ),
               ),
@@ -644,13 +637,17 @@ class NaiKeyStatusLine extends ConsumerWidget {
           Text('查询账户状态…', style: small.copyWith(color: scheme.outline)),
       // 第三方接口查不到不标红:`/user/subscription` 是 NAI 官方的东西,中转站
       // 大多没实现,这条查不到并不说明 key 有问题 —— 真有问题出图时会报。
-      // 官方那几把查不到才是真出了事,照旧标红。
-      error: (_, _) => InkWell(
+      // 官方那几把查不到才是真出了事,照旧标红;其中 401 是 NAI 不认这把了,
+      // 不劝重试(见 [naiTokenRejected])。
+      error: (e, _) => InkWell(
         onTap: () => ref.invalidate(naiKeyStatusProvider(naiTargetOf(k))),
         borderRadius: BorderRadius.circular(6),
         child: k.isThirdParty
             ? Text('第三方接口未提供账户状态', style: small.copyWith(color: scheme.outline))
-            : Text('状态查询失败,点按重试', style: small.copyWith(color: scheme.error)),
+            : Text(
+                naiTokenRejected(e) ? '令牌已失效' : '状态查询失败,点按重试',
+                style: small.copyWith(color: scheme.error),
+              ),
       ),
       data: (s) {
         final usage = s.usage;

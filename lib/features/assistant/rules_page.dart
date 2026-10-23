@@ -1,11 +1,12 @@
-/// 规则预设页:每个模型在用哪一份、导入、导出、删除。
+/// 规则预设页:每个模型在用哪一份、导入、导出、编辑、删除。
 ///
 /// 一张卡一份预设。默认规则按模型分两张(v4.5 版、v5 版),名称、作者、版本读服务端
 /// 预设顶层的 meta。**点卡片就用这份**,正在用的卡右上角挂一个「使用中」角标。
 /// 每个模型恰好有一张卡在用,默认规则兜底。
 ///
-/// 不做编辑器:手机上改几千字的规则很难受,而规则文件的写法和服务端预设一致,
-/// 在电脑上改完导进来更顺手。
+/// 编辑是全文编辑:摊开的就是导出的那份文本,不做逐段的表单 —— 规则文件的写法与
+/// 服务端预设一致,整份摊开最直接,电脑上改好的也能整段贴进来。默认规则的原件在
+/// 服务端,改完另存为一份新预设。
 library;
 
 import 'dart:convert';
@@ -82,6 +83,7 @@ class RulesPresetPage extends ConsumerWidget {
         models: p.models,
         inUse: inUse,
         onUse: onUse,
+        onEdit: () => _editDefault(context, ref, f),
         onExport: () => _exportDefault(context, ref, f),
       );
     }
@@ -95,6 +97,7 @@ class RulesPresetPage extends ConsumerWidget {
       models: p.models,
       inUse: inUse,
       onUse: onUse,
+      onEdit: () => _edit(context, ref, p),
       onExport: () => _save(
         context,
         name: p.name,
@@ -149,6 +152,17 @@ class RulesPresetPage extends ConsumerWidget {
     }
   }
 
+  Future<DefaultRules> _fetchDefault(
+    WidgetRef ref,
+    RulesFamily f, {
+    bool fresh = false,
+  }) async => fetchDefaultRules(
+    f,
+    backendBase: ref.read(backendBaseProvider).value ?? '',
+    sessionId: (await ref.read(botSessionProvider.future))?.sessionId ?? '',
+    fresh: fresh,
+  );
+
   /// 默认规则导出的是服务端**最新**那份,名字带上版本(「Nyako v5」)——
   /// 两个版本同名,导进来之后分不出哪张是哪张。
   Future<void> _exportDefault(
@@ -157,12 +171,7 @@ class RulesPresetPage extends ConsumerWidget {
     RulesFamily f,
   ) async {
     try {
-      final d = await fetchDefaultRules(
-        f,
-        backendBase: ref.read(backendBaseProvider).value ?? '',
-        sessionId: (await ref.read(botSessionProvider.future))?.sessionId ?? '',
-        fresh: true,
-      );
+      final d = await _fetchDefault(ref, f, fresh: true);
       if (!context.mounted) return;
       await _save(
         context,
@@ -176,6 +185,94 @@ class RulesPresetPage extends ConsumerWidget {
       if (context.mounted) {
         hintSnack(context, '导出失败:$e', icon: Icons.error_outline);
       }
+    }
+  }
+
+  Future<RulesFile?> _openEditor(
+    BuildContext context, {
+    required String title,
+    required String text,
+  }) => Navigator.push<RulesFile>(
+    context,
+    MaterialPageRoute(
+      builder: (_) => _RulesEditorPage(title: title, text: text),
+    ),
+  );
+
+  /// 全文编辑导入的预设,存回原处。
+  Future<void> _edit(BuildContext context, WidgetRef ref, RulesPreset p) async {
+    final file = await _openEditor(
+      context,
+      title: p.name,
+      text: encodeRulesFile(
+        name: p.name,
+        author: p.author,
+        models: p.models,
+        rules: p.rules,
+      ),
+    );
+    if (file == null) return;
+    await ref
+        .read(rulesLibraryProvider.notifier)
+        .replace(
+          p.id,
+          name: file.name,
+          author: file.author,
+          models: file.models,
+          rules: file.rules,
+        );
+    if (context.mounted) {
+      hintSnack(context, '已保存「${file.name}」', icon: Icons.check_circle_outline);
+    }
+  }
+
+  /// 默认规则的原件跟着服务端走,改不了:改完另存为一份新预设。这个模型原先用的是
+  /// 默认规则的,改用新存的这份 —— 点「编辑」是想改自己在用的规则,存完还挂在原件上
+  /// 等于白改。
+  Future<void> _editDefault(
+    BuildContext context,
+    WidgetRef ref,
+    RulesFamily f,
+  ) async {
+    final DefaultRules d;
+    try {
+      // 卡片进页面时刚取过,走缓存就行,不让人干等一趟网络
+      d = await _fetchDefault(ref, f);
+    } catch (e) {
+      if (context.mounted) {
+        hintSnack(context, '读取默认规则失败:$e', icon: Icons.error_outline);
+      }
+      return;
+    }
+    if (!context.mounted) return;
+    final name = '${d.name} ${d.version}'.trim();
+    final file = await _openEditor(
+      context,
+      title: name,
+      text: encodeRulesFile(
+        name: name,
+        author: d.author,
+        models: {f},
+        rules: d.rules,
+      ),
+    );
+    if (file == null) return;
+    final wasDefault =
+        ref.read(rulesLibraryProvider).value?.activeFor(f).isDefault ?? false;
+    final n = ref.read(rulesLibraryProvider.notifier);
+    final id = await n.add(
+      name: file.name,
+      author: file.author,
+      models: file.models,
+      rules: file.rules,
+    );
+    if (wasDefault && file.models.contains(f)) await n.use(f, id);
+    if (context.mounted) {
+      hintSnack(
+        context,
+        '已另存为「${file.name}」',
+        icon: Icons.check_circle_outline,
+      );
     }
   }
 
@@ -236,6 +333,7 @@ class _PresetCard extends StatelessWidget {
     required this.models,
     required this.inUse,
     required this.onUse,
+    required this.onEdit,
     required this.onExport,
     this.onDelete,
   });
@@ -250,6 +348,7 @@ class _PresetCard extends StatelessWidget {
   /// 正在用这份的模型。
   final Set<RulesFamily> inUse;
   final ValueChanged<RulesFamily> onUse;
+  final VoidCallback onEdit;
   final VoidCallback onExport;
 
   /// 默认规则删不了,传 null。
@@ -279,7 +378,8 @@ class _PresetCard extends StatelessWidget {
       ),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
-        // 点卡片 = 支持的模型都改用这份。两个模型想分开用的,走右边菜单里的「用于」
+        // 点卡片 = 支持的模型都改用这份。两个模型想分开用的,点完再点另一个模型
+        // 要用的那张卡(比如它的默认规则),那个模型就换回去了
         onTap: notInUse.isEmpty
             ? null
             : () {
@@ -291,8 +391,8 @@ class _PresetCard extends StatelessWidget {
           children: [
             Padding(
               // 上下对称,标题那两行在卡片里垂直居中。角标是叠在上面的
-              // (Positioned),不占高度;躲它靠的是把右边菜单按钮收小,不是加边距
-              padding: const EdgeInsets.fromLTRB(16, 10, 2, 10),
+              // (Positioned),不占高度;上边距留够了,它压不到标题和右边的按钮
+              padding: const EdgeInsets.fromLTRB(16, 16, 6, 16),
               child: Row(
                 children: [
                   Expanded(
@@ -316,7 +416,7 @@ class _PresetCard extends StatelessWidget {
                               if (models.contains(f)) _Tag(rulesFamilyLabel(f)),
                           ],
                         ),
-                        const SizedBox(height: 2),
+                        const SizedBox(height: 3),
                         Text(
                           subtitle,
                           style: context.texts.labelSmall!.copyWith(
@@ -326,42 +426,39 @@ class _PresetCard extends StatelessWidget {
                       ],
                     ),
                   ),
-                  PopupMenuButton<String>(
-                    tooltip: '更多',
-                    // 自带的是 48 见方的图标按钮,在这么矮的卡里会顶到右上角的
-                    // 角标;换成 36 见方,整张卡本身也能点,够用
-                    child: Padding(
-                      padding: const EdgeInsets.all(8),
-                      child: Icon(
-                        Icons.more_vert,
-                        size: 20,
-                        color: scheme.onSurfaceVariant,
+                  // 与提示词预设页同一排按钮:编辑、导出直接摆出来,不收进菜单
+                  const SizedBox(width: 4),
+                  IconButton(
+                    tooltip: '编辑',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: onEdit,
+                    icon: Icon(
+                      Icons.edit_outlined,
+                      size: 19,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: '导出',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: onExport,
+                    icon: Icon(
+                      Icons.ios_share,
+                      size: 19,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                  if (onDelete != null)
+                    IconButton(
+                      tooltip: '删除',
+                      visualDensity: VisualDensity.compact,
+                      onPressed: onDelete,
+                      icon: Icon(
+                        Icons.delete_outline,
+                        size: 19,
+                        color: scheme.error.withValues(alpha: .85),
                       ),
                     ),
-                    onSelected: (v) => switch (v) {
-                      'delete' => onDelete?.call(),
-                      'export' => onExport(),
-                      _ => onUse(RulesFamily.values.byName(v)),
-                    },
-                    itemBuilder: (_) => [
-                      // 单模型的点卡片就够了;两个模型的才需要分开指定
-                      if (models.length > 1)
-                        for (final f in notInUse)
-                          PopupMenuItem(
-                            value: f.name,
-                            child: Text('用于 ${rulesFamilyLabel(f)}'),
-                          ),
-                      const PopupMenuItem(value: 'export', child: Text('导出')),
-                      if (onDelete != null)
-                        PopupMenuItem(
-                          value: 'delete',
-                          child: Text(
-                            '删除',
-                            style: TextStyle(color: scheme.error),
-                          ),
-                        ),
-                    ],
-                  ),
                 ],
               ),
             ),
@@ -524,6 +621,104 @@ class _ImportSheetState extends State<_ImportSheet> {
             child: const Text('导入'),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// 全文编辑:摊开的是导出的那份文本。保存时按导入同一套规矩读回来,读不通就
+/// 原地报错、不关页面;没保存就返回要确认一下,几万字的规则丢了找不回来。
+class _RulesEditorPage extends StatefulWidget {
+  const _RulesEditorPage({required this.title, required this.text});
+
+  final String title;
+  final String text;
+
+  @override
+  State<_RulesEditorPage> createState() => _RulesEditorPageState();
+}
+
+class _RulesEditorPageState extends State<_RulesEditorPage> {
+  late final _ctl = TextEditingController(text: widget.text);
+  var _dirty = false;
+
+  @override
+  void dispose() {
+    _ctl.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    final RulesFile file;
+    try {
+      file = decodeRulesFile(_ctl.text);
+    } on FormatException catch (e) {
+      hintSnack(context, e.message, icon: Icons.error_outline);
+      return;
+    }
+    // 导入时这两样能在弹层里补,这里没有弹层,文本里就得写全
+    final missing = file.name.isEmpty
+        ? '缺少预设名称(name)'
+        : file.models.isEmpty
+        ? '缺少支持的模型(models 写 nai45、nai5)'
+        : null;
+    if (missing != null) {
+      hintSnack(context, missing, icon: Icons.error_outline);
+      return;
+    }
+    Navigator.pop(context, file);
+  }
+
+  Future<void> _confirmLeave() async {
+    final ok = await confirmDialog(
+      context,
+      title: '放弃修改?',
+      message: '还没保存的改动会丢掉。',
+      confirmLabel: '放弃',
+    );
+    if (ok && mounted) Navigator.pop(context);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return PopScope(
+      canPop: !_dirty,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _confirmLeave();
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(widget.title),
+          actions: [
+            IconButton(
+              tooltip: '保存',
+              onPressed: _save,
+              icon: const Icon(Icons.check),
+            ),
+          ],
+        ),
+        // 文本直接铺在页面上,不再套一层底色框:整页就是编辑区
+        body: SafeArea(
+          top: false,
+          child: TextField(
+            controller: _ctl,
+            expands: true,
+            maxLines: null,
+            keyboardType: TextInputType.multiline,
+            textAlignVertical: TextAlignVertical.top,
+            // YAML 靠缩进和原样的键名,输入法的自动更正只会帮倒忙
+            autocorrect: false,
+            enableSuggestions: false,
+            style: mono(context, size: 13, weight: FontWeight.w400),
+            onChanged: (_) {
+              if (!_dirty) setState(() => _dirty = true);
+            },
+            decoration: const InputDecoration(
+              border: InputBorder.none,
+              contentPadding: EdgeInsets.fromLTRB(16, 4, 16, 16),
+            ),
+          ),
+        ),
       ),
     );
   }

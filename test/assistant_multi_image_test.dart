@@ -22,11 +22,23 @@ import 'package:plana_app/features/assistant/preset_rules.dart';
 import 'package:plana_app/features/assistant/session_store.dart';
 import 'package:plana_app/features/generate/canvas_state.dart';
 import 'package:plana_app/features/generate/generate_state.dart';
+import 'package:plana_app/features/editor/editor_state.dart';
+import 'package:plana_app/features/generate/models.dart';
 
 class _TestSession extends BotSessionNotifier {
   @override
   Future<BotSession?> build() async =>
       const BotSession(sessionId: 'local-test');
+}
+
+class _DelayedSession extends BotSessionNotifier {
+  final started = Completer<void>();
+  final ready = Completer<BotSession?>();
+  @override
+  Future<BotSession?> build() {
+    started.complete();
+    return ready.future;
+  }
 }
 
 class _TestSettings extends AssistantSettingsNotifier {
@@ -88,12 +100,18 @@ void main() {
     await temp.delete(recursive: true);
   });
 
-  Future<ProviderContainer> boot(String base, {bool autoImport = false}) async {
+  Future<ProviderContainer> boot(
+    String base, {
+    bool autoImport = false,
+    _DelayedSession? session,
+    AgentModelList models = const AgentModelList(),
+  }) async {
     final c = ProviderContainer(
       overrides: [
         appStoresProvider.overrideWithValue(stores),
-        botSessionProvider.overrideWith(_TestSession.new),
+        botSessionProvider.overrideWith(() => session ?? _TestSession()),
         assistantEndpointProvider.overrideWithValue(null),
+        agentModelsProvider.overrideWith((_) async => models),
         backendBaseProvider.overrideWith(() => _TestBackend(base)),
         assistantSettingsProvider.overrideWith(
           autoImport ? _AutoImportSettings.new : _TestSettings.new,
@@ -614,7 +632,11 @@ void main() {
       await running;
       final reply = c.read(assistantProvider).msgs.last;
       expect(reply.draw?.positive, 'assistant proposal');
-      expect(reply.change, isNull);
+      expect(reply.change?.canvasId, a);
+      expect(
+        c.read(canvasWorkspaceProvider).find(a)!.prompts.prompt,
+        'assistant proposal',
+      );
       expect(c.read(generateProvider).prompt, 'draft B');
       canvases.select(a);
       expect(assistant.applyProposal(reply.id), isTrue);
@@ -626,4 +648,137 @@ void main() {
       expect(c.read(generateProvider).prompt, 'draft A');
     },
   );
+  test(
+    'advertised free backend model sends its exact key without a Bot authorization header',
+    () async {
+      final body = Completer<Map<String, dynamic>>();
+      final authorization = Completer<String?>();
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => server.close(force: true));
+      server.listen((request) async {
+        authorization.complete(request.headers.value('authorization'));
+        body.complete(
+          jsonDecode(await utf8.decoder.bind(request).join())
+              as Map<String, dynamic>,
+        );
+        request.response.headers.contentType = ContentType(
+          'text',
+          'event-stream',
+          charset: 'utf-8',
+        );
+        request.response.write(
+          'event: final\ndata: {"positive":"free result"}\n\n',
+        );
+        await request.response.close();
+      });
+      final session = _DelayedSession()..ready.complete(null);
+      final c = await boot(
+        'http://127.0.0.1:${server.port}',
+        session: session,
+        models: const AgentModelList(
+          active: 'paid-default',
+          choices: [
+            AgentModelChoice(key: 'paid-default', name: 'Paid'),
+            AgentModelChoice(key: 'free-test', name: 'Free', free: true),
+          ],
+        ),
+      );
+      await turn(
+        c,
+        () => c.read(assistantProvider.notifier).send('synthetic free request'),
+      );
+      expect(await authorization.future, isNull);
+      expect((await body.future)['model'], 'free-test');
+      expect(c.read(assistantProvider).msgs.last.draw?.positive, 'free result');
+    },
+  );
+
+  for (final deleted in [false, true]) {
+    test(
+      'authorization delay captures and flushes the source canvas; deleted=$deleted',
+      () async {
+        final body = Completer<Map<String, dynamic>>();
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        addTearDown(() => server.close(force: true));
+        server.listen((request) async {
+          body.complete(
+            jsonDecode(await utf8.decoder.bind(request).join())
+                as Map<String, dynamic>,
+          );
+          request.response.headers.contentType = ContentType(
+            'text',
+            'event-stream',
+            charset: 'utf-8',
+          );
+          request.response.write(
+            'event: final\ndata: {"positive":"source result"}\n\n',
+          );
+          await request.response.close();
+        });
+        final auth = _DelayedSession();
+        final c = await boot(
+          'http://127.0.0.1:${server.port}',
+          autoImport: true,
+          session: auth,
+        );
+        final canvases = c.read(canvasWorkspaceProvider.notifier);
+        final a = canvases.create();
+        final gen = c.read(generateProvider.notifier);
+        gen.applyParams(
+          c
+              .read(generateProvider)
+              .params
+              .copyWith(
+                model: 'NAI 5.0 Full',
+                naiEffort: NaiEffort.medium,
+                steps: 40,
+              ),
+        );
+        final editor = c.read(editorProvider.notifier);
+        editor.load(
+          positive: 'source draft',
+          negative: '',
+          startPositive: true,
+        );
+        editor.editActive('source pending edit', structural: true);
+        final assistant = c.read(assistantProvider.notifier);
+        final running = turn(
+          c,
+          () => assistant.send('synthetic request', withCanvas: true),
+        );
+        await auth.started.future;
+        final b = canvases.create();
+        gen.setPrompts(positive: 'other canvas');
+        gen.applyParams(
+          c
+              .read(generateProvider)
+              .params
+              .copyWith(model: 'NAI 4.5 Full', steps: 20),
+        );
+        if (deleted) canvases.remove(a);
+        auth.ready.complete(const BotSession(sessionId: 'synthetic-session'));
+        await running;
+        expect(
+          (await body.future)['current_positive'],
+          contains('source pending edit'),
+        );
+        expect(c.read(canvasWorkspaceProvider).activeId, b);
+        expect(c.read(generateProvider).prompt, 'other canvas');
+        final reply = c.read(assistantProvider).msgs.last;
+        if (deleted) {
+          expect(reply.change, isNull);
+          expect(assistant.previewSendState(reply.id, canvasId: a), isNull);
+        } else {
+          expect(reply.change?.canvasId, a);
+          final preview = assistant.previewSendState(reply.id, canvasId: a)!;
+          expect(preview.params.isNaiMedium, isTrue);
+          expect(preview.params.steps, 40);
+          expect(preview.params.activeSteps, 14);
+          expect(assistant.undo(reply.id), isTrue);
+          canvases.select(a);
+          expect(c.read(generateProvider).prompt, 'source pending edit');
+        }
+      },
+    );
+  }
 }

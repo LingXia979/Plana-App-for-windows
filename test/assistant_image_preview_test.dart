@@ -34,7 +34,8 @@ class _Assistant extends AssistantNotifier {
   AssistantState build() => const AssistantState(msgs: [_message]);
   void clear() => state = const AssistantState();
   @override
-  Future<void> generateFrom(String msgId) async => generated.add(msgId);
+  Future<void> generateFrom(String msgId, {String? canvasId}) async =>
+      generated.add(msgId);
 }
 
 class _Canvas extends GenerateNotifier {

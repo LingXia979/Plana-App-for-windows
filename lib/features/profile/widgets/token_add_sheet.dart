@@ -390,8 +390,7 @@ class _TokenAddSheetState extends ConsumerState<_TokenAddSheet> {
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
       Text(
-        '兼容 NovelAI 接口的中转站或自建反代。地址跟这把 key 绑在一起,'
-        '官方那几把照旧走官方。',
+        '兼容 NovelAI 接口的中转站或自建反代',
         style: context.texts.labelSmall!.copyWith(color: scheme.outline),
       ),
       const SizedBox(height: 12),

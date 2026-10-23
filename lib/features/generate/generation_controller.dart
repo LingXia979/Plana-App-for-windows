@@ -23,6 +23,7 @@ import '../../core/net/gen_abort.dart';
 import '../../core/auth/nai_keys.dart';
 import '../../core/net/nai_gate.dart';
 import '../../core/net/nai_client.dart';
+import '../../core/net/nai_key_status.dart';
 import '../../core/store/app_stores.dart';
 import '../../core/util/image_ops.dart';
 import '../../core/util/transparency.dart';
@@ -333,8 +334,8 @@ class GenerationNotifier extends Notifier<GenPool> {
 
   // ---- 并发闸门 ----
 
-  /// 同时在跑的上限。bot 固定 [kMaxRunningBot];直连 = 已存 Key 数,由
-  /// [NaiGate] 说了算(今天只有一把,于是直连仍是一次一张;多 Key 落地后自动放大)。
+  /// 同时在跑的上限。bot 固定 [kMaxRunningBot];直连 = 参与出图的把数,由
+  /// [NaiGate] 说了算。
   ///
   /// [isBot] 由调用方传而不是在这里现读:`generate()` 已经判过一次接入方式,
   /// 两处各读各的会在冷启动那一小段(authMode 还是 loading)得出不同答案 ——
@@ -345,10 +346,27 @@ class GenerationNotifier extends Notifier<GenPool> {
   /// 同时能跑几条 —— 循环/队列据此决定**同时投几条**。
   /// 投多了也不会失控(闸门会拦),但投的数量正好等于并发数时,派发者不用自己
   /// 维护「等谁跑完再补一条」的逻辑:每个 worker 天然就是一个槽位。
+  ///
+  /// 直连**循环**只数能接这张图的号:循环一批出的都是面板当前这一张,只在花
+  /// 点数时参与的副账号接不了免费单,按参与的总把数投的话,它在免费循环里白占
+  /// 一个 worker,挂一张一直「等待中」的卡。队列一单一个快照、贵贱不一,仍按
+  /// 总把数。
   Future<int> concurrency() async {
     final mode = await ref.read(authModeProvider.future);
+    if (mode != AuthMode.bot && _inLoop) {
+      final freeOn = _freeOn(_panelJob());
+      return ref
+          .read(naiGateProvider)
+          .limit(paid: freeOn == null, freeOn: freeOn);
+    }
     return _runLimit(mode == AuthMode.bot);
   }
+
+  /// 面板当前这一单:按模块配置剥离了隐藏模块的数据(与手动生成、入队同一口径)。
+  GenerateState _panelJob() => stripHiddenModules(
+    ref.read(generateProvider),
+    ref.read(genModulesProvider).value ?? const GenModuleSettings(),
+  );
 
   /// 取一个空槽;满了就排队等别人释放。返回槽位下标,等位期间被取消返回 -1。
   Future<int> _acquireSlot(int limit, GenAbort abort) async {
@@ -481,12 +499,7 @@ class GenerationNotifier extends Notifier<GenPool> {
     // 面板发起(using == null)按模块配置剥离隐藏模块的数据;
     // 快照复跑(图库重新生成等)忠实执行,不受当前模块配置影响。
     // 快照在这一刻定死:之后随便改编辑器都不影响已提交的这条。
-    final GenerateState s =
-        using ??
-        stripHiddenModules(
-          ref.read(generateProvider),
-          ref.read(genModulesProvider).value ?? const GenModuleSettings(),
-        );
+    final GenerateState s = using ?? _panelJob();
 
     final isBot = ref.read(authModeProvider).value == AuthMode.bot;
 
@@ -547,7 +560,8 @@ class GenerationNotifier extends Notifier<GenPool> {
     // 只有「这一批的头一条」才把页面拽去图库看预览。并行之后连点是常态,
     // 每点一次都强拉一次等于把人按在图库页上 —— 想连投几条再回创作页改参数
     // 都做不到。池子空了之后的下一条重新算作头一条,又会切一次。
-    // 循环/队列续张同样不强拉；移动端循环开始时切一次图库，桌面保留当前页。
+    // 循环/队列续张同样不强拉(移动端循环开始时已切图库,桌面留在当前页;
+    // 期间允许自由切页,真机反馈)。
     //
     // [stay] 是调用方说「这一单我自己显示,别切页」—— AI 助手开了「图片显示在
     // 对话里」就走这条:图照常入库,只是不把人从对话里拽走。
@@ -557,6 +571,11 @@ class GenerationNotifier extends Notifier<GenPool> {
           .select(ref.read(desktopModeProvider) ? kTabCreate : kTabGallery);
     }
 
+    // 直连挑号时逐把问这一单免不免费;null = 落在哪把上都要扣点(见 [_freeOn])。
+    final freeOn = isBot ? null : _freeOn(s);
+    // 免费尺寸的 V5 吃的是落到的那个号的额度,跑完它的读数就旧了(见 finally)。
+    final drainsQuota = freeOn != null && isNai5Model(s.params.model);
+
     try {
       // 等位:bot 5 条(池内计数);直连按 Key 数,且要和图库超分、标签预览
       // **抢同一个闸门** —— 它们打的是同一个 NAI 账号、同一个限流桶。
@@ -565,23 +584,25 @@ class GenerationNotifier extends Notifier<GenPool> {
       } else {
         final pass = await ref
             .read(naiGateProvider)
-            .acquire(paid: _isPaid(s), abort: run.abort);
+            .acquire(paid: freeOn == null, freeOn: freeOn, abort: run.abort);
         run.slot = pass.slot;
         run.token = pass.token;
         run.base = pass.base;
+        // 等位期间被取消,闸门给的也是 -1 + null —— 得先认出来。当成「没有令牌」
+        // 报错的话,队列会把它当成没扣点的失败,把用户刚取消的这一单再跑一遍。
+        if (run.abort.aborted) return _cancelled(job.id);
         // 一把可用的都没有 → 闸门给 -1 + null。不能当成「被取消」静静收掉,
         // 那样点了生成什么都不会发生。
         //
         // 「压根没存」和「存了但都不可用」得分开说:后者跑去设置页会看到令牌
-        // 明明在那儿,只是开关关着 / 这单要花点数而它们都不让花 —— 报「未设置」
-        // 会把人送错方向。
+        // 明明在那儿,只是参与条件没勾 —— 报「未设置」会把人送错方向。
         if (pass.token == null) {
           final saved =
               (ref.read(naiKeysStoreProvider).value ?? const <NaiKey>[])
                   .isNotEmpty;
           return _fail(
             job.id,
-            saved ? '没有可用于本次出图的令牌(检查每把的启用/生成/点数开关)' : 'no-token',
+            saved ? '没有能接这一单的令牌(检查各令牌的参与条件)' : 'no-token',
             GenOutcome.notCharged,
           );
         }
@@ -598,6 +619,14 @@ class GenerationNotifier extends Notifier<GenPool> {
       if (isBot) {
         _releaseSlot(run.slot);
       } else {
+        // **先报额度再还槽**:还槽会叫醒等位的单,它们挑号要看这一张之后的额度。
+        final token = run.token;
+        if (drainsQuota && token != null) {
+          ref.read(naiKeyStatusCacheProvider).spent((
+            token: token,
+            base: run.base,
+          ));
+        }
         ref.read(naiGateProvider).release(run.slot);
       }
       _remove(job.id); // 各分支正常都已摘掉,这里兜住异常路径不留幽灵卡
@@ -670,7 +699,8 @@ class GenerationNotifier extends Notifier<GenPool> {
     Future<void> finish(Uint8List bytes, int seed) async {
       // NAI 直连一单一张:batch 是 anima / krea 走 ComfyUI 才有的东西
       await _storeResult(s, [bytes], seed, jobId: jobId);
-      _recordKeyGen(s); // 直连不经过后端,统计在本机落账(bot 由服务端记)
+      // 直连不经过后端,统计在本机落账(bot 由服务端记)
+      _recordKeyGen(s, (token: token, base: run.base));
       unawaited(ref.read(anlasProvider.notifier).refresh()); // 点数已扣
       // 循环期间通知由循环控制器统一收尾(保持挂机进度连续、只弹一条汇总)
       if (!_inFlow) {
@@ -836,29 +866,83 @@ class GenerationNotifier extends Notifier<GenPool> {
   /// 直连走不走流式端点(见 [GenSettings.streamGen])。bot 线不看这个。
   bool get _streamGen => ref.read(genSettingsProvider).value?.streamGen ?? true;
 
-  /// 这一单要不要扣 Anlas。关了「使用点数」的 Key 只跑不花钱的活,得先问这个。
+  /// 这一单**实际**按多大的图计价。Max ✨ 放大重绘的输出尺寸是**服务端**定的,
+  /// params 里还留着原图尺寸 —— 按原尺寸估会系统性少算(边长 ×2 = 四倍像素),
+  /// 所以按官方那套算法先把实际尺寸算出来。数值倍率不用管:那几档是客户端
+  /// 自己把 params 的宽高改好再发的。
+  GenerateState _billed(GenerateState s) {
+    if (s.img2img?.upscaledEnhance != true) return s;
+    final m = enhanceMaxTargetSize(s.params.width, s.params.height);
+    return s.copyWith(
+      params: s.params.copyWith(width: m.w, height: m.h),
+    );
+  }
+
+  /// 这一单落在某个号上花几点(与费用胶囊同一公式;重绘按发送尺寸/强度折算)。
+  /// [s] 须先过 [_billed]。
+  int _costOn(
+    GenerateState s, {
+    required bool isOpus,
+    required bool v5Charged,
+  }) {
+    final job = s.inpaint;
+    return job != null
+        ? estimateInpaintCost(
+            s,
+            isOpus: isOpus,
+            sendW: s.params.width,
+            sendH: s.params.height,
+            strength: job.strength,
+            v5Charged: v5Charged,
+          )
+        : estimateCost(s, isOpus: isOpus, v5Charged: v5Charged);
+  }
+
+  /// 挑号时逐把问「这一单在它上面免不免费」—— 副账号接不接,看的就是这个和它
+  /// 勾的参与条件(见 [naiKeysForJob])。返回 null = 落在哪个号上都要扣点(大图、
+  /// 高步数、附加费),整单按付费挑,不必去查各号状态。
   ///
-  /// 免不免费按**主 Key** 的 Opus 状态算 —— 和生成按钮上显示的费用同一个口径。
-  /// 真跑起来用的可能是另一把,但两把 Opus 状态不同时按主 Key 判已经是最保守的
-  /// 那一侧(主 Key 非 Opus → 按付费算 → 只挑允许花点数的,不会误花白嫖号)。
-  bool _isPaid(GenerateState s) {
+  /// **按每个号自己的档位和 V5 额度算**,不能只看主账号:免费尺寸图在 Opus 且
+  /// 额度没见底的号上是 0 点,在额度见底或不是 Opus 的号上照扣 Anlas,NAI 还不
+  /// 报错。只看主账号的话,主账号额度还在、副账号已经见底时,这一单会被当成
+  /// 免费派给只参与免费生成的副账号,悄悄花掉它的点。第三方中转、以及主账号
+  /// 这份查不到时,跟按钮走(见 [naiFreeOnPerKey])。
+  NaiFreeOn? _freeOn(GenerateState s) {
+    final b = _billed(s);
     try {
-      final isOpus = ref.read(anlasProvider).value?.isOpus ?? false;
-      final v5Charged = ref.read(v5ChargedProvider);
-      final job = s.inpaint;
-      final pts = job != null
-          ? estimateInpaintCost(
-              s,
-              isOpus: isOpus,
-              sendW: s.params.width,
-              sendH: s.params.height,
-              strength: job.strength,
-              v5Charged: v5Charged,
-            )
-          : estimateCost(s, isOpus: isOpus, v5Charged: v5Charged);
-      return pts > 0;
+      if (_costOn(b, isOpus: true, v5Charged: false) > 0) return null;
     } catch (_) {
-      return true; // 算不出来按付费算:宁可少用一把,也不误花白嫖号的点数
+      return null; // 算不出来按付费挑:宁可少用一把,也不误花只该免费出图的号
+    }
+    final statuses = ref.read(naiKeyStatusCacheProvider);
+    return naiFreeOnPerKey(
+      buttonFree: () => _buttonFree(b),
+      onKey: (k) async {
+        final sub = await statuses.get(naiTargetOf(k));
+        if (sub == null) return null;
+        final pts = _costOn(
+          b,
+          isOpus: sub.isOpus,
+          v5Charged: sub.usage?.isNegative ?? false,
+        );
+        return pts == 0;
+      },
+    );
+  }
+
+  /// 生成按钮上那个口径:按主账号的读数([anlasProvider])算这一单免不免费;
+  /// 读数没到时同按钮一样按非 Opus 算。第三方中转、查不到状态的主账号跟它走。
+  bool _buttonFree(GenerateState b) {
+    final main = ref.read(anlasProvider).asData?.value;
+    try {
+      return _costOn(
+            b,
+            isOpus: main?.isOpus ?? false,
+            v5Charged: ref.read(v5ChargedProvider),
+          ) ==
+          0;
+    } catch (_) {
+      return false;
     }
   }
 
@@ -1452,52 +1536,44 @@ class GenerationNotifier extends Notifier<GenPool> {
 
   /// 直连生成落一笔本机账。点数为估算(与费用胶囊同一公式,免费档 0;
   /// 重绘按发送尺寸/强度折算);记账失败不打扰生成主流程。
-  void _recordKeyGen(GenerateState s) {
-    try {
-      // 回退成 false(按收费记)而不是 true:订阅拉不到时按钮上显示的也是收费,
-      // 两边口径必须一致。原先回退 true 会让账本在网络最不稳的时候系统性少记
-      // —— 而那正是最需要记准的时候。见 S1B-02。
-      final isOpus = ref.read(anlasProvider).value?.isOpus ?? false;
-      // 与按钮同口径:V5 额度见底后免费尺寸是照扣 Anlas 的,本机账本不能记 0
-      final v5Charged = ref.read(v5ChargedProvider);
-      // Max ✨ 放大重绘的输出尺寸是**服务端**定的,params 里还留着原图尺寸。
-      // 按原尺寸记会系统性少记(边长 ×2 = 四倍像素),所以按官方那套算法先把
-      // 实际尺寸算出来再估、再落账。数值倍率不用管:那几档是客户端自己把
-      // params 的宽高改好再发的。
-      final maxSize = s.img2img?.upscaledEnhance == true
-          ? enhanceMaxTargetSize(s.params.width, s.params.height)
-          : null;
-      if (maxSize != null) {
-        s = s.copyWith(
-          params: s.params.copyWith(width: maxSize.w, height: maxSize.h),
-        );
-      }
-      final job = s.inpaint;
-      final pts = job != null
-          ? estimateInpaintCost(
-              s,
-              isOpus: isOpus,
-              sendW: s.params.width,
-              sendH: s.params.height,
-              strength: job.strength,
-              v5Charged: v5Charged,
-            )
-          : estimateCost(s, isOpus: isOpus, v5Charged: v5Charged);
-      ref
-          .read(appStoresProvider)
-          .ledger
-          .recordGen(
-            pts: pts,
-            width: s.params.width,
-            height: s.params.height,
-            steps: s.params.activeSteps,
-            model: s.params.model,
-            inpaint: job != null,
-            // 判定留在这边而不是让账本去解析 model 串:那是存储层,不该认识
-            // 产品的展示名规则(改一次命名两处就会分叉)
-            v5: isNai5Model(s.params.model),
-          );
-    } catch (_) {}
+  ///
+  /// 按**这一单实际落在的那个号**([t])算:它是不是 Opus、V5 额度见没见底,
+  /// 决定了这张是 0 点还是照扣 —— 一律按主账号记的话,副账号实扣了点,账上是 0。
+  /// 读数优先用挑号时查到的那份:额度就是这一张花掉的,跑完再查只会看到花过
+  /// 之后的数。
+  void _recordKeyGen(GenerateState s, NaiTarget t) {
+    final statuses = ref.read(naiKeyStatusCacheProvider);
+    final atDispatch = statuses.peek(t);
+    unawaited(() async {
+      try {
+        // 挑号时没查(这一单在哪个号上都扣点,挑号用不着)就现查。查不到按收费
+        // 记:回退成 false 而不是 true —— 订阅拉不到时按钮上显示的也是收费,
+        // 两边口径必须一致;回退 true 会让账本在网络最不稳的时候系统性少记,
+        // 而那正是最需要记准的时候。见 S1B-02。
+        final sub = atDispatch ?? await statuses.get(t);
+        final b = _billed(s);
+        final job = b.inpaint;
+        ref
+            .read(appStoresProvider)
+            .ledger
+            .recordGen(
+              pts: _costOn(
+                b,
+                isOpus: sub?.isOpus ?? false,
+                // V5 额度见底后免费尺寸是照扣 Anlas 的,本机账本不能记 0
+                v5Charged: sub?.usage?.isNegative ?? false,
+              ),
+              width: b.params.width,
+              height: b.params.height,
+              steps: b.params.activeSteps,
+              model: b.params.model,
+              inpaint: job != null,
+              // 判定留在这边而不是让账本去解析 model 串:那是存储层,不该认识
+              // 产品的展示名规则(改一次命名两处就会分叉)
+              v5: isNai5Model(b.params.model),
+            );
+      } catch (_) {}
+    }());
   }
 
   void clearError() {

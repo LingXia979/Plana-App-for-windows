@@ -14,6 +14,8 @@ library;
 
 import 'dart:convert';
 
+import '../../core/app_info.dart';
+
 class AgentTrace {
   AgentTrace({
     required this.startedAt,
@@ -158,7 +160,7 @@ String renderTraceExport({
     ..writeln('── $title ──');
 
   b
-    ..writeln('Plana App · AI 助手对话记录')
+    ..writeln('$kAppName · AI 助手对话记录')
     ..writeln('导出时间: ${traceTimestamp(now)}')
     ..writeln('App 版本: $appVersion')
     ..writeln('记录轮数: ${traces.length}(本对话里发出过的每一轮,含失败和重试)');

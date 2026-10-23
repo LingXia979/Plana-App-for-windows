@@ -198,7 +198,7 @@ class _LedgerPageState extends ConsumerState<LedgerPage> {
                 )
               else
                 Text(
-                  '¥${fmtInt(me?.totalFee ?? 0)}',
+                  '¥${fmtFee(me?.totalFee ?? 0)}',
                   style: mono(context, size: 24, weight: FontWeight.w700),
                 ),
               const SizedBox(width: 8),
@@ -238,6 +238,16 @@ class _LedgerPageState extends ConsumerState<LedgerPage> {
                 color: scheme.onSurfaceVariant,
               ),
             ),
+            if ((me?.relayCalls ?? 0) > 0)
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Text(
+                  '含中转出图 ${fmtInt(me!.relayCalls)} 张 ¥${fmtFee(me.relayFee)}',
+                  style: context.texts.labelSmall!.copyWith(
+                    color: scheme.outline,
+                  ),
+                ),
+              ),
             // 自建后端张数:不摆出来的话,用它们出图的人对着自己的记录会以为
             // 这里少算了 —— 那些图确实存在,只是不进这本账。
             if ((me?.localCalls ?? 0) > 0)

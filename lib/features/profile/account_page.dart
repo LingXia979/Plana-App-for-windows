@@ -140,10 +140,10 @@ class _TokenCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
-    // 摆出来的就是**真会被用到**的:主账号恒在,副账号要勾了并发生成才算。
+    // 摆出来的就是**真会被用到**的:主账号恒在,副账号勾了任一个参与条件才算。
     final on = [
       for (final k in keys)
-        if (k.forGenerate) k,
+        if (k.joins) k,
     ];
     final shown = _quickSwitchSlice(on);
 
@@ -300,7 +300,9 @@ List<NaiKey> _quickSwitchSlice(List<NaiKey> on) {
   return [...head.take(_kQuickSwitchMax - 1), on[at]];
 }
 
-/// 参与生成的这几个号**加起来**的点数与额度。
+/// 参与生成的这几个号**加起来**的点数与额度 —— 只算 app 真会动用的那部分:
+/// 点数只加勾了「参与点数生成」的号,额度只加勾了「参与免费生成」的号。只参与
+/// 免费生成的号,它的点数一分都不会被花,算进来就是虚数。
 ///
 /// 额度按**相加**算(两个号各 87% / 50% → 137%),不是取平均:平均水位看着像
 /// 单号的电量,跟「一共还能出多少张」对不上 —— 这套口径与 [NaiUsageX.batteryPct]
@@ -326,9 +328,9 @@ class _TotalsLine extends ConsumerWidget {
       final sub = ref.watch(naiKeyStatusProvider(naiTargetOf(k))).value;
       if (sub == null) continue;
       got++;
-      anlas += sub.anlas;
+      if (k.joinPaid) anlas += sub.anlas;
       final u = sub.usage;
-      if (u != null) {
+      if (u != null && k.joinFree) {
         hasUsage = true;
         pct += u.batteryPct;
       }
