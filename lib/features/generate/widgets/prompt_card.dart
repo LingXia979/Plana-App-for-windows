@@ -810,7 +810,7 @@ class _SectionRowState extends ConsumerState<_SectionRow> {
       return Padding(
         padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
         child: Material(
-          color: selecting && picked ? scheme.primaryContainer : scheme.surface,
+          color: scheme.surface,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(10),
             side: BorderSide(
@@ -819,7 +819,13 @@ class _SectionRowState extends ConsumerState<_SectionRow> {
                   : scheme.outlineVariant,
             ),
           ),
+          clipBehavior: Clip.antiAlias,
           child: InkWell(
+            // Feedback belongs to the controls, not the whole embedded editor.
+            // Selection remains visible through the checkbox and card border.
+            overlayColor: const WidgetStatePropertyAll(Colors.transparent),
+            splashFactory: NoSplash.splashFactory,
+            canRequestFocus: false,
             onTap: selecting ? onToggle : null,
             onLongPress: selecting ? null : onHold,
             child: Column(
@@ -1138,7 +1144,7 @@ class _PickDot extends StatelessWidget {
   }
 }
 
-/// 分区名:填色小签,停用时改成描边、灰字。点它改名。
+/// 分区名:桌面为无底色标题,移动端保留填色小签;停用时弱化。点它改名。
 class _NameChip extends StatelessWidget {
   const _NameChip({
     required this.name,
@@ -1156,10 +1162,10 @@ class _NameChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     return Material(
-      color: enabled ? scheme.primaryContainer : Colors.transparent,
+      color: desktop || !enabled ? Colors.transparent : scheme.primaryContainer,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(6),
-        side: enabled
+        side: desktop || enabled
             ? BorderSide.none
             : BorderSide(color: scheme.outlineVariant),
       ),
@@ -1180,7 +1186,11 @@ class _NameChip extends StatelessWidget {
               style: context.texts.labelMedium!.copyWith(
                 fontSize: desktop ? 16 : null,
                 fontWeight: desktop ? FontWeight.w700 : FontWeight.w600,
-                color: enabled ? scheme.onPrimaryContainer : scheme.outline,
+                color: !enabled
+                    ? scheme.outline
+                    : desktop
+                    ? scheme.onSurface
+                    : scheme.onPrimaryContainer,
               ),
             ),
           ),
