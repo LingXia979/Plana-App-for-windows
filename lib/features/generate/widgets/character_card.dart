@@ -24,6 +24,7 @@ import 'section_card.dart';
 import 'desktop_prompt_card.dart';
 import 'prompt_card.dart' show negativePreview;
 import 'reference_image_preview.dart';
+import 'prompt_inline_name.dart';
 
 /// 角色面板(定稿版):每个角色一张内嵌圆角小卡。
 /// 行 1:电源开关 · 名称(点名字改名,+状态说明)· 站位徽章 · 删除
@@ -202,6 +203,7 @@ class _CharacterTileState extends ConsumerState<_CharacterTile> {
   int get index => widget.index;
   bool _collapsed = false;
   bool _avatarPreviewOpen = false;
+  final _nameKey = GlobalKey();
 
   Future<void> _previewAvatar() async {
     final avatar = char.avatar;
@@ -447,6 +449,11 @@ class _CharacterTileState extends ConsumerState<_CharacterTile> {
   }) {
     final scheme = context.scheme;
     final enabled = char.enabled;
+    final id = char.id;
+    final canvasId = ref.watch(
+      canvasWorkspaceProvider.select((w) => w.activeId),
+    );
+    final canvases = ref.read(canvasWorkspaceProvider.notifier);
     final position = autoPos
         ? 'AUTO'
         : positionChipLabel(char.position, grid: !isV5);
@@ -534,28 +541,26 @@ class _CharacterTileState extends ConsumerState<_CharacterTile> {
           child: Row(
             children: [
               Flexible(
-                // 点名字改名:热区只包名字本身,外层那圈照旧点开编辑器
-                // (里层先拿到这一下)。长按是整卡拖排序,这里不接。
-                // 开关与名字之间原先的 4px 挪进内边距,名字位置不变。
-                child: InkWell(
-                  onTap: () => _rename(context, notifier),
-                  borderRadius: BorderRadius.circular(8),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 4,
-                      vertical: 4,
-                    ),
-                    child: Text(
-                      char.name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: context.texts.bodyLarge!.copyWith(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w700,
-                        color: enabled ? scheme.onSurface : scheme.outline,
-                      ),
-                    ),
+                child: PromptInlineName(
+                  key: _nameKey,
+                  identifier: 'character-name-$id',
+                  identity: (canvasId, id),
+                  name: char.name,
+                  fallbackName: '角色 ${index + 1}',
+                  style: context.texts.bodyLarge!.copyWith(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: enabled ? scheme.onSurface : scheme.outline,
                   ),
+                  onRename: (name) => canvases.updatePrompts(canvasId, (p) {
+                    if (!p.characters.any((c) => c.id == id)) return p;
+                    return p.copyWith(
+                      characters: [
+                        for (final c in p.characters)
+                          if (c.id == id) c.copyWith(name: name) else c,
+                      ],
+                    );
+                  }),
                 ),
               ),
               if (!enabled) ...[

@@ -25,6 +25,7 @@ import '../prompt_sections.dart';
 import '../style_recipes.dart';
 import 'common.dart';
 import 'section_save.dart';
+import 'prompt_inline_name.dart';
 
 /// 提示词卡:头部 token 进度条 + 正文 + 负面单行(带 +N 溢出与独立计数)。
 /// 常驻展开。卡头按钮与角色卡同序:清空正向(可撤销)/ 灵感库 / 添加分区。
@@ -807,6 +808,10 @@ class _SectionRowState extends ConsumerState<_SectionRow> {
     );
     final collapsed = collapsible && _collapsed;
     if (ref.watch(desktopModeProvider)) {
+      final canvasId = ref.watch(
+        canvasWorkspaceProvider.select((w) => w.activeId),
+      );
+      final canvases = ref.read(canvasWorkspaceProvider.notifier);
       return Padding(
         padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
         child: Material(
@@ -847,13 +852,42 @@ class _SectionRowState extends ConsumerState<_SectionRow> {
                       Expanded(
                         child: Align(
                           alignment: Alignment.centerLeft,
-                          child: _NameChip(
+                          child: PromptInlineName(
+                            identifier: 'prompt-section-name-${s.id}',
+                            identity: (canvasId, s.id),
                             name: s.name,
-                            desktop: true,
-                            enabled: s.enabled,
-                            onTap: selecting
-                                ? onToggle!
-                                : () => _rename(context, notifier),
+                            fallbackName: fallbackName,
+                            onSelect: selecting ? onToggle : null,
+                            labelMaxWidth: 120,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 5,
+                            ),
+                            style: context.texts.labelMedium!.copyWith(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w700,
+                              color: s.enabled
+                                  ? scheme.onSurface
+                                  : scheme.outline,
+                            ),
+                            onRename: (name) => canvases.updatePrompts(
+                              canvasId,
+                              (p) {
+                                final rows = withMainRow(p.sections, p.prompt);
+                                if (!rows.any((row) => row.id == s.id)) {
+                                  return p;
+                                }
+                                return p.copyWith(
+                                  sections: normalizeSections([
+                                    for (final row in rows)
+                                      if (row.id == s.id)
+                                        row.copyWith(name: name)
+                                      else
+                                        row,
+                                  ]),
+                                );
+                              },
+                            ),
                           ),
                         ),
                       ),
@@ -1150,10 +1184,8 @@ class _NameChip extends StatelessWidget {
     required this.name,
     required this.enabled,
     required this.onTap,
-    this.desktop = false,
   });
 
-  final bool desktop;
   final String name;
   final bool enabled;
   final VoidCallback onTap;
@@ -1162,10 +1194,10 @@ class _NameChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     return Material(
-      color: desktop || !enabled ? Colors.transparent : scheme.primaryContainer,
+      color: !enabled ? Colors.transparent : scheme.primaryContainer,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(6),
-        side: desktop || enabled
+        side: enabled
             ? BorderSide.none
             : BorderSide(color: scheme.outlineVariant),
       ),
@@ -1173,24 +1205,16 @@ class _NameChip extends StatelessWidget {
       child: InkWell(
         onTap: onTap,
         child: ConstrainedBox(
-          constraints: BoxConstraints(maxWidth: desktop ? 120 : 76),
+          constraints: const BoxConstraints(maxWidth: 76),
           child: Padding(
-            padding: EdgeInsets.symmetric(
-              horizontal: desktop ? 10 : 7,
-              vertical: desktop ? 5 : 3,
-            ),
+            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
             child: Text(
               name,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: context.texts.labelMedium!.copyWith(
-                fontSize: desktop ? 16 : null,
-                fontWeight: desktop ? FontWeight.w700 : FontWeight.w600,
-                color: !enabled
-                    ? scheme.outline
-                    : desktop
-                    ? scheme.onSurface
-                    : scheme.onPrimaryContainer,
+                fontWeight: FontWeight.w600,
+                color: !enabled ? scheme.outline : scheme.onPrimaryContainer,
               ),
             ),
           ),
