@@ -26,6 +26,7 @@ import '../style_recipes.dart';
 import 'common.dart';
 import 'section_save.dart';
 import 'prompt_inline_name.dart';
+import 'prompt_header_target.dart';
 
 /// 提示词卡:头部 token 进度条 + 正文 + 负面单行(带 +N 溢出与独立计数)。
 /// 常驻展开。卡头按钮与角色卡同序:清空正向(可撤销)/ 灵感库 / 添加分区。
@@ -127,21 +128,8 @@ class _PromptCardState extends ConsumerState<PromptCard> {
           icon: const Icon(Icons.checklist, size: 18),
           label: const Text('多选'),
         ),
-      if (desktop && sections.isEmpty) ...[
+      if (desktop && sections.isEmpty)
         const PromptFullscreenButton(key: ValueKey('prompt-fullscreen-main')),
-        if (collapsible)
-          IconButton(
-            key: const ValueKey('prompt-section-collapse-main'),
-            constraints: const BoxConstraints.tightFor(width: 34, height: 38),
-            padding: EdgeInsets.zero,
-            tooltip: mainCollapsed ? '展开提示词' : '收起提示词',
-            onPressed: () => setState(() => _mainCollapsed = !mainCollapsed),
-            icon: Icon(
-              mainCollapsed ? Icons.expand_more : Icons.expand_less,
-              size: 22,
-            ),
-          ),
-      ],
       if (state.prompt.trim().isNotEmpty || sections.isNotEmpty)
         RoundIconBtn(
           Icons.delete_sweep_outlined,
@@ -176,6 +164,52 @@ class _PromptCardState extends ConsumerState<PromptCard> {
             padding: EdgeInsets.fromLTRB(selecting ? 9 : 15, 8, 13, 4),
             child: selecting
                 ? _selectHeader(context, sections, state.prompt, actionSize)
+                : desktop && sections.isEmpty
+                ? Row(
+                    children: [
+                      Expanded(
+                        child: PromptHeaderTarget(
+                          identifier: 'prompt-section-header-main',
+                          label: !collapsible
+                              ? '提示词'
+                              : mainCollapsed
+                              ? '展开提示词'
+                              : '收起提示词',
+                          onTap: collapsible
+                              ? () {
+                                  ref
+                                      .read(editorSessionsProvider)
+                                      .flushPending();
+                                  setState(
+                                    () => _mainCollapsed = !mainCollapsed,
+                                  );
+                                }
+                              : null,
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.subject,
+                                size: 20,
+                                color: scheme.onSurfaceVariant,
+                              ),
+                              const SizedBox(width: 9),
+                              Text(
+                                '提示词',
+                                style: context.texts.bodyLarge!.copyWith(
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      Wrap(
+                        spacing: 2,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: headerActions,
+                      ),
+                    ],
+                  )
                 : Row(
                     children: [
                       Icon(
@@ -665,8 +699,7 @@ class _PromptCardState extends ConsumerState<PromptCard> {
   }
 }
 
-/// 分了区之后的正文:一格一行,长按一格进多选。多选态下点行是勾选,拖左边的
-/// 把手排序。
+/// 分区正文：桌面拖动卡头排序、单击空白折叠；移动布局保留长按多选与把手。
 class _SectionRows extends ConsumerWidget {
   const _SectionRows({
     required this.selecting,
@@ -679,7 +712,7 @@ class _SectionRows extends ConsumerWidget {
   final Set<String> picked;
   final ValueChanged<String> onToggle;
 
-  /// 长按一格(多选态之外)。
+  /// 移动布局长按一格(多选态之外)。
   final ValueChanged<String> onHold;
 
   @override
@@ -692,11 +725,16 @@ class _SectionRows extends ConsumerWidget {
     return ReorderableListView(
       shrinkWrap: true,
       physics: const NeverScrollableScrollPhysics(),
-      // 长按留给进多选,排序只走多选态每行左边的把手
+      // Desktop headers reorder directly; mobile keeps its selection handles.
       buildDefaultDragHandles: false,
       proxyDecorator: _rowDragProxy,
       onReorderStart: (index) {
         ref.read(editorSessionsProvider).flushPending();
+        // A focused text field can leave its selection overlay behind when
+        // the card moves to the drag overlay. Finish editing before moving it.
+        if (ref.read(desktopModeProvider)) {
+          FocusManager.instance.primaryFocus?.unfocus();
+        }
         dragStartHaptic(index);
       },
       onReorderEnd: dragEndHaptic,
@@ -762,15 +800,15 @@ class _SectionRow extends ConsumerStatefulWidget {
     this.onHold,
   });
 
-  /// 多选态:点行 / 点名字都是勾选,行尾换成勾选圈,左边多出移动把手。
+  /// 多选态：点行／点名字都是勾选；桌面仍可从卡头排序。
   final bool selecting;
   final bool picked;
   final VoidCallback? onToggle;
 
-  /// 在列表里的位置(把手拖动用)。
+  /// 在列表里的位置(拖动排序用)。
   final int index;
 
-  /// 长按这一行(多选态之外)。
+  /// 移动布局长按这一行(多选态之外)。
   final VoidCallback? onHold;
 
   final PromptSection section;
@@ -832,7 +870,6 @@ class _SectionRowState extends ConsumerState<_SectionRow> {
             splashFactory: NoSplash.splashFactory,
             canRequestFocus: false,
             onTap: selecting ? onToggle : null,
-            onLongPress: selecting ? null : onHold,
             child: Column(
               children: [
                 Padding(
@@ -850,58 +887,85 @@ class _SectionRowState extends ConsumerState<_SectionRow> {
                           visualDensity: VisualDensity.compact,
                         ),
                       Expanded(
-                        child: Align(
-                          alignment: Alignment.centerLeft,
-                          child: PromptInlineName(
-                            identifier: 'prompt-section-name-${s.id}',
-                            identity: (canvasId, s.id),
-                            name: s.name,
-                            fallbackName: fallbackName,
-                            onSelect: selecting ? onToggle : null,
-                            labelMaxWidth: 120,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 10,
-                              vertical: 5,
-                            ),
-                            style: context.texts.labelMedium!.copyWith(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w700,
-                              color: s.enabled
-                                  ? scheme.onSurface
-                                  : scheme.outline,
-                            ),
-                            onRename: (name) => canvases.updatePrompts(
-                              canvasId,
-                              (p) {
-                                final rows = withMainRow(p.sections, p.prompt);
-                                if (!rows.any((row) => row.id == s.id)) {
-                                  return p;
-                                }
-                                return p.copyWith(
-                                  sections: normalizeSections([
-                                    for (final row in rows)
-                                      if (row.id == s.id)
-                                        row.copyWith(name: name)
-                                      else
-                                        row,
-                                  ]),
-                                );
-                              },
-                            ),
-                          ),
-                        ),
-                      ),
-                      ReorderableDragStartListener(
-                        index: index,
-                        child: Tooltip(
-                          message: '拖动分区排序',
-                          child: Padding(
-                            padding: const EdgeInsets.all(8),
-                            child: Icon(
-                              Icons.drag_indicator,
-                              size: 18,
-                              color: scheme.outline,
-                            ),
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(minHeight: 40),
+                          child: Stack(
+                            alignment: Alignment.centerLeft,
+                            children: [
+                              Positioned.fill(
+                                child: PromptHeaderTarget(
+                                  identifier: 'prompt-section-header-${s.id}',
+                                  label: selecting
+                                      ? '选择分区'
+                                      : !collapsible
+                                      ? '分区提示词'
+                                      : collapsed
+                                      ? '展开分区提示词'
+                                      : '收起分区提示词',
+                                  reorderIndex: index,
+                                  onTap: selecting
+                                      ? onToggle
+                                      : collapsible
+                                      ? () {
+                                          ref
+                                              .read(editorSessionsProvider)
+                                              .flushPending();
+                                          setState(
+                                            () => _collapsed = !collapsed,
+                                          );
+                                        }
+                                      : null,
+                                ),
+                              ),
+                              Padding(
+                                padding: const EdgeInsets.only(right: 36),
+                                child: Align(
+                                  alignment: Alignment.centerLeft,
+                                  heightFactor: 1,
+                                  child: PromptInlineName(
+                                    identifier: 'prompt-section-name-${s.id}',
+                                    identity: (canvasId, s.id),
+                                    reorderIndex: index,
+                                    name: s.name,
+                                    fallbackName: fallbackName,
+                                    onSelect: selecting ? onToggle : null,
+                                    labelMaxWidth: 120,
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 10,
+                                      vertical: 5,
+                                    ),
+                                    style: context.texts.labelMedium!.copyWith(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w700,
+                                      color: s.enabled
+                                          ? scheme.onSurface
+                                          : scheme.outline,
+                                    ),
+                                    onRename: (name) =>
+                                        canvases.updatePrompts(canvasId, (p) {
+                                          final rows = withMainRow(
+                                            p.sections,
+                                            p.prompt,
+                                          );
+                                          if (!rows.any(
+                                            (row) => row.id == s.id,
+                                          )) {
+                                            return p;
+                                          }
+                                          return p.copyWith(
+                                            sections: normalizeSections([
+                                              for (final row in rows)
+                                                if (row.id == s.id)
+                                                  row.copyWith(name: name)
+                                                else
+                                                  row,
+                                            ]),
+                                          );
+                                        }),
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
                         ),
                       ),
@@ -910,22 +974,6 @@ class _SectionRowState extends ConsumerState<_SectionRow> {
                           key: ValueKey('prompt-fullscreen-${s.id}'),
                           sectionId: s.isMain ? null : s.id,
                         ),
-                        if (collapsible)
-                          IconButton(
-                            key: ValueKey('prompt-section-collapse-${s.id}'),
-                            constraints: const BoxConstraints.tightFor(
-                              width: 34,
-                              height: 38,
-                            ),
-                            padding: EdgeInsets.zero,
-                            tooltip: collapsed ? '展开分区提示词' : '收起分区提示词',
-                            onPressed: () =>
-                                setState(() => _collapsed = !collapsed),
-                            icon: Icon(
-                              collapsed ? Icons.expand_more : Icons.expand_less,
-                              size: 22,
-                            ),
-                          ),
                         IconButton(
                           tooltip: s.enabled ? '停用分区' : '启用分区',
                           onPressed: () {

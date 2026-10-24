@@ -20,6 +20,7 @@ class PromptInlineName extends ConsumerStatefulWidget {
     this.onSelect,
     this.padding = const EdgeInsets.all(4),
     this.labelMaxWidth = double.infinity,
+    this.reorderIndex,
   });
 
   final String identifier;
@@ -31,6 +32,7 @@ class PromptInlineName extends ConsumerStatefulWidget {
   final VoidCallback? onSelect;
   final EdgeInsets padding;
   final double labelMaxWidth;
+  final int? reorderIndex;
 
   @override
   ConsumerState<PromptInlineName> createState() => _PromptInlineNameState();
@@ -148,8 +150,10 @@ class _PromptInlineNameState extends ConsumerState<PromptInlineName> {
   @override
   Widget build(BuildContext context) {
     if (_edit == null) {
-      return Tooltip(
-        message: widget.onSelect == null ? '单击重命名' : '选择分区',
+      final label = Tooltip(
+        message:
+            '${widget.onSelect == null ? '单击重命名' : '选择分区'}'
+            '${widget.reorderIndex == null ? '' : ' · 按住拖动排序'}',
         child: InkWell(
           key: ValueKey(widget.identifier),
           onTap: widget.onSelect ?? _start,
@@ -168,6 +172,12 @@ class _PromptInlineNameState extends ConsumerState<PromptInlineName> {
           ),
         ),
       );
+      return widget.reorderIndex == null
+          ? label
+          : ReorderableDragStartListener(
+              index: widget.reorderIndex!,
+              child: label,
+            );
     }
     return Focus(
       onKeyEvent: _key,

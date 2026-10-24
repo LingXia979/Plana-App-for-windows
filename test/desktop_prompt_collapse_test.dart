@@ -81,7 +81,13 @@ void main() {
 
   Future<void> tap(WidgetTester tester, String id) async {
     await tester.ensureVisible(key(id));
-    await tester.tap(key(id));
+    if (id.startsWith('prompt-section-header-')) {
+      await tester.tapAt(
+        tester.getRect(key(id)).centerRight - const Offset(18, 0),
+      );
+    } else {
+      await tester.tap(key(id));
+    }
     await tester.pumpAndSettle();
   }
 
@@ -193,16 +199,16 @@ void main() {
       final controller = tester
           .widget<TextField>(input('desktop-section-$id'))
           .controller;
-      await tap(tester, 'prompt-section-collapse-$id');
+      await tap(tester, 'prompt-section-header-$id');
       expect(input('desktop-section-$id'), findsNothing);
       expect(input('desktop-prompt'), findsOneWidget);
       expect(
         container.read(generateProvider).sections.last.positive,
         'ocean, blue sky',
       );
-      await tap(tester, 'prompt-section-collapse-main');
+      await tap(tester, 'prompt-section-header-main');
       expect(input('desktop-prompt'), findsNothing);
-      await tap(tester, 'prompt-section-collapse-$id');
+      await tap(tester, 'prompt-section-header-$id');
       expect(input('desktop-prompt'), findsNothing);
       expect(
         tester.widget<TextField>(input('desktop-section-$id')).controller,
@@ -213,7 +219,7 @@ void main() {
         container.read(generateProvider).sections.last.negative,
         'indoors',
       );
-      await tap(tester, 'prompt-section-collapse-$id');
+      await tap(tester, 'prompt-section-header-$id');
       container
           .read(themeSettingsProvider.notifier)
           .patch((s) => s.copyWith(collapsiblePromptCards: false));
@@ -258,15 +264,15 @@ void main() {
         .patch((s) => s.copyWith(collapsiblePromptCards: true));
     await mount(tester, const PromptCard());
     expect(input('desktop-prompt'), findsOneWidget);
-    await tap(tester, 'prompt-section-collapse-main');
+    await tap(tester, 'prompt-section-header-main');
     expect(input('desktop-prompt'), findsNothing);
     expect(find.text('solo'), findsOneWidget);
-    await tap(tester, 'prompt-section-collapse-main');
+    await tap(tester, 'prompt-section-header-main');
     await tester.enterText(input('desktop-prompt'), 'solo, rain');
     final controller = tester
         .widget<TextField>(input('desktop-prompt'))
         .controller;
-    await tap(tester, 'prompt-section-collapse-main');
+    await tap(tester, 'prompt-section-header-main');
     expect(input('desktop-prompt'), findsNothing);
     expect(container.read(generateProvider).prompt, 'solo, rain');
     container
@@ -279,7 +285,7 @@ void main() {
         .read(themeSettingsProvider.notifier)
         .patch((s) => s.copyWith(collapsiblePromptCards: true));
     await tester.pumpAndSettle();
-    await tap(tester, 'prompt-section-collapse-main');
+    await tap(tester, 'prompt-section-header-main');
     expect(
       tester.widget<TextField>(input('desktop-prompt')).controller,
       same(controller),
@@ -298,12 +304,12 @@ void main() {
           .read(themeSettingsProvider.notifier)
           .patch((s) => s.copyWith(collapsiblePromptCards: true));
       await mount(tester, const PromptCard());
-      await tap(tester, 'prompt-section-collapse-$id');
+      await tap(tester, 'prompt-section-header-$id');
       expect(input('desktop-section-$id'), findsNothing);
-      await tap(tester, 'prompt-section-collapse-$id');
+      await tap(tester, 'prompt-section-header-$id');
       expect(input('desktop-section-$id'), findsOneWidget);
       await tester.enterText(input('desktop-section-$id'), 'disabled draft');
-      await tap(tester, 'prompt-section-collapse-$id');
+      await tap(tester, 'prompt-section-header-$id');
       expect(
         container.read(generateProvider).sections.last.positive,
         'disabled draft',
