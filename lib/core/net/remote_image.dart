@@ -457,6 +457,7 @@ class RemoteImage extends StatelessWidget {
     this.url, {
     super.key,
     this.fit,
+    this.alignment = Alignment.center,
     this.width,
     this.height,
     this.decodeWidth,
@@ -471,6 +472,7 @@ class RemoteImage extends StatelessWidget {
 
   final String url;
   final BoxFit? fit;
+  final AlignmentGeometry alignment;
   final double? width;
   final double? height;
 
@@ -508,6 +510,7 @@ class RemoteImage extends StatelessWidget {
     return Image(
       image: providerDecorator?.call(provider) ?? provider,
       fit: fit,
+      alignment: alignment,
       width: width,
       height: height,
       filterQuality: filterQuality,

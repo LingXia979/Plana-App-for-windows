@@ -20,6 +20,7 @@ class TagCardPreview extends StatelessWidget {
     required this.url,
     required this.name,
     this.decodeWidth,
+    this.alignment = Alignment.center,
     this.placeholder,
     this.mosaic = false,
   });
@@ -31,6 +32,9 @@ class TagCardPreview extends StatelessWidget {
   /// 图像缓存存的是解码后的位图:角色卡头像只画 46dp,整张 832×1216 解出来
   /// 要占 4MB,所以本机图也按这个宽解。
   final double? decodeWidth;
+
+  /// Only the desktop character avatar opts into top-aligned cropping.
+  final AlignmentGeometry alignment;
 
   /// 无图 / 读图失败时的占位;null = 名称定色相的斜纹。
   final Widget? placeholder;
@@ -55,6 +59,7 @@ class TagCardPreview extends StatelessWidget {
             ? RemoteImage(
                 u,
                 fit: BoxFit.cover,
+                alignment: alignment,
                 decodeWidth: mosaic ? _kMosaicCells / dpr : decodeWidth,
                 filterQuality: quality,
                 gaplessPlayback: true,
@@ -64,6 +69,7 @@ class TagCardPreview extends StatelessWidget {
             : Image.file(
                 File(u),
                 fit: BoxFit.cover,
+                alignment: alignment,
                 cacheWidth: mosaic
                     ? _kMosaicCells
                     : switch (decodeWidth) {

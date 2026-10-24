@@ -1,7 +1,10 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/app_theme.dart';
+import '../../../core/net/remote_image.dart';
 import '../../../core/platform/desktop.dart';
 import '../../../core/theme/theme_settings.dart';
 import '../../../core/util/nai_tokenizer.dart';
@@ -20,6 +23,7 @@ import 'position_grid_dialog.dart';
 import 'section_card.dart';
 import 'desktop_prompt_card.dart';
 import 'prompt_card.dart' show negativePreview;
+import 'reference_image_preview.dart';
 
 /// 角色面板(定稿版):每个角色一张内嵌圆角小卡。
 /// 行 1:电源开关 · 名称(点名字改名,+状态说明)· 站位徽章 · 删除
@@ -197,6 +201,28 @@ class _CharacterTileState extends ConsumerState<_CharacterTile> {
   CharacterPrompt get char => widget.char;
   int get index => widget.index;
   bool _collapsed = false;
+  bool _avatarPreviewOpen = false;
+
+  Future<void> _previewAvatar() async {
+    final avatar = char.avatar;
+    if (_avatarPreviewOpen || avatar == null || avatar.isEmpty) return;
+    _avatarPreviewOpen = true;
+    try {
+      await showImageProviderPreview(
+        context,
+        image: avatar.startsWith('http')
+            ? RemoteImageProvider(
+                avatar,
+                version: RemoteImageStore.versionOf(avatar),
+              )
+            : FileImage(File(avatar)),
+        title: char.name,
+        errorMessage: '这张角色图片暂时无法读取',
+      );
+    } finally {
+      _avatarPreviewOpen = false;
+    }
+  }
 
   /// 点名字改名。留空 = 回到默认的「角色 N」,N 按当前行序算,与新增时同一口径
   /// (名字本就不是稳定句柄,认人靠 id)。
@@ -451,29 +477,22 @@ class _CharacterTileState extends ConsumerState<_CharacterTile> {
         ? 0.0
         : 4 + textWidth('已禁用', context.texts.labelSmall!);
     // Avatar, toggle, name padding, separation and trailing controls.
-    final leadingWidth = 30 + 5 + 34 + 5 + 38 + 8 + nameWidth + statusWidth;
+    final leadingWidth = 34 + 5 + 38 + 8 + nameWidth + statusWidth;
     final actionsWidth =
         26 + (collapsible ? 36 : 0) + 16 + 15 + 5 + positionWidth + 2 + 30 + 18;
     final requiredWidth = leadingWidth + 8 + actionsWidth;
     final leading = Row(
       children: [
-        SizedBox(
-          width: 30,
-          height: 34,
-          child: IconButton(
-            key: ValueKey('character-library-${char.id}'),
-            padding: EdgeInsets.zero,
-            tooltip: '从角色库选择',
-            icon: const Icon(Icons.grid_view, size: 20),
-            onPressed: () => _pickFromLibrary(context, ref),
-          ),
-        ),
-        const SizedBox(width: 5),
         Tooltip(
-          message: '从角色库选择',
+          message: char.avatar?.isNotEmpty == true
+              ? '左键从角色库选择 · 右键放大预览'
+              : '从角色库选择',
           child: InkWell(
             key: ValueKey('character-avatar-${char.id}'),
             onTap: () => _pickFromLibrary(context, ref),
+            onSecondaryTap: char.avatar?.isNotEmpty == true
+                ? _previewAvatar
+                : null,
             borderRadius: BorderRadius.circular(8),
             child: ClipRRect(
               borderRadius: BorderRadius.circular(8),
@@ -484,6 +503,7 @@ class _CharacterTileState extends ConsumerState<_CharacterTile> {
                   url: char.avatar,
                   name: char.name,
                   decodeWidth: 34,
+                  alignment: Alignment.topCenter,
                 ),
               ),
             ),

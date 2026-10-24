@@ -106,12 +106,11 @@ void main() {
       await tap(tester, 'character-collapse-$id');
       expect(input('desktop-character-$id'), findsNothing);
       expect(find.byType(TagCardPreview), findsOneWidget);
-      final libraryPosition = tester.getTopLeft(key('character-library-$id'));
+      expect(key('character-library-$id'), findsNothing);
       final avatarPosition = tester.getTopLeft(key('character-avatar-$id'));
-      expect(libraryPosition.dx, lessThan(avatarPosition.dx));
       expect(find.text('traveler, white shirt'), findsOneWidget);
       await tap(tester, 'character-collapse-$id');
-      expect(tester.getTopLeft(key('character-library-$id')), libraryPosition);
+      expect(key('character-library-$id'), findsNothing);
       expect(tester.getTopLeft(key('character-avatar-$id')), avatarPosition);
       expect(find.byType(TagCardPreview), findsOneWidget);
       expect(input('desktop-character-$id'), findsOneWidget);
