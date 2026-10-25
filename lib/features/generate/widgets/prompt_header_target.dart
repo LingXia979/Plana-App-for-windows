@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../core/theme/app_theme.dart';
+import 'prompt_reorder_scroll.dart';
 
 /// Only the empty header area is a collapse/selection target. Name controls can
 /// sit above it in a Stack; action buttons must remain outside this widget.
@@ -48,7 +49,7 @@ class PromptHeaderTarget extends StatelessWidget {
       ),
     );
     if (reorderIndex != null) {
-      target = ReorderableDragStartListener(
+      target = PromptReorderDragStartListener(
         index: reorderIndex!,
         child: target,
       );

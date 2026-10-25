@@ -27,6 +27,7 @@ import 'common.dart';
 import 'section_save.dart';
 import 'prompt_inline_name.dart';
 import 'prompt_header_target.dart';
+import 'prompt_reorder_scroll.dart';
 
 /// 提示词卡:头部 token 进度条 + 正文 + 负面单行(带 +N 溢出与独立计数)。
 /// 常驻展开。卡头按钮与角色卡同序:清空正向(可撤销)/ 灵感库 / 添加分区。
@@ -153,7 +154,7 @@ class _PromptCardState extends ConsumerState<PromptCard> {
       ),
     ];
 
-    return Material(
+    final card = Material(
       color: scheme.surfaceContainerLow,
       borderRadius: BorderRadius.circular(16),
       clipBehavior: Clip.antiAlias,
@@ -403,6 +404,7 @@ class _PromptCardState extends ConsumerState<PromptCard> {
         ],
       ),
     );
+    return desktop ? PromptReorderBoundary(child: card) : card;
   }
 
   /// 多选态的卡头:左边退出 + 已选几格,右边停用 / 删除 / 存到灵感库 / 合并,

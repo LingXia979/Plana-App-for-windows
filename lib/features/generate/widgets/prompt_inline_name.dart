@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/app_theme.dart';
+import 'prompt_reorder_scroll.dart';
 import '../../editor/editor_state.dart'
     show EditorSessions, editorSessionsProvider;
 
@@ -20,6 +21,7 @@ class PromptInlineName extends ConsumerStatefulWidget {
     this.onSelect,
     this.padding = const EdgeInsets.all(4),
     this.labelMaxWidth = double.infinity,
+    this.displayName,
     this.reorderIndex,
   });
 
@@ -32,6 +34,8 @@ class PromptInlineName extends ConsumerStatefulWidget {
   final VoidCallback? onSelect;
   final EdgeInsets padding;
   final double labelMaxWidth;
+  // Display-only shortening must never become the value being edited/saved.
+  final String? displayName;
   final int? reorderIndex;
 
   @override
@@ -152,6 +156,7 @@ class _PromptInlineNameState extends ConsumerState<PromptInlineName> {
     if (_edit == null) {
       final label = Tooltip(
         message:
+            '${widget.displayName != null && widget.displayName != widget.name ? '${widget.name}\n' : ''}'
             '${widget.onSelect == null ? '单击重命名' : '选择分区'}'
             '${widget.reorderIndex == null ? '' : ' · 按住拖动排序'}',
         child: InkWell(
@@ -163,7 +168,8 @@ class _PromptInlineNameState extends ConsumerState<PromptInlineName> {
             child: Padding(
               padding: widget.padding,
               child: Text(
-                widget.name,
+                widget.displayName ?? widget.name,
+                semanticsLabel: widget.name,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: widget.style,
@@ -174,7 +180,7 @@ class _PromptInlineNameState extends ConsumerState<PromptInlineName> {
       );
       return widget.reorderIndex == null
           ? label
-          : ReorderableDragStartListener(
+          : PromptReorderDragStartListener(
               index: widget.reorderIndex!,
               child: label,
             );

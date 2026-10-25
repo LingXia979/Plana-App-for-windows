@@ -27,6 +27,27 @@ import 'prompt_card.dart' show negativePreview;
 import 'reference_image_preview.dart';
 import 'prompt_inline_name.dart';
 import 'prompt_header_target.dart';
+import 'prompt_reorder_scroll.dart';
+
+String _displayName(String name) =>
+    name.characters.length <= 10 ? name : '${name.characters.take(10)}…';
+
+TextStyle _nameStyle(BuildContext context) => context.texts.bodyLarge!.copyWith(
+  fontSize: 13,
+  fontWeight: FontWeight.w700,
+);
+
+double _textWidth(BuildContext context, String value, TextStyle style) {
+  final painter = TextPainter(
+    text: TextSpan(text: value, style: style),
+    textScaler: MediaQuery.textScalerOf(context),
+    textDirection: Directionality.of(context),
+    maxLines: 1,
+  )..layout();
+  final width = painter.width.ceilToDouble();
+  painter.dispose();
+  return width;
+}
 
 /// 角色面板(定稿版):每个角色一张内嵌圆角小卡。
 /// 行 1:电源开关 · 名称(点名字改名,+状态说明)· 站位徽章 · 删除
@@ -46,6 +67,15 @@ class CharacterCard extends ConsumerWidget {
         : null;
     final scheme = context.scheme;
     final chars = state.characters;
+    var nameWidth = 0.0;
+    if (desktop) {
+      for (final char in chars) {
+        final width =
+            _textWidth(context, _displayName(char.name), _nameStyle(context)) +
+            8;
+        if (width > nameWidth) nameWidth = width;
+      }
+    }
     final cap = maxCharactersOf(state.params.model);
     final canAdd = chars.length < cap;
     final actionSize =
@@ -58,7 +88,7 @@ class CharacterCard extends ConsumerWidget {
     // 一种来路 —— 用户在小槽位模型下自己又勾回来了,那确实该红。
     final active = chars.where((c) => c.enabled).length;
 
-    return SectionCard(
+    final card = SectionCard(
       icon: Icons.group_outlined,
       title: ref.watch(desktopModeProvider) ? '角色提示词' : '角色',
       reorderIndex: reorderIndex,
@@ -126,11 +156,16 @@ class CharacterCard extends ConsumerWidget {
                   Padding(
                     key: ValueKey('char${chars[i].id}'),
                     padding: EdgeInsets.only(top: i > 0 ? 9 : 0),
-                    child: _CharacterTile(char: chars[i], index: i),
+                    child: _CharacterTile(
+                      char: chars[i],
+                      index: i,
+                      nameWidth: nameWidth,
+                    ),
                   ),
               ],
             ),
     );
+    return desktop ? PromptReorderBoundary(child: card) : card;
   }
 
   Future<void> _addFromLibrary(BuildContext context, WidgetRef ref) async {
@@ -208,9 +243,14 @@ class CharacterCard extends ConsumerWidget {
 }
 
 class _CharacterTile extends ConsumerStatefulWidget {
-  const _CharacterTile({required this.char, required this.index});
+  const _CharacterTile({
+    required this.char,
+    required this.index,
+    required this.nameWidth,
+  });
 
   final CharacterPrompt char;
+  final double nameWidth;
 
   /// 行序,只用来算改名留空时回落的默认名。
   final int index;
@@ -478,35 +518,18 @@ class _CharacterTileState extends ConsumerState<_CharacterTile> {
     final position = autoPos
         ? 'AUTO'
         : positionChipLabel(char.position, grid: !isV5);
-    double textWidth(String value, TextStyle style) {
-      final painter = TextPainter(
-        text: TextSpan(text: value, style: style),
-        textScaler: MediaQuery.textScalerOf(context),
-        textDirection: Directionality.of(context),
-        maxLines: 1,
-      )..layout();
-      final width = painter.width.ceilToDouble();
-      painter.dispose();
-      return width;
-    }
-
-    final positionWidth = textWidth(
+    final positionWidth = _textWidth(
+      context,
       position,
       mono(context, size: 12, weight: FontWeight.w700),
     ).clamp(36.0, double.infinity);
-    final nameWidth = textWidth(
-      '角色 1',
-      context.texts.bodyLarge!.copyWith(
-        fontSize: 13,
-        fontWeight: FontWeight.w700,
-      ),
-    );
     final statusWidth = enabled
         ? 0.0
-        : 4 + textWidth('已禁用', context.texts.labelSmall!);
+        : 4 + _textWidth(context, '已禁用', context.texts.labelSmall!);
     // Reserve empty space after the name in either layout for click/drag.
-    const emptyWidth = 36.0;
-    final leadingWidth = 34 + 5 + 38 + 8 + nameWidth + statusWidth + emptyWidth;
+    const emptyWidth = 12.0;
+    final leadingWidth =
+        34 + 5 + 38 + widget.nameWidth + statusWidth + emptyWidth;
     final actionsWidth = 26 + 16 + 15 + 5 + positionWidth + 4 + 30;
     final requiredWidth = leadingWidth + 8 + actionsWidth;
     final leading = Row(
@@ -568,10 +591,10 @@ class _CharacterTileState extends ConsumerState<_CharacterTile> {
                   identity: (canvasId, id),
                   reorderIndex: index,
                   name: char.name,
+                  displayName: _displayName(char.name),
+                  labelMaxWidth: widget.nameWidth,
                   fallbackName: '角色 ${index + 1}',
-                  style: context.texts.bodyLarge!.copyWith(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w700,
+                  style: _nameStyle(context).copyWith(
                     color: enabled ? scheme.onSurface : scheme.outline,
                   ),
                   onRename: (name) => canvases.updatePrompts(canvasId, (p) {
