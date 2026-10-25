@@ -34,6 +34,7 @@ try {
         New-Item -ItemType Directory -Path $path -Force | Out-Null
     }
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'start_windows.ps1') -Destination $launcher
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows_runtime_files.ps1') -Destination (Join-Path $project 'tool/windows_runtime_files.ps1')
     $realWorkspace = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
     Copy-Item -LiteralPath (Join-Path $realWorkspace 'start.bat') -Destination (Join-Path $fixture 'start.bat')
     Set-Content -LiteralPath "$project/pubspec.yaml" -Value 'name: launcher_fixture'

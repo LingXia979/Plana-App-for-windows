@@ -680,7 +680,10 @@ void main() {
     await tester.tap(find.byTooltip('添加角色'));
     await tester.pumpAndSettle();
     expect(c.read(generateProvider).characters.length, 2);
-    expect(find.byTooltip('拖动角色排序'), findsWidgets);
+    for (final role in c.read(generateProvider).characters) {
+      expect(key('character-header-${role.id}'), findsOneWidget);
+    }
+    expect(find.byTooltip('拖动角色排序'), findsNothing);
     await screenshot(tester, 'character-inline');
     expect(find.byType(Dialog), findsNothing);
     await tester.tap(key('desktop-inspiration-tab'));

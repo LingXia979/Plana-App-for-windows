@@ -721,8 +721,14 @@ class _SectionRows extends ConsumerWidget {
     final notifier = ref.read(generateProvider.notifier);
     final tok = ref.watch(naiTokenizerProvider).value;
     final sections = withMainRow(state.sections, state.prompt);
+    final desktop = ref.watch(desktopModeProvider);
+    final canvasId = desktop
+        ? ref.watch(canvasWorkspaceProvider.select((w) => w.activeId))
+        : null;
     var k = 0; // 非主体分区的序号,改名留空时的默认名用
     return ReorderableListView(
+      // Copies share section IDs; a canvas switch must cancel the old drag.
+      key: desktop ? ValueKey(('sections', canvasId)) : null,
       shrinkWrap: true,
       physics: const NeverScrollableScrollPhysics(),
       // Desktop headers reorder directly; mobile keeps its selection handles.
@@ -738,7 +744,12 @@ class _SectionRows extends ConsumerWidget {
         dragStartHaptic(index);
       },
       onReorderEnd: dragEndHaptic,
-      onReorderItem: notifier.reorderSections,
+      onReorderItem: (oldIndex, newIndex) {
+        if (desktop && ref.read(canvasWorkspaceProvider).activeId != canvasId) {
+          return;
+        }
+        notifier.reorderSections(oldIndex, newIndex);
+      },
       children: [
         for (final (i, s) in sections.indexed)
           _SectionRow(

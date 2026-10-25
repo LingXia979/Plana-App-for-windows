@@ -470,6 +470,76 @@ void main() {
     expect(tester.takeException(), isNull);
     await finish(tester);
   });
+  for (final id in ['main', 's1']) {
+    for (final immediate in [false, true]) {
+      desktopTest(
+        '$id canvas switch cancels dragging before release ${immediate ? 'without a frame' : 'after a frame'}',
+        (tester) async {
+          final canvases = fixture.container.read(
+            canvasWorkspaceProvider.notifier,
+          );
+          final first = fixture.container
+              .read(canvasWorkspaceProvider)
+              .activeId;
+          final second = canvases.create(duplicate: true);
+          gen().setPrompts(positive: 'second main');
+          canvases.updatePrompts(
+            second,
+            (p) => p.copyWith(
+              sections: [
+                for (final s in p.sections)
+                  if (s.id == 's1')
+                    s.copyWith(
+                      name: '第二画布',
+                      positive: 'second section',
+                      positiveRaw: 'second section',
+                    )
+                  else
+                    s,
+              ],
+            ),
+          );
+          canvases.select(first);
+          await mount(tester);
+          await collapseAll(tester);
+          final start = emptyHeader(tester, id);
+          final end = Offset(
+            start.dx,
+            tester.getBottomLeft(key('secs2')).dy + 40,
+          );
+          final mouse = await tester.startGesture(
+            start,
+            kind: PointerDeviceKind.mouse,
+          );
+          await mouse.moveBy(const Offset(0, 4));
+          await tester.pump();
+          expect(inList(id), isFalse);
+          for (var step = 1; step <= 6; step++) {
+            await mouse.moveTo(Offset.lerp(start, end, step / 6)!);
+            await tester.pump(const Duration(milliseconds: 20));
+          }
+          canvases.select(second);
+          if (!immediate) {
+            await tester.pumpAndSettle();
+          }
+          await mouse.up();
+          await tester.pumpAndSettle();
+          expect(order(), ['main', 's1', 's2']);
+          expect(state().prompt, 'second main');
+          expect(state().sections[1].name, '第二画布');
+          expect(state().sections[1].positive, 'second section');
+          canvases.select(first);
+          await tester.pumpAndSettle();
+          expect(order(), ['main', 's1', 's2']);
+          expect(state().prompt, 'forest');
+          expect(state().sections[1].positiveRaw, 'blue sky, ~hat~');
+          expect(nameInput(id), findsNothing);
+          expect(tester.takeException(), isNull);
+          await finish(tester);
+        },
+      );
+    }
+  }
 }
 
 void desktopTest(String description, WidgetTesterCallback callback) {
