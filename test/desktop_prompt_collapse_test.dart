@@ -85,6 +85,14 @@ void main() {
       await tester.tapAt(
         tester.getRect(key(id)).centerRight - const Offset(18, 0),
       );
+    } else if (id.startsWith('character-header-')) {
+      final charId = id.substring('character-header-'.length);
+      final avatar = tester.getRect(key('character-avatar-$charId'));
+      final fullscreen = tester.getRect(key('character-fullscreen-$charId'));
+      final x = fullscreen.top > avatar.bottom
+          ? tester.getRect(key(id)).right - 18
+          : fullscreen.left - 20;
+      await tester.tapAt(Offset(x, avatar.center.dy));
     } else {
       await tester.tap(key(id));
     }
@@ -109,13 +117,13 @@ void main() {
       );
       await mount(tester, const CharacterCard());
       expect(input('desktop-character-$id'), findsOneWidget);
-      await tap(tester, 'character-collapse-$id');
+      await tap(tester, 'character-header-$id');
       expect(input('desktop-character-$id'), findsNothing);
       expect(find.byType(TagCardPreview), findsOneWidget);
       expect(key('character-library-$id'), findsNothing);
       final avatarPosition = tester.getTopLeft(key('character-avatar-$id'));
       expect(find.text('traveler, white shirt'), findsOneWidget);
-      await tap(tester, 'character-collapse-$id');
+      await tap(tester, 'character-header-$id');
       expect(key('character-library-$id'), findsNothing);
       expect(tester.getTopLeft(key('character-avatar-$id')), avatarPosition);
       expect(find.byType(TagCardPreview), findsOneWidget);
@@ -131,7 +139,7 @@ void main() {
         input('desktop-character-$id'),
         'traveler, blue shirt',
       );
-      await tap(tester, 'character-collapse-$id');
+      await tap(tester, 'character-header-$id');
       expect(
         container.read(generateProvider).characters.single.positive,
         'traveler, blue shirt',
@@ -151,7 +159,7 @@ void main() {
           .read(themeSettingsProvider.notifier)
           .patch((s) => s.copyWith(collapsiblePromptCards: true));
       await tester.pumpAndSettle();
-      await tap(tester, 'character-collapse-$id');
+      await tap(tester, 'character-header-$id');
       expect(
         tester.widget<TextField>(input('desktop-character-$id')).controller,
         same(field.controller),

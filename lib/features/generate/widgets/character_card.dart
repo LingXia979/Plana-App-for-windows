@@ -9,6 +9,7 @@ import '../../../core/platform/desktop.dart';
 import '../../../core/theme/theme_settings.dart';
 import '../../../core/util/nai_tokenizer.dart';
 import '../../editor/editor_page.dart';
+import '../../editor/editor_state.dart' show editorSessionsProvider;
 import '../../editor/editor_models.dart' show outputOf, draftOf;
 import '../../inspiration/widgets/char_pick_sheet.dart';
 import '../../inspiration/widgets/tag_card.dart' show TagCardPreview;
@@ -25,6 +26,7 @@ import 'desktop_prompt_card.dart';
 import 'prompt_card.dart' show negativePreview;
 import 'reference_image_preview.dart';
 import 'prompt_inline_name.dart';
+import 'prompt_header_target.dart';
 
 /// 角色面板(定稿版):每个角色一张内嵌圆角小卡。
 /// 行 1:电源开关 · 名称(点名字改名,+状态说明)· 站位徽章 · 删除
@@ -38,6 +40,10 @@ class CharacterCard extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final state = ref.watch(generateProvider);
     final notifier = ref.read(generateProvider.notifier);
+    final desktop = ref.watch(desktopModeProvider);
+    final canvasId = desktop
+        ? ref.watch(canvasWorkspaceProvider.select((w) => w.activeId))
+        : null;
     final scheme = context.scheme;
     final chars = state.characters;
     final cap = maxCharactersOf(state.params.model);
@@ -90,16 +96,31 @@ class CharacterCard extends ConsumerWidget {
       chevronPlaceholder: chars.isEmpty,
       body: chars.isEmpty
           ? null
-          // 长按卡片拖动排序。删除只走行内那枚按钮 —— 横滑抹掉的是整份角色配置
-          // (提示词/站位/开关),而这里没有撤销可给。
+          // Desktop headers sort immediately; mobile retains long-press drag.
           : ReorderableListView(
+              // Duplicated canvases share character IDs. Cancel an old drag
+              // when changing canvases instead of reusing it on the new list.
+              key: desktop ? ValueKey(('characters', canvasId)) : null,
               buildDefaultDragHandles: !ref.watch(desktopModeProvider),
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
               proxyDecorator: dragProxy,
-              onReorderStart: dragStartHaptic,
+              onReorderStart: (index) {
+                if (ref.read(desktopModeProvider)) {
+                  ref.read(editorSessionsProvider).flushPending();
+                  // Close text selection overlays before moving the editor.
+                  FocusManager.instance.primaryFocus?.unfocus();
+                }
+                dragStartHaptic(index);
+              },
               onReorderEnd: dragEndHaptic,
-              onReorderItem: notifier.reorderCharacters,
+              onReorderItem: (oldIndex, newIndex) {
+                if (desktop &&
+                    ref.read(canvasWorkspaceProvider).activeId != canvasId) {
+                  return;
+                }
+                notifier.reorderCharacters(oldIndex, newIndex);
+              },
               children: [
                 for (var i = 0; i < chars.length; i++)
                   Padding(
@@ -483,10 +504,10 @@ class _CharacterTileState extends ConsumerState<_CharacterTile> {
     final statusWidth = enabled
         ? 0.0
         : 4 + textWidth('已禁用', context.texts.labelSmall!);
-    // Avatar, toggle, name padding, separation and trailing controls.
-    final leadingWidth = 34 + 5 + 38 + 8 + nameWidth + statusWidth;
-    final actionsWidth =
-        26 + (collapsible ? 36 : 0) + 16 + 15 + 5 + positionWidth + 2 + 30 + 18;
+    // Reserve empty space after the name in either layout for click/drag.
+    const emptyWidth = 36.0;
+    final leadingWidth = 34 + 5 + 38 + 8 + nameWidth + statusWidth + emptyWidth;
+    final actionsWidth = 26 + 16 + 15 + 5 + positionWidth + 4 + 30;
     final requiredWidth = leadingWidth + 8 + actionsWidth;
     final leading = Row(
       children: [
@@ -545,6 +566,7 @@ class _CharacterTileState extends ConsumerState<_CharacterTile> {
                   key: _nameKey,
                   identifier: 'character-name-$id',
                   identity: (canvasId, id),
+                  reorderIndex: index,
                   name: char.name,
                   fallbackName: '角色 ${index + 1}',
                   style: context.texts.bodyLarge!.copyWith(
@@ -568,16 +590,19 @@ class _CharacterTileState extends ConsumerState<_CharacterTile> {
                 // 不给 Flexible:状态标签是定长的,该让角色名去挤。
                 // 原先两个都 flex:1 平分,标签分到的一半装不下,
                 // 就从尾巴开始吃 —— 屏幕上只剩「已禁用 ·…」。
-                Text(
-                  '已禁用',
-                  style: context.texts.labelSmall!.copyWith(
-                    color: scheme.outline,
+                IgnorePointer(
+                  child: Text(
+                    '已禁用',
+                    style: context.texts.labelSmall!.copyWith(
+                      color: scheme.outline,
+                    ),
                   ),
                 ),
               ],
             ],
           ),
         ),
+        const SizedBox(width: emptyWidth),
       ],
     );
     final actions = Wrap(
@@ -590,18 +615,6 @@ class _CharacterTileState extends ConsumerState<_CharacterTile> {
           key: ValueKey('character-fullscreen-${char.id}'),
           charId: char.id,
         ),
-        if (collapsible)
-          IconButton(
-            key: ValueKey('character-collapse-${char.id}'),
-            tooltip: compact ? '展开角色提示词' : '收起角色提示词',
-            onPressed: () => setState(() => _collapsed = !compact),
-            icon: Icon(
-              compact ? Icons.expand_more : Icons.expand_less,
-              size: 22,
-            ),
-            constraints: const BoxConstraints.tightFor(width: 34, height: 38),
-            padding: EdgeInsets.zero,
-          ),
         // 站位徽章
         Material(
           color: scheme.surfaceContainerHighest,
@@ -641,56 +654,64 @@ class _CharacterTileState extends ConsumerState<_CharacterTile> {
             ),
           ),
         ),
-        Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            SizedBox(
-              width: 30,
-              height: 40,
-              child: IconButton(
-                onPressed: () => notifier.removeCharacter(char.id),
-                icon: Icon(
-                  Icons.delete_outline,
-                  size: 20,
-                  color: scheme.error.withValues(alpha: .85),
-                ),
-                tooltip: '删除角色',
-                padding: EdgeInsets.zero,
-                visualDensity: VisualDensity.compact,
-              ),
+        SizedBox(
+          width: 30,
+          height: 40,
+          child: IconButton(
+            onPressed: () => notifier.removeCharacter(char.id),
+            icon: Icon(
+              Icons.delete_outline,
+              size: 20,
+              color: scheme.error.withValues(alpha: .85),
             ),
-            ReorderableDragStartListener(
-              index: index,
-              child: Tooltip(
-                message: '拖动角色排序',
-                child: Icon(
-                  Icons.drag_indicator,
-                  size: 18,
-                  color: scheme.outline,
-                ),
-              ),
-            ),
-          ],
+            tooltip: '删除角色',
+            padding: EdgeInsets.zero,
+            visualDensity: VisualDensity.compact,
+          ),
         ),
       ],
     );
     return LayoutBuilder(
       builder: (context, constraints) {
-        if (constraints.maxWidth < requiredWidth) {
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              leading,
-              const SizedBox(height: 4),
-              Align(alignment: Alignment.centerRight, child: actions),
-            ],
-          );
-        }
-        return Row(
+        final narrow = constraints.maxWidth < requiredWidth;
+        return Stack(
           children: [
-            Expanded(child: leading),
-            const SizedBox(width: 8),
-            actions,
+            Positioned.fill(
+              child: PromptHeaderTarget(
+                identifier: 'character-header-$id',
+                label: !collapsible
+                    ? '角色提示词'
+                    : compact
+                    ? '展开角色提示词'
+                    : '收起角色提示词',
+                reorderIndex: index,
+                onTap: collapsible
+                    ? () {
+                        ref.read(editorSessionsProvider).flushPending();
+                        setState(() => _collapsed = !compact);
+                      }
+                    : null,
+              ),
+            ),
+            // The target sits behind controls, never around them. Buttons and
+            // editable names win hit testing; empty row space reaches it.
+            if (narrow)
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  leading,
+                  const SizedBox(height: 4),
+                  Align(alignment: Alignment.centerRight, child: actions),
+                ],
+              )
+            else
+              Row(
+                children: [
+                  Expanded(child: leading),
+                  const SizedBox(width: 8),
+                  actions,
+                ],
+              ),
           ],
         );
       },
