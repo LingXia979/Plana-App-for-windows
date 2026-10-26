@@ -124,6 +124,150 @@ void main() {
 
   for (final role in [false, true]) {
     testWidgets(
+      '${role ? 'characters' : 'sections'} accelerate smoothly and stop without inertia',
+      (tester) async {
+        await mount(tester);
+        final id = order(role).first;
+        scroll.jumpTo(
+          scroll.offset + group(tester, role).top - viewport(tester).top - 8,
+        );
+        await tester.pumpAndSettle();
+        final mouse = await tester.startGesture(
+          grab(tester, id, role),
+          kind: PointerDeviceKind.mouse,
+        );
+        await mouse.moveBy(const Offset(0, 4));
+        await tester.pump();
+        await mouse.moveTo(Offset(250, viewport(tester).bottom - 2));
+        final steps = <double>[];
+        for (var i = 0; i < 12; i++) {
+          final before = scroll.offset;
+          await tester.pump(const Duration(milliseconds: 20));
+          steps.add(scroll.offset - before);
+        }
+        final movingSteps = steps.where((d) => d > .01).toList();
+        expect(movingSteps.length, greaterThan(8));
+        expect(movingSteps.last, greaterThan(movingSteps.first * 2));
+        expect(movingSteps, everyElement(lessThanOrEqualTo(16.01)));
+        await mouse.moveTo(viewport(tester).center);
+        final stopped = scroll.offset;
+        await frames(tester, 30);
+        expect(scroll.offset, closeTo(stopped, .01));
+        await mouse.cancel();
+        await tester.pumpAndSettle();
+        await finish(tester);
+      },
+      variant: TargetPlatformVariant({TargetPlatform.windows}),
+    );
+
+    testWidgets(
+      '${role ? 'characters' : 'sections'} unequal rows settle without changing proxy size or folding',
+      (tester) async {
+        await mount(tester);
+        final initial = order(role);
+        final first = initial.first;
+        final second = initial[1];
+        scroll.jumpTo(
+          scroll.offset + group(tester, role).top - viewport(tester).top - 8,
+        );
+        await tester.pumpAndSettle();
+        await tester.tapAt(
+          grab(tester, second, role),
+          kind: PointerDeviceKind.mouse,
+        );
+        await tester.pumpAndSettle();
+        Finder row(String id) => key(role ? 'char$id' : 'sec$id');
+        final small = tester.getSize(row(second));
+        expect(
+          tester.getSize(row(first)).height,
+          greaterThan(small.height + 50),
+        );
+        final start = grab(tester, second, role);
+        final firstRect = tester.getRect(row(first));
+        final mouse = await tester.startGesture(
+          start,
+          kind: PointerDeviceKind.mouse,
+        );
+        await mouse.moveBy(const Offset(0, -4));
+        await tester.pump();
+        await mouse.moveTo(Offset(start.dx, firstRect.top + 45));
+        await frames(tester, 20);
+        expect(tester.getSize(row(second)), small);
+        final settled = tester.getTopLeft(row(first));
+        for (var i = 0; i < 20; i++) {
+          // Repeated real drag updates at the same location must not oscillate
+          // as a tall neighbor animates around a short placeholder.
+          await mouse.moveTo(Offset(start.dx, firstRect.top + 45));
+          await tester.pump(const Duration(milliseconds: 30));
+          expect(tester.getTopLeft(row(first)), settled);
+        }
+        await mouse.up();
+        await tester.pumpAndSettle();
+        expect(order(role), [second, first, ...initial.skip(2)]);
+        // Character rows omit the 9px inter-card gap when moved to the top.
+        expect(
+          tester.getSize(row(second)),
+          Size(small.width, small.height - (role ? 9 : 0)),
+        );
+        expect(
+          tester.getSize(row(first)).height,
+          greaterThan(small.height + 50),
+        );
+        expect(tester.takeException(), isNull);
+        await finish(tester);
+      },
+      variant: TargetPlatformVariant({TargetPlatform.windows}),
+    );
+
+    testWidgets(
+      '${role ? 'characters' : 'sections'} scroll in a wider band and through fixed bars without hover popups',
+      (tester) async {
+        await mount(tester);
+        final id = order(role).first;
+        scroll.jumpTo(
+          scroll.offset + group(tester, role).top - viewport(tester).top - 8,
+        );
+        await tester.pumpAndSettle();
+        final start = grab(tester, id, role);
+        final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+        await mouse.addPointer(location: start);
+        await mouse.moveTo(start);
+        await frames(tester, 40);
+        expect(find.textContaining('按住拖动排序'), findsWidgets);
+        await mouse.down(start);
+        await mouse.moveBy(const Offset(0, 4));
+        await tester.pump();
+        final top = scroll.offset;
+        await mouse.moveTo(Offset(250, viewport(tester).bottom - 65));
+        await frames(tester, 25);
+        expect(scroll.offset, greaterThan(top + 15));
+        expect(find.textContaining('按住拖动排序'), findsNothing);
+
+        // Overshooting the list into the fixed footer must keep scrolling,
+        // even when the pointer stops moving there.
+        final beforeFooter = scroll.offset;
+        await mouse.moveTo(Offset(250, viewport(tester).bottom + 40));
+        await frames(tester, 25);
+        expect(scroll.offset, greaterThan(beforeFooter + 100));
+        expect(find.textContaining('按住拖动排序'), findsNothing);
+
+        final beforeHeader = scroll.offset;
+        await mouse.moveTo(Offset(250, viewport(tester).top - 30));
+        await frames(tester, 20);
+        expect(scroll.offset, lessThan(beforeHeader - 80));
+        await mouse.moveTo(const Offset(250, -10));
+        final outside = scroll.offset;
+        await frames(tester, 20);
+        expect(scroll.offset, closeTo(outside, .01));
+        await mouse.cancel();
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        await finish(tester);
+      },
+      variant: TargetPlatformVariant({TargetPlatform.windows}),
+    );
+
+    testWidgets(
       '${role ? 'characters' : 'sections'} continuously scroll both ways, reorder and stop at group boundaries',
       (tester) async {
         await mount(tester);

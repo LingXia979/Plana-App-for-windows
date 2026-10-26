@@ -134,7 +134,7 @@ class CharacterCard extends ConsumerWidget {
               buildDefaultDragHandles: !ref.watch(desktopModeProvider),
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
-              proxyDecorator: dragProxy,
+              proxyDecorator: desktop ? desktopPromptDragProxy : dragProxy,
               onReorderStart: (index) {
                 if (ref.read(desktopModeProvider)) {
                   ref.read(editorSessionsProvider).flushPending();

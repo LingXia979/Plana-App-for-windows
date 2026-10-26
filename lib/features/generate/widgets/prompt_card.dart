@@ -735,7 +735,7 @@ class _SectionRows extends ConsumerWidget {
       physics: const NeverScrollableScrollPhysics(),
       // Desktop headers reorder directly; mobile keeps its selection handles.
       buildDefaultDragHandles: false,
-      proxyDecorator: _rowDragProxy,
+      proxyDecorator: desktop ? desktopPromptDragProxy : _rowDragProxy,
       onReorderStart: (index) {
         ref.read(editorSessionsProvider).flushPending();
         // A focused text field can leave its selection overlay behind when
