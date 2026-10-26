@@ -42,7 +42,8 @@ class _AssistantModelDropdownState
   Widget build(BuildContext context) {
     final models = ref.watch(agentModelsProvider);
     final current = ref.watch(assistantModelProvider);
-    final endpoints = ref.watch(customEndpointsProvider).value ?? const [];
+    final endpointState = ref.watch(customEndpointsProvider);
+    final endpoints = endpointState.value ?? const [];
     final authorized = ref.watch(assistantBotAuthorizedProvider);
     void edit([CustomEndpoint? endpoint]) {
       menu.close();
@@ -137,6 +138,14 @@ class _AssistantModelDropdownState
           const Divider(height: 12),
         ],
         settingSection(context, '我的接口'),
+        if (endpointState.hasError)
+          MenuItemButton(
+            leadingIcon: const Icon(Icons.refresh, size: 18),
+            onPressed: () => ref.invalidate(customEndpointsProvider),
+            child: const Text('读取接口失败，重新加载接口'),
+          )
+        else if (endpointState.isLoading && !endpointState.hasValue)
+          const Padding(padding: EdgeInsets.all(20), child: Text('正在读取接口…')),
         for (final e in endpoints)
           if (e.usable)
             choice(customModelKey(e.id), e.displayName, subtitle: e.model)
@@ -214,7 +223,8 @@ class _ModelSheet extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final async = ref.watch(agentModelsProvider);
     final currentKey = ref.watch(assistantModelProvider)?.key ?? '';
-    final endpoints = ref.watch(customEndpointsProvider).value ?? const [];
+    final endpointState = ref.watch(customEndpointsProvider);
+    final endpoints = endpointState.value ?? const [];
     // 没有 Bot 授权时只列免费的;后端一条免费的都没有就整组不列
     final authorized = ref.watch(assistantBotAuthorizedProvider);
     List<AgentModelChoice> shown(AgentModelList l) =>
@@ -258,6 +268,18 @@ class _ModelSheet extends ConsumerWidget {
           },
         ],
         settingSection(context, '我的接口'),
+        if (endpointState.hasError)
+          _note(
+            context,
+            '读取接口失败',
+            onRetry: () => ref.invalidate(customEndpointsProvider),
+            retryLabel: '重新加载接口',
+          )
+        else if (endpointState.isLoading && !endpointState.hasValue)
+          const Padding(
+            padding: EdgeInsets.fromLTRB(20, 8, 20, 4),
+            child: Text('正在读取接口…'),
+          ),
         for (final e in endpoints)
           _row(
             context,
@@ -379,6 +401,7 @@ class _ModelSheet extends ConsumerWidget {
     BuildContext context,
     String text, {
     required VoidCallback onRetry,
+    String retryLabel = '重试',
   }) => Padding(
     padding: const EdgeInsets.fromLTRB(20, 8, 8, 4),
     child: Row(
@@ -392,7 +415,7 @@ class _ModelSheet extends ConsumerWidget {
             ),
           ),
         ),
-        TextButton(onPressed: onRetry, child: const Text('重试')),
+        TextButton(onPressed: onRetry, child: Text(retryLabel)),
       ],
     ),
   );

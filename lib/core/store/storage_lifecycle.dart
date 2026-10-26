@@ -20,9 +20,15 @@ AppLifecycleListener createStorageLifecycleListener(
   },
   onExitRequested: () async {
     RuntimeDiagnostics.current?.event('exit-requested');
-    beforeFlush?.call();
-    await stores.flushForExit();
-    RuntimeDiagnostics.current?.event('exit-storage-flushed');
-    return AppExitResponse.exit;
+    try {
+      beforeFlush?.call();
+      await stores.flushForExit();
+      RuntimeDiagnostics.current?.event('exit-storage-flushed');
+      return AppExitResponse.exit;
+    } catch (error, stack) {
+      RuntimeDiagnostics.current?.error('exit-storage-failed', error, stack);
+      stores.reportSaveError('保存未完成，应用已保留打开，请检查磁盘后重试');
+      return AppExitResponse.cancel;
+    }
   },
 );

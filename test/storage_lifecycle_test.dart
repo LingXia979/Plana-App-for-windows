@@ -76,6 +76,34 @@ void main() {
     },
   );
 
+  test('failed workspace write cancels exit until it can be retried', () async {
+    final blocker = Directory('${root.path}/workspace/state.json.tmp')
+      ..createSync();
+    stores.workspace.schedule(
+      GenerateState.initial().copyWith(prompt: 'retry draft'),
+      idSeq: 100,
+    );
+    expect(await binding.handleRequestAppExit(), AppExitResponse.cancel);
+    expect(stores.saveError.value, contains('保存未完成'));
+    blocker.deleteSync();
+    expect(await binding.handleRequestAppExit(), AppExitResponse.exit);
+    final reopened = await AppStores.open(rootOverride: root);
+    expect(reopened.workspace.initial?.prompt, 'retry draft');
+  });
+
+  test(
+    'failed editor writeback cancels exit before reporting a flush',
+    () async {
+      lifecycle.dispose();
+      lifecycle = createStorageLifecycleListener(
+        stores,
+        beforeFlush: () => throw StateError('editor writeback failed'),
+      );
+      expect(await binding.handleRequestAppExit(), AppExitResponse.cancel);
+      expect(stores.saveError.value, contains('保存未完成'));
+    },
+  );
+
   testWidgets('exit also commits a fullscreen editor with pending writeback', (
     tester,
   ) async {

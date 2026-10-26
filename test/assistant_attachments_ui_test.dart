@@ -6,6 +6,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 import 'package:plana_app/core/platform/clipboard_image.dart';
@@ -108,6 +109,7 @@ void main() {
   var fallbackImports = 0;
 
   setUp(() {
+    FlutterSecureStorage.setMockInitialValues({});
     historyReads.clear();
     stores = AppStores.ephemeral();
     container = ProviderContainer(

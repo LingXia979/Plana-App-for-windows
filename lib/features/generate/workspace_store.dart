@@ -18,11 +18,12 @@ import 'state_codec.dart';
 /// 读得懂两种老格式:v1 只有 `state`(迁成「默认画布」);v2 是每张画布各存一整份
 /// 状态、没有顶层 `state`(全局设置取当时那张当前画布的)。
 class WorkspaceStore {
-  WorkspaceStore(this._blobs, Directory supportRoot)
+  WorkspaceStore(this._blobs, Directory supportRoot, {this.onSaveError})
     : _file = File('${supportRoot.path}/workspace/state.json'),
       _presetsFile = File('${supportRoot.path}/prompt_presets.json');
 
   final BlobStore _blobs;
+  final void Function(Object error)? onSaveError;
   final File _file;
   File get _migrationBackup => File('${_file.path}.pre-v3.bak');
 
@@ -227,6 +228,8 @@ class WorkspaceStore {
   int _pendingSeq = 100;
   Timer? _timer;
   Future<void> _chain = Future.value();
+  Future<void> _lastWrite = Future.value();
+  int _revision = 0;
 
   /// 状态一变就来这里排队;真正写盘在防抖窗口后。
   void schedule(
@@ -235,6 +238,7 @@ class WorkspaceStore {
     required int idSeq,
   }) {
     _blobs.referencesChanged();
+    _revision++;
     _latest = s;
     _pending = s;
     _pendingCanvases = canvases ?? CanvasWorkspace.single(CanvasPrompts.of(s));
@@ -252,7 +256,8 @@ class WorkspaceStore {
     _pendingCanvases = null;
     _timer?.cancel();
     final seq = _pendingSeq;
-    _chain = _chain.then((_) async {
+    final revision = _revision;
+    final write = _chain.then((_) async {
       try {
         final enc = await encodeGenerateState(s, _blobs);
         final canvases = <Map<String, dynamic>>[
@@ -277,12 +282,21 @@ class WorkspaceStore {
           }),
         );
       } catch (e) {
+        if (_revision == revision) {
+          _pending = s;
+          _pendingCanvases = w;
+          _pendingSeq = seq;
+        }
         logd('[workspace] 保存失败: $e');
+        onSaveError?.call(e);
+        rethrow;
       }
     });
+    _lastWrite = write;
+    _chain = write.catchError((Object _) {});
   }
 
-  Future<void> get idle => _chain;
+  Future<void> get idle => _lastWrite;
 
   /// 一张画布的提示词组只存跟画布走的那几项。角色编解码借整份状态那一套
   /// (含老存档的站位迁移),免得两种角色格式各走各的;提示词组不带图片,

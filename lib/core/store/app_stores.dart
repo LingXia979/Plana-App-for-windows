@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show ValueNotifier;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -30,6 +31,7 @@ class AppStores {
     this.prefs,
     this.albums,
     this.desktopOutput,
+    this.saveError,
   );
 
   final BlobStore blobs;
@@ -45,20 +47,38 @@ class AppStores {
   /// 非机密设置(主题/生成参数/编辑器…),见 [PrefsStore]。
   final PrefsStore prefs;
 
+  /// A failed debounced write remains in memory and can be retried from the UI.
+  final ValueNotifier<String?> saveError;
+
+  void reportSaveError(String message) {
+    saveError.value = null;
+    saveError.value = message;
+  }
+
   /// 测试用空档:临时目录、不读盘;写入尽力而为。
   factory AppStores.ephemeral() {
     final root = Directory.systemTemp.createTempSync('plana_stores');
     RemoteImageStore.bind(root);
     final blobs = BlobStore(root);
+    final saveError = ValueNotifier<String?>(null);
     return AppStores._(
       blobs,
-      WorkspaceStore(blobs, root),
+      WorkspaceStore(
+        blobs,
+        root,
+        onSaveError: (_) => saveError.value = '工作台保存失败，修改仍在内存，请检查磁盘后重试',
+      ),
       GalleryStore(blobs, root),
       KeyLedgerStore(root),
-      AssistantStore(blobs, root),
+      AssistantStore(
+        blobs,
+        root,
+        onSaveError: (_) => saveError.value = '助手会话保存失败，修改仍在内存，请检查磁盘后重试',
+      ),
       PrefsStore.emptyForTest(root),
       AlbumStore(root),
       DesktopOutputStore(Directory('${root.path}/outputs')),
+      saveError,
     );
   }
 
@@ -87,11 +107,20 @@ class AppStores {
     // 知道 root 的地方(见 RemoteImageStore)。
     RemoteImageStore.bind(root);
     final blobs = BlobStore(root);
-    final workspace = WorkspaceStore(blobs, root);
+    final saveError = ValueNotifier<String?>(null);
+    final workspace = WorkspaceStore(
+      blobs,
+      root,
+      onSaveError: (_) => saveError.value = '工作台保存失败，修改仍在内存，请检查磁盘后重试',
+    );
     final gallery = GalleryStore(blobs, root);
     final albums = AlbumStore(root);
     final ledger = KeyLedgerStore(root);
-    final assistant = AssistantStore(blobs, root);
+    final assistant = AssistantStore(
+      blobs,
+      root,
+      onSaveError: (_) => saveError.value = '助手会话保存失败，修改仍在内存，请检查磁盘后重试',
+    );
     try {
       await blobs.ensureReady();
     } catch (_) {}
@@ -137,6 +166,7 @@ class AppStores {
         legacyRoots: legacyOutputRoots,
         locationIssues: outputLocationIssues,
       ),
+      saveError,
     );
   }
 

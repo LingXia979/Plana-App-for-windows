@@ -184,47 +184,54 @@ class CustomEndpointsNotifier extends AsyncNotifier<List<CustomEndpoint>> {
 
   @override
   Future<List<CustomEndpoint>> build() async {
-    try {
-      final raw = await _storage.read(key: _key);
-      if (raw == null || raw.isEmpty) return const [];
-      final j = jsonDecode(raw);
-      if (j is! List) return const [];
-      return [for (final e in j) ?CustomEndpoint.fromJson(e)];
-    } catch (_) {
-      // Keystore 还没就绪 / 读坏了 —— 按「没存过」处理,不崩。
-      return const [];
-    }
+    final raw = await _storage.read(key: _key);
+    if (raw == null || raw.isEmpty) return const [];
+    final j = jsonDecode(raw);
+    if (j is! List) throw const FormatException('接口数据格式无效');
+    return [for (final e in j) ?CustomEndpoint.fromJson(e)];
   }
 
-  Future<void> _save(List<CustomEndpoint> next) async {
-    state = AsyncData(next);
-    try {
+  Future<void> _writes = Future.value();
+
+  Future<void> _edit(
+    List<CustomEndpoint> Function(List<CustomEndpoint>) change,
+  ) {
+    final write = _writes.then((_) async {
+      // Riverpod retains cached values while refreshing and after read errors.
+      // A cached value alone is not permission to replace the stored list.
+      if (!ref.mounted ||
+          state.isLoading ||
+          state.hasError ||
+          !state.hasValue) {
+        throw StateError('无法读取已保存接口，请稍后重试');
+      }
+      final next = change(state.value!);
       await _storage.write(
         key: _key,
         value: jsonEncode([for (final e in next) e.toJson()]),
       );
-    } catch (_) {
-      // 写不进去只影响下次冷启动,这一程照常能用
-    }
+      if (ref.mounted) state = AsyncData(next);
+    });
+    _writes = write.catchError((Object _) {});
+    return write;
   }
 
   /// 新增或就地替换(按 id)。
-  Future<void> put(CustomEndpoint e) async {
-    final list = [...state.value ?? const <CustomEndpoint>[]];
-    final i = list.indexWhere((x) => x.id == e.id);
+  Future<void> put(CustomEndpoint e) => _edit((current) {
+    final next = [...current];
+    final i = next.indexWhere((item) => item.id == e.id);
     if (i < 0) {
-      list.add(e);
+      next.add(e);
     } else {
-      list[i] = e;
+      next[i] = e;
     }
-    await _save(list);
-  }
+    return next;
+  });
 
-  Future<void> remove(String id) async {
-    final list = [
-      for (final e in state.value ?? const <CustomEndpoint>[])
+  Future<void> remove(String id) => _edit(
+    (current) => [
+      for (final e in current)
         if (e.id != id) e,
-    ];
-    await _save(list);
-  }
+    ],
+  );
 }

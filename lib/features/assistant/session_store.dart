@@ -18,10 +18,11 @@ import 'assistant_models.dart';
 /// 用户带的图不进 JSON,只留 blob 键 —— 所以 [liveRefs] **必须**接进
 /// `AppStores.postBootMaintenance` 的 GC 引用清单,否则启动第 6 秒图就被回收了。
 class AssistantStore {
-  AssistantStore(this._blobs, Directory supportRoot)
+  AssistantStore(this._blobs, Directory supportRoot, {this.onSaveError})
     : _file = File('${supportRoot.path}/assistant/sessions.json');
 
   final BlobStore _blobs;
+  final void Function(Object error)? onSaveError;
   final File _file;
 
   /// 启动读出的当前对话;空 = 首启/无存档。
@@ -81,15 +82,30 @@ class AssistantStore {
   /// 调试记录落盘。一轮收尾才写一次,不必防抖;和对话存档排同一条写队列。
   Future<void> saveTraces(List<AgentTrace> traces) {
     final snapshot = [for (final t in traces) t.toJson()];
-    return _chain = _chain.then((_) async {
+    _traceRevision++;
+    _pendingTraces = snapshot;
+    return _flushTraces()!;
+  }
+
+  Future<void>? _flushTraces() {
+    final snapshot = _pendingTraces;
+    if (snapshot == null) return null;
+    _pendingTraces = null;
+    final revision = _traceRevision;
+    return _enqueue(() async {
       try {
         await _traceFile.parent.create(recursive: true);
         await writeStringAtomic(
           _traceFile,
           jsonEncode({'v': 1, 'traces': snapshot}),
         );
+        _traceError = null;
       } catch (e) {
+        if (_traceRevision == revision) _pendingTraces = snapshot;
+        _traceError = e;
         logd('[assistant] 调试记录保存失败: $e');
+        onSaveError?.call(e);
+        rethrow;
       }
     });
   }
@@ -127,14 +143,32 @@ class AssistantStore {
 
   List<AssistantMsg>? _pendingCurrent;
   List<ArchivedSession>? _pendingSessions;
+  List<Map<String, Object?>>? _pendingTraces;
   Timer? _timer;
   Future<void> _chain = Future.value();
-  Future<void> get idle => _chain;
+  int _revision = 0;
+  int _traceRevision = 0;
+  Object? _sessionError;
+  Object? _traceError;
+
+  Future<void> get idle async {
+    await _chain;
+    if (_sessionError != null) throw _sessionError!;
+    if (_traceError != null) throw _traceError!;
+  }
+
+  Future<void> _enqueue(Future<void> Function() write) {
+    final result = _chain.then((_) => write());
+    _chain = result.catchError((Object _) {});
+    return result;
+  }
+
   Set<String>? _latestRefs;
 
   /// 状态一变就排队;真正写盘在防抖窗口后。
   void schedule(List<AssistantMsg> current, List<ArchivedSession> sessions) {
     _blobs.referencesChanged();
+    _revision++;
     _latestRefs = _refsOf(current, sessions);
     _pendingCurrent = List.of(current);
     _pendingSessions = List.of(sessions);
@@ -143,28 +177,41 @@ class AssistantStore {
   }
 
   void flush() {
+    final retryTraces = _flushTraces();
+    if (retryTraces != null) unawaited(retryTraces.catchError((Object _) {}));
     final cur = _pendingCurrent;
     final ses = _pendingSessions;
     if (cur == null || ses == null) return;
     _pendingCurrent = null;
     _pendingSessions = null;
     _timer?.cancel();
-    _chain = _chain.then((_) async {
-      try {
-        await _file.parent.create(recursive: true);
-        await writeStringAtomic(
-          _file,
-          jsonEncode({
-            'v': 1,
-            'refs': _refsOf(cur, ses).toList(),
-            'current': [for (final m in cur) m.toJson()],
-            'sessions': [for (final s in ses) s.toJson()],
-          }),
-        );
-      } catch (e) {
-        logd('[assistant] 保存失败: $e');
-      }
-    });
+    final revision = _revision;
+    unawaited(
+      _enqueue(() async {
+        try {
+          await _file.parent.create(recursive: true);
+          await writeStringAtomic(
+            _file,
+            jsonEncode({
+              'v': 1,
+              'refs': _refsOf(cur, ses).toList(),
+              'current': [for (final m in cur) m.toJson()],
+              'sessions': [for (final s in ses) s.toJson()],
+            }),
+          );
+          _sessionError = null;
+        } catch (e) {
+          if (_revision == revision) {
+            _pendingCurrent = cur;
+            _pendingSessions = ses;
+          }
+          _sessionError = e;
+          logd('[assistant] 保存失败: $e');
+          onSaveError?.call(e);
+          rethrow;
+        }
+      }).catchError((Object _) {}),
+    );
   }
 
   static Set<String> _refsOf(
