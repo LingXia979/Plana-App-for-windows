@@ -20,7 +20,7 @@
 ## 项目状态
 
 本项目基于 [Plana App](https://github.com/mc5024/Plana-App) 开发 Windows 桌面适配，并选择性同步 [shenghuo2/Plana-App-Desktop](https://github.com/shenghuo2/Plana-App-Desktop) 的桌面功能与修复。
-当前源码版本为 **1.2.1-windows.56（构建 75）**。最近公开发布的安装包与便携版仍为 [windows.55](https://github.com/LingXia979/Plana-App-for-windows/releases/tag/v1.1.1-windows.55)；新版本的发布以 [Releases](https://github.com/LingXia979/Plana-App-for-windows/releases) 为准。
+当前版本为 **1.2.1-windows.56（构建 75）**。本分支提供对应的 Windows 桌面源码，安装包与便携版见 [Releases](https://github.com/LingXia979/Plana-App-for-windows/releases/tag/v1.2.1-windows.56)。
 
 - `main` 与 `Plana-app-for-windows`：本次发布同步更新的 Windows 桌面源码；版本对应源码以 Release 标签为准。
 - [`plana-app-gallery-optimization`](https://github.com/LingXia979/Plana-App-for-windows/tree/plana-app-gallery-optimization)：图库优化分支。
@@ -32,9 +32,11 @@
 - 浮动卡片保持原尺寸，拖动期间隐藏悬浮提示；保留立即起拖、单击折叠、原位改名和现有让位动画。
 - 版号前缀对齐原版 **1.2.1**，桌面迭代号继续为 **windows.56**。此前选择性同步的 Desktop 基线已合入原版 1.2.1，我们间接吸收了相关功能，保留 Windows 的 Medium／High、加密凭据和安装身份。功能对应关系见[核对记录](WINDOWS-README.md#上游-121-对齐)。
 
+验证：2,320 项回归通过（其中 2 项在首轮未完成后单独重跑通过），1 项因缺少可选评测数据跳过；137 项针对性测试、静态分析、Windows 构建、安装／升级／卸载及保存退出与重启验证通过。
+
 ## 上一轮更新：windows.47 → windows.55
 
-本次将此前分批完成的改动合并发布。更详细的版本记录见 [Windows 使用说明](WINDOWS-README.md#版本改动) 与 [发布说明](https://github.com/LingXia979/Plana-App-for-windows/releases/tag/v1.1.1-windows.55)。
+上一轮将此前分批完成的改动合并发布。更详细的版本记录见 [Windows 使用说明](WINDOWS-README.md#版本改动) 与 [发布说明](https://github.com/LingXia979/Plana-App-for-windows/releases/tag/v1.1.1-windows.55)。
 
 | 范围 | 更新内容 |
 | --- | --- |
@@ -52,9 +54,9 @@
 
 ## 下载与安装
 
-- [中文安装包（Windows x64）](https://github.com/LingXia979/Plana-App-for-windows/releases/download/v1.1.1-windows.55/Plana-Windows-1.1.1-windows.55-x64-setup.exe)：按中文向导选择安装目录，支持开始菜单、可选桌面快捷方式及卸载。
-- [便携版 ZIP](https://github.com/LingXia979/Plana-App-for-windows/releases/download/v1.1.1-windows.55/Plana-Windows-1.1.1-windows.55-x64.zip)：完整解压后运行 `plana_app_for_windows.exe`。
-- [SHA-256 校验清单](https://github.com/LingXia979/Plana-App-for-windows/releases/download/v1.1.1-windows.55/Plana-Windows-1.1.1-windows.55-x64-SHA256.txt)。
+- [中文安装包（Windows x64）](https://github.com/LingXia979/Plana-App-for-windows/releases/download/v1.2.1-windows.56/Plana-Windows-1.2.1-windows.56-x64-setup.exe)：按中文向导选择安装目录，支持开始菜单、可选桌面快捷方式及卸载。
+- [便携版 ZIP](https://github.com/LingXia979/Plana-App-for-windows/releases/download/v1.2.1-windows.56/Plana-Windows-1.2.1-windows.56-x64.zip)：完整解压后运行 `plana_app_for_windows.exe`。
+- [SHA-256 校验清单](https://github.com/LingXia979/Plana-App-for-windows/releases/download/v1.2.1-windows.56/Plana-Windows-1.2.1-windows.56-x64-SHA256.txt)。
 
 升级前请关闭旧版。作品自动保存到程序旁的 `output` 文件夹，卸载保留个人数据。发布包不附带个人账号、API/Bot/Web 授权、提示词草稿或私人 tag 库，首次使用请自行配置。当前安装包未进行代码签名。
 
@@ -84,7 +86,7 @@
 
 ## 桌面版亮点
 
-以下功能包含 windows.55 的桌面改进。
+以下功能包含截至 windows.56 的桌面改进。
 
 - **桌面工作台**：可调整侧栏宽度，提示词、画布与助手同屏；支持鼠标、键盘、文件拖入和快捷粘贴图片，图片按鼠标所在区域导入。
 - **V5 Full 生成档位**：Medium／High 快捷切换；Medium 固定 14 步，切回 High 恢复原采样参数和负面草稿。档位保存、费用计算、图片导入与重新生成同步支持。
