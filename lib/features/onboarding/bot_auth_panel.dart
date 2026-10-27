@@ -12,6 +12,10 @@ import '../../core/theme/app_theme.dart';
 import '../generate/widgets/common.dart' show hintSnack;
 import '../../core/util/haptics.dart';
 
+class _AuthorizationSaveFailure implements Exception {
+  const _AuthorizationSaveFailure();
+}
+
 /// Bot 绑定码授权面板(无 Scaffold,可内嵌):
 /// 取 6 位码 → 用户在 QQ 发给 Bot → 本面板轮询 → 存会话并置接入方式。
 ///
@@ -38,9 +42,19 @@ class _BotAuthPanelState extends ConsumerState<BotAuthPanel> {
   int _secondsLeft = 0;
   int _tick = 0;
   bool _loading = false;
+  int _attempt = 0;
+  int? _pollingAttempt;
+  bool get _polling => _pollingAttempt == _attempt;
+  bool _savingAuthorization = false;
+  int _pollFailures = 0;
+  String? _pollError;
+
+  bool _isCurrent(int attempt) =>
+      mounted && _attempt == attempt && _code != null;
 
   @override
   void dispose() {
+    _attempt++;
     _timer?.cancel();
     _urlCtrl.dispose();
     super.dispose();
@@ -56,24 +70,35 @@ class _BotAuthPanelState extends ConsumerState<BotAuthPanel> {
       return;
     }
     FocusScope.of(context).unfocus();
-    if (!widget.compact) {
-      await ref.read(backendBaseProvider.notifier).save(url);
-    }
+    final attempt = ++_attempt;
     setState(() => _loading = true);
     try {
+      if (!widget.compact) {
+        await ref.read(backendBaseProvider.notifier).save(url);
+        if (!mounted || attempt != _attempt) return;
+        if (ref.read(backendBaseProvider).hasError) {
+          throw const _AuthorizationSaveFailure();
+        }
+      }
       final r = await ref.read(backendClientProvider).authGenerate();
-      if (!mounted) return;
+      if (!mounted || attempt != _attempt) return;
       setState(() {
         _code = r.code;
         _secondsLeft = r.expiresIn;
         _tick = 0;
         _loading = false;
+        _pollFailures = 0;
+        _pollError = null;
       });
       _startTimer();
-    } on BackendException catch (e) {
-      if (!mounted) return;
+    } catch (error) {
+      if (!mounted || attempt != _attempt) return;
       setState(() => _loading = false);
-      hintSnack(context, e.message, icon: Icons.error_outline);
+      hintSnack(
+        context,
+        error is BackendException ? error.message : '获取授权码失败，请检查网络或安全存储后重试',
+        icon: Icons.error_outline,
+      );
     }
   }
 
@@ -83,9 +108,16 @@ class _BotAuthPanelState extends ConsumerState<BotAuthPanel> {
       if (!mounted) return;
       _tick++;
       setState(() => _secondsLeft = (_secondsLeft - 1).clamp(0, 999));
-      if (_secondsLeft <= 0) {
+      // Once credentials start being written, finish that commit before allowing
+      // cancellation or expiry to replace this attempt.
+      if (_secondsLeft <= 0 && !_savingAuthorization) {
         t.cancel();
-        setState(() => _code = null); // 过期 → 回到「获取授权码」
+        setState(() {
+          _attempt++;
+          _code = null;
+          _pollError = null;
+          _pollFailures = 0;
+        }); // 过期 → 回到「获取授权码」
         return;
       }
       if (_tick % 3 == 0) await _poll(); // 每 3 秒轮询一次
@@ -94,20 +126,41 @@ class _BotAuthPanelState extends ConsumerState<BotAuthPanel> {
 
   Future<void> _poll() async {
     final code = _code;
-    if (code == null) return;
+    final attempt = _attempt;
+    if (code == null || _polling || _savingAuthorization) return;
+    setState(() => _pollingAttempt = attempt);
     try {
       final r = await ref.read(backendClientProvider).authCheck(code);
-      if (!mounted || _code != code) return;
-      if (r.verified && r.sessionId != null && r.sessionId!.isNotEmpty) {
-        _timer?.cancel();
-        await _onAuthorized(r.sessionId!);
+      if (!_isCurrent(attempt)) return;
+      if (_pollFailures > 0) {
+        setState(() {
+          _pollFailures = 0;
+          _pollError = null;
+        });
       }
-    } on BackendException catch (_) {
-      // 单次轮询失败静默,下个周期再试
+      if (r.verified && r.sessionId != null && r.sessionId!.isNotEmpty) {
+        await _onAuthorized(r.sessionId!, attempt);
+      }
+    } catch (error) {
+      if (!_isCurrent(attempt)) return;
+      _pollFailures++;
+      if (_pollFailures >= 2 || error is _AuthorizationSaveFailure) {
+        setState(() {
+          _pollError = error is _AuthorizationSaveFailure
+              ? '授权信息保存失败，请检查安全存储后重试'
+              : error is BackendException
+              ? '验证暂时失败：${error.message}'
+              : '验证暂时失败，请检查网络';
+        });
+      }
+    } finally {
+      if (mounted && _attempt == attempt) {
+        setState(() => _pollingAttempt = null);
+      }
     }
   }
 
-  Future<void> _onAuthorized(String sessionId) async {
+  Future<void> _onAuthorized(String sessionId, int attempt) async {
     // 拿归属/过期(best-effort),存会话,切模式
     int? expiresAtMs;
     String? botUserId;
@@ -118,21 +171,36 @@ class _BotAuthPanelState extends ConsumerState<BotAuthPanel> {
         botUserId = v.botUserId;
       }
     } catch (_) {}
-    await ref
-        .read(botSessionProvider.notifier)
-        .save(
-          BotSession(
-            sessionId: sessionId,
-            botUserId: botUserId,
-            expiresAtMs: expiresAtMs,
-          ),
-        );
-    await ref.read(authModeProvider.notifier).set(AuthMode.bot);
-    if (!mounted) return;
-    setState(() => _code = null);
-    Haptics.medium();
-    hintSnack(context, 'Bot 授权成功', icon: Icons.verified_outlined);
-    widget.onAuthorized?.call();
+    if (!_isCurrent(attempt)) return;
+    setState(() => _savingAuthorization = true);
+    try {
+      await ref
+          .read(botSessionProvider.notifier)
+          .save(
+            BotSession(
+              sessionId: sessionId,
+              botUserId: botUserId,
+              expiresAtMs: expiresAtMs,
+            ),
+          );
+      if (!_isCurrent(attempt)) return;
+      // These existing stores report write errors through AsyncValue.
+      if (ref.read(botSessionProvider).hasError) {
+        throw const _AuthorizationSaveFailure();
+      }
+      await ref.read(authModeProvider.notifier).set(AuthMode.bot);
+      if (!mounted || !_isCurrent(attempt)) return;
+      if (ref.read(authModeProvider).hasError) {
+        throw const _AuthorizationSaveFailure();
+      }
+      _timer?.cancel();
+      setState(() => _code = null);
+      Haptics.medium();
+      hintSnack(context, 'Bot 授权成功', icon: Icons.verified_outlined);
+      widget.onAuthorized?.call();
+    } finally {
+      if (mounted) setState(() => _savingAuthorization = false);
+    }
   }
 
   String _fmt(int s) => '${s ~/ 60}:${(s % 60).toString().padLeft(2, '0')}';
@@ -217,6 +285,10 @@ class _BotAuthPanelState extends ConsumerState<BotAuthPanel> {
           _CodePanel(
             code: _code!,
             secondsLeftText: _fmt(_secondsLeft),
+            pollError: _pollError,
+            polling: _polling,
+            saving: _savingAuthorization,
+            onRetry: _poll,
             onCopy: () {
               // 复制完整指令(含 web授权 前缀),粘贴到 QQ 直接发送即可
               Clipboard.setData(ClipboardData(text: 'web授权${_code!}'));
@@ -226,10 +298,17 @@ class _BotAuthPanelState extends ConsumerState<BotAuthPanel> {
                 icon: Icons.check_circle_outline,
               );
             },
-            onCancel: () {
-              _timer?.cancel();
-              setState(() => _code = null);
-            },
+            onCancel: _savingAuthorization
+                ? null
+                : () {
+                    _timer?.cancel();
+                    setState(() {
+                      _attempt++;
+                      _code = null;
+                      _pollError = null;
+                      _pollFailures = 0;
+                    });
+                  },
           ),
       ],
     );
@@ -241,14 +320,22 @@ class _CodePanel extends StatelessWidget {
   const _CodePanel({
     required this.code,
     required this.secondsLeftText,
+    required this.pollError,
+    required this.polling,
+    required this.saving,
+    required this.onRetry,
     required this.onCopy,
     required this.onCancel,
   });
 
   final String code;
   final String secondsLeftText;
+  final String? pollError;
+  final bool polling;
+  final bool saving;
+  final VoidCallback onRetry;
   final VoidCallback onCopy;
-  final VoidCallback onCancel;
+  final VoidCallback? onCancel;
 
   @override
   Widget build(BuildContext context) {
@@ -313,25 +400,46 @@ class _CodePanel extends StatelessWidget {
         Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            SizedBox(
-              width: 14,
-              height: 14,
-              child: CircularProgressIndicator(
-                strokeWidth: 2,
-                color: scheme.primary,
+            if (pollError == null)
+              SizedBox(
+                width: 14,
+                height: 14,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: scheme.primary,
+                ),
+              )
+            else
+              Icon(Icons.wifi_off_outlined, size: 16, color: scheme.error),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                saving ? '正在保存授权信息…' : (pollError ?? '等待 Bot 验证…'),
+                style: context.texts.bodySmall!.copyWith(
+                  color: pollError == null
+                      ? scheme.onSurfaceVariant
+                      : scheme.error,
+                ),
               ),
             ),
-            const SizedBox(width: 8),
-            Text(
-              '等待 Bot 验证…',
-              style: context.texts.bodySmall!.copyWith(
-                color: scheme.onSurfaceVariant,
-              ),
-            ),
-            const SizedBox(width: 8),
-            TextButton(onPressed: onCancel, child: const Text('取消')),
+            if (pollError == null) ...[
+              const SizedBox(width: 8),
+              TextButton(onPressed: onCancel, child: const Text('取消')),
+            ],
           ],
         ),
+        if (pollError != null)
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              TextButton.icon(
+                onPressed: polling ? null : onRetry,
+                icon: const Icon(Icons.refresh, size: 16),
+                label: const Text('重试'),
+              ),
+              TextButton(onPressed: onCancel, child: const Text('取消')),
+            ],
+          ),
       ],
     );
   }

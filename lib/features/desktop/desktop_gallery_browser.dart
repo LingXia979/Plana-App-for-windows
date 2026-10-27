@@ -54,11 +54,12 @@ class _DesktopGalleryBrowserState extends ConsumerState<DesktopGalleryBrowser>
   }
 
   void _open(String? albumId) {
-    // 同一个图库选择仍同时用于浏览和保存新图片。
+    // 切库影响浏览和后续生成；已提交任务继续跟随并保存到原目标。
     if (ref.read(desktopLibraryProvider).albumId != albumId) {
       ref.read(desktopLibraryProvider.notifier).choose(albumId);
-      ref.read(generationProvider.notifier).select(null);
-      ref.read(galleryResultPreviewProvider.notifier).clear();
+      if (ref.read(generationProvider).selected == null) {
+        ref.read(galleryResultPreviewProvider.notifier).clear();
+      }
     }
     ref.read(desktopGalleryLocationProvider.notifier).open(albumId);
   }

@@ -117,12 +117,16 @@ class _DesktopLibraryPickerState extends ConsumerState<_DesktopLibraryPicker> {
     String? id, {
     bool automatic = false,
   }) {
+    // 浏览别的图库不等于主动改选历史图，保留当前任务的画布跟随。
+    final following = ref.read(generationProvider).selected != null;
     ref.read(desktopLibraryProvider.notifier).choose(id, automatic: automatic);
-    ref.read(generationProvider.notifier).select(null);
-    ref.read(galleryResultPreviewProvider.notifier).clear();
+    if (!following) {
+      ref.read(generationProvider.notifier).select(null);
+      ref.read(galleryResultPreviewProvider.notifier).clear();
+    }
     final images = ref.read(galleryViewProvider).results;
     final selected = ref.read(galleryProvider).selectedId;
-    if (!images.any((r) => r.id == selected)) {
+    if (!following && !images.any((r) => r.id == selected)) {
       ref.read(galleryProvider.notifier).select(images.firstOrNull?.id);
     }
     Navigator.pop(context);

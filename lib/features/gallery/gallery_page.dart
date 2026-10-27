@@ -95,14 +95,20 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
   /// 同步页码只反映已有选中项，不能被当成用户改选来打断新图入库。
   bool _syncingPage = false;
 
-  /// 当前这次滚动是不是手拖出来的(程序 jumpToPage 不算)。
-  /// 只服务顶图层的抑制:手拖期间不许盖图,见 build 里 bridge 的注释。
+  /// 当前滚动是否来自用户翻页。手拖期间不盖顶图层，避免挡住跟手画面。
   bool _userDrag = false;
 
   @override
   void initState() {
     super.initState();
     _pageAt = _initialPage;
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // 离开页面时结束手拖标记，恢复后允许顶图层桥接新的选中项。
+    if (!TickerMode.valuesOf(context).enabled) _userDrag = false;
   }
 
   @override
@@ -226,20 +232,25 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
   }
 
   void _onPageChanged(int i) {
-    // 程序 jumpToPage 也会走这里；只校正实际页码，不回写用户选择。
-    // 否则新图前插导致的页码平移会增加 selectionRevision，阻止入库后选中新图。
+    // 后台 Consumer 会暂停更新，分页回调却仍可能到达。只同步实际页码，
+    // 不让旧页面覆盖入库后的选择；前台保留手势及惯性吸附产生的改选。
     if (_pageAt != i) setState(() => _pageAt = i);
-    if (_syncingPage || ref.read(galleryResultPreviewProvider) != null) return;
+    if (_syncingPage ||
+        !TickerMode.valuesOf(context).enabled ||
+        ref.read(galleryResultPreviewProvider) != null) {
+      return;
+    }
     final results = ref.read(galleryViewProvider).results;
     if (i < 0 || i >= results.length) return;
     ref.read(galleryProvider.notifier).select(results[i].id);
   }
 
   bool _onScroll(ScrollNotification n) {
+    if (n.depth != 0) return false;
     // 拖动全程(含松手后的吸附)标志位都是真:ScrollStart 只在拖动起手时发一次,
     // 惯性吸附不会再发,所以 ScrollEnd 之前一直有效。
     if (n is ScrollStartNotification) {
-      _userDrag = n.dragDetails != null;
+      _userDrag = n.dragDetails != null && TickerMode.valuesOf(context).enabled;
     } else if (n is ScrollEndNotification) {
       _userDrag = false;
     }
