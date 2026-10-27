@@ -250,15 +250,14 @@ class AlbumCoverImage extends ConsumerWidget {
   final BoxFit fallbackFit;
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final data = ref.watch(albumsProvider);
-    final all = ref.watch(galleryProvider).results;
-    final cover = data.cover(albumId);
-    final valid =
-        cover != null &&
-        (cover.sourceImageId == null ||
-            all.any((r) => r.id == cover.sourceImageId));
-    final bytes = valid ? ref.watch(albumCoverProvider(cover.key)).value : null;
-    final first = all.where((r) => data.contains(albumId, r.id)).firstOrNull;
+    final summary = ref.watch(
+      albumSummariesProvider.select((summaries) => summaries[albumId]),
+    );
+    final cover = summary?.cover;
+    final bytes = cover == null
+        ? null
+        : ref.watch(albumCoverProvider(cover.key)).value;
+    final first = summary?.first;
     return LayoutBuilder(
       builder: (context, size) {
         if (bytes != null) {

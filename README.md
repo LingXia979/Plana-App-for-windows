@@ -13,20 +13,29 @@
 [![Status](https://img.shields.io/badge/状态-桌面版测试中-6A5ACD)](#项目状态)
 [![Flutter](https://img.shields.io/badge/built%20with-Flutter-02569B?logo=flutter&logoColor=white)](https://flutter.dev)
 
-[本次更新](#本次更新windows56) · [界面预览](#界面预览) · [桌面版亮点](#桌面版亮点) · [贡献者](#贡献者) · [问题反馈](https://github.com/LingXia979/Plana-App-for-windows/issues) · [上游项目](https://github.com/mc5024/Plana-App)
+[本次更新](#本次更新windows57) · [界面预览](#界面预览) · [桌面版亮点](#桌面版亮点) · [贡献者](#贡献者) · [问题反馈](https://github.com/LingXia979/Plana-App-for-windows/issues) · [上游项目](https://github.com/mc5024/Plana-App)
 
 </div>
 
 ## 项目状态
 
 本项目基于 [Plana App](https://github.com/mc5024/Plana-App) 开发 Windows 桌面适配，并选择性同步 [shenghuo2/Plana-App-Desktop](https://github.com/shenghuo2/Plana-App-Desktop) 的桌面功能与修复。
-当前版本为 **1.2.1-windows.56（构建 75）**。本分支提供对应的 Windows 桌面源码，安装包与便携版见 [Releases](https://github.com/LingXia979/Plana-App-for-windows/releases/tag/v1.2.1-windows.56)。
+当前版本为 **1.2.1-windows.57（构建 76）**。本分支提供对应的 Windows 桌面源码，安装包与便携版见 [Releases](https://github.com/LingXia979/Plana-App-for-windows/releases/tag/v1.2.1-windows.57)。
 
 - `main` 与 `Plana-app-for-windows`：本次发布同步更新的 Windows 桌面源码；版本对应源码以 Release 标签为准。
 - [`plana-app-gallery-optimization`](https://github.com/LingXia979/Plana-App-for-windows/tree/plana-app-gallery-optimization)：图库优化分支。
 - Android 原版介绍与下载请前往[上游仓库](https://github.com/mc5024/Plana-App)。
 
-## 本次更新：windows.56
+## 本次更新：windows.57
+
+- 保存工作台、助手会话或调试记录失败时保留最新待写内容，显示错误并支持重试；退出保存失败会取消退出。自定义接口读写失败保留原列表和表单，重载成功后才允许覆盖。
+- 后台生成时切页、切图库再返回仍能看到新图，保存阶段也保留提交时的目标图库；切画布后保留当前草稿，用户主动选择历史图片仍优先。
+- Bot 连续轮询失败显示错误与重试，慢请求不重叠；取消、过期或重新获取授权后忽略旧响应，授权信息成功写入后才报告完成。
+- 图库数量、首图和封面共用一次汇总，搜索复用缓存；复制、移动、删除、撤销后及时刷新。统一现有网格的筛选和多选规则，保留 Windows 划选、Esc、右键及独立副本行为。
+
+本轮选择性适配 Desktop [`64559c7 → bb70d08`](https://github.com/shenghuo2/Plana-App-Desktop/compare/64559c7b14419b4f13d37fab0579cb22965132c5...bb70d08da245998cdf357cb59f2ac032c4ab0edf) 中的相关修复，并补齐 Windows 授权、存储和图库边界验证。保留 Medium／High、加密凭据、作品目录与安装身份；未引入 Desktop 版本号、更新器或独立手机界面。验证结果见本版[发布说明](https://github.com/LingXia979/Plana-App-for-windows/releases/tag/v1.2.1-windows.57)。
+
+## 上一轮更新：windows.56
 
 - 提示词分区和角色卡片拖动时，上下边缘触发范围扩大，越入同列固定栏仍能连续滚动，速度逐渐加快；两组分别停在各自首尾。
 - 浮动卡片保持原尺寸，拖动期间隐藏悬浮提示；保留立即起拖、单击折叠、原位改名和现有让位动画。
@@ -54,9 +63,9 @@
 
 ## 下载与安装
 
-- [中文安装包（Windows x64）](https://github.com/LingXia979/Plana-App-for-windows/releases/download/v1.2.1-windows.56/Plana-Windows-1.2.1-windows.56-x64-setup.exe)：按中文向导选择安装目录，支持开始菜单、可选桌面快捷方式及卸载。
-- [便携版 ZIP](https://github.com/LingXia979/Plana-App-for-windows/releases/download/v1.2.1-windows.56/Plana-Windows-1.2.1-windows.56-x64.zip)：完整解压后运行 `plana_app_for_windows.exe`。
-- [SHA-256 校验清单](https://github.com/LingXia979/Plana-App-for-windows/releases/download/v1.2.1-windows.56/Plana-Windows-1.2.1-windows.56-x64-SHA256.txt)。
+- [中文安装包（Windows x64）](https://github.com/LingXia979/Plana-App-for-windows/releases/download/v1.2.1-windows.57/Plana-Windows-1.2.1-windows.57-x64-setup.exe)：按中文向导选择安装目录，支持开始菜单、可选桌面快捷方式及卸载。
+- [便携版 ZIP](https://github.com/LingXia979/Plana-App-for-windows/releases/download/v1.2.1-windows.57/Plana-Windows-1.2.1-windows.57-x64.zip)：完整解压后运行 `plana_app_for_windows.exe`。
+- [SHA-256 校验清单](https://github.com/LingXia979/Plana-App-for-windows/releases/download/v1.2.1-windows.57/Plana-Windows-1.2.1-windows.57-x64-SHA256.txt)。
 
 升级前请关闭旧版。作品自动保存到程序旁的 `output` 文件夹，卸载保留个人数据。发布包不附带个人账号、API/Bot/Web 授权、提示词草稿或私人 tag 库，首次使用请自行配置。当前安装包未进行代码签名。
 
@@ -111,7 +120,7 @@ Windows 版的问题与建议请提交到[本仓库 Issues](https://github.com/L
 ## 来源与致谢
 
 - [mc5024/Plana-App](https://github.com/mc5024/Plana-App)：原版应用与 Android 上游，提供核心绘图、提示词、图库及助手基础。
-- [shenghuo2/Plana-App-Desktop](https://github.com/shenghuo2/Plana-App-Desktop)：在本项目 Windows 重构版上继续开发的桌面项目；本次选择性同步其多画布、提示词分区、编辑器、助手、账号调度和稳定性改进，并适配本分支的 Windows 操作习惯。
+- [shenghuo2/Plana-App-Desktop](https://github.com/shenghuo2/Plana-App-Desktop)：在本项目 Windows 重构版上继续开发的桌面项目；分批选择性同步其多画布、提示词分区、编辑器、助手、账号调度与后续存储恢复、后台生成、Bot 轮询和图库缓存改进，并适配本分支的 Windows 操作习惯。
 - [LingXia979/Plana-App-for-windows](https://github.com/LingXia979/Plana-App-for-windows)：Windows 桌面重构、图库改进、本地交互整合与 Windows 安装包维护。
 
 下方保留数据、模型及开源库的来源；随包分发内容的许可见 [第三方声明](THIRD_PARTY_NOTICES.md)。

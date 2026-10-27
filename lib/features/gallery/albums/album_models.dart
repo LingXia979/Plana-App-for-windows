@@ -87,9 +87,10 @@ class AlbumsData {
   final List<GalleryAlbum> albums;
   final Map<String, Set<String>> memberships;
   final AlbumCover? allPhotosCover;
+  late final Set<String> _albumIds = {for (final album in albums) album.id};
   GalleryAlbum? album(String? id) =>
       albums.where((a) => a.id == id).firstOrNull;
-  bool exists(String? id) => id == null || album(id) != null;
+  bool exists(String? id) => id == null || _albumIds.contains(id);
   String name(String? id) => album(id)?.name ?? allPhotosName;
   bool contains(String? albumId, String imageId) =>
       albumId == null ||

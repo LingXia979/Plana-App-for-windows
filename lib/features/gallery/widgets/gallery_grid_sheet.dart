@@ -29,6 +29,7 @@ import 'gallery_date_sheet.dart';
 import 'gallery_output_folder_button.dart';
 import 'gallery_toolbar_button.dart';
 import 'gallery_export_dialog.dart';
+import 'gallery_grid_logic.dart';
 import 'gallery_drag_selection.dart';
 import 'gallery_image_tile.dart';
 import '../gallery_groups.dart';
@@ -208,8 +209,9 @@ class GalleryGridContentState extends ConsumerState<GalleryGridContent>
     }
   }
 
-  bool _selecting = false;
-  final Set<String> _picked = {};
+  final _selection = GalleryGridSelection();
+  bool get _selecting => _selection.selecting;
+  Set<String> get _picked => _selection.picked;
   bool _saving = false;
   bool _sharing = false;
   bool _zipping = false;
@@ -690,32 +692,6 @@ class GalleryGridContentState extends ConsumerState<GalleryGridContent>
     });
   }
 
-  // ---- 筛选谓词(模型 × 时间 × 搜索,全 AND) ----
-
-  bool _passModel(ResultImage r, Map<String, GallerySearchMeta> byId) {
-    final want = _modelFilter;
-    if (want == null) return true;
-    return (byId[r.id]?.model ?? '') == want;
-  }
-
-  bool _passQuery(
-    ResultImage r,
-    Map<String, GallerySearchMeta> byId,
-    List<String> terms,
-  ) {
-    if (terms.isEmpty) return true;
-    final meta = byId[r.id];
-    if (widget.desktop || widget.browser != null) {
-      return searchMatch(
-        normalizeSearchText(
-          '${r.id} ${r.seed} ${meta?.text ?? r.input?.prompt ?? ''}',
-        ),
-        terms,
-      );
-    }
-    return meta != null && searchMatch(meta.text, terms);
-  }
-
   /// 单选弹层(模型/分组共用):选项 = (文案, 值, 计数);值用单元素 record
   /// 包一层再 pop,可空的 T(全部=null)才与「取消」区分得开。
   Future<void> _pickFilter<T>({
@@ -832,24 +808,11 @@ class GalleryGridContentState extends ConsumerState<GalleryGridContent>
     List<ResultImage> results,
     Map<String, GallerySearchMeta> byId,
   ) {
-    // 模型清单按整库统计(不按筛选后,免得选中一个后其余选项全消失)
-    final counts = <String, int>{};
-    for (final r in results) {
-      counts.update(byId[r.id]?.model ?? '', (v) => v + 1, ifAbsent: () => 1);
-    }
-    final models = [
-      for (final k in counts.keys)
-        if (k.isNotEmpty) k,
-    ]..sort((a, b) => counts[b]!.compareTo(counts[a]!));
     _pickFilter<String?>(
       title: '按模型筛选',
       anchor: _modelAnchor,
       current: _modelFilter,
-      options: [
-        ('全部', null, null),
-        for (final m in models) (m, m, counts[m]),
-        if ((counts[''] ?? 0) > 0) ('未知', '', counts['']),
-      ],
+      options: galleryModelFilterOptions(results, byId),
       onPick: (v) => setState(() => _modelFilter = v),
     );
   }
@@ -1184,7 +1147,7 @@ class GalleryGridContentState extends ConsumerState<GalleryGridContent>
                   : widget.desktop || widget.browser != null
                   ? (_) {
                       if (_pinching) return;
-                      setState(() => _selecting = true);
+                      setState(() => _selection.enter());
                       if (!(_dragSelectionKey.currentState?.beginHold(r.id) ??
                           false)) {
                         _enterSelect(r.id);
@@ -1233,7 +1196,7 @@ class GalleryGridContentState extends ConsumerState<GalleryGridContent>
           delegate: SliverChildBuilderDelegate((_, i) {
             final g = groups[i];
             final ids = [for (final r in g.items) r.id];
-            final allOn = ids.every(_picked.contains);
+            final allOn = _selection.allSelected(ids);
             return _GroupCard(
               key: ValueKey('group-card-${g.key}'),
               group: g,
@@ -1241,14 +1204,14 @@ class GalleryGridContentState extends ConsumerState<GalleryGridContent>
               picked: _selecting && allOn,
               onTap: () => setState(() {
                 if (_selecting) {
-                  allOn ? _picked.removeAll(ids) : _picked.addAll(ids);
+                  _selection.toggleGroup(ids);
                 } else {
                   _setOpen(g.key);
                 }
               }),
               onLongPress: widget.desktop && !_pinching
                   ? () => setState(() {
-                      _selecting = true;
+                      _selection.enter();
                       _picked.addAll(ids);
                     })
                   : null,
@@ -1267,7 +1230,7 @@ class GalleryGridContentState extends ConsumerState<GalleryGridContent>
   /// 照样竖着占满段头。
   Widget _groupHeader(ColorScheme scheme, GalleryGroup g) {
     final ids = [for (final r in g.items) r.id];
-    final allOn = ids.every(_picked.contains);
+    final allOn = _selection.allSelected(ids);
     return Stack(
       children: [
         Padding(
@@ -1304,10 +1267,7 @@ class GalleryGridContentState extends ConsumerState<GalleryGridContent>
               ),
               onPressed: _saving || _zipping
                   ? null
-                  : () => setState(
-                      () =>
-                          allOn ? _picked.removeAll(ids) : _picked.addAll(ids),
-                    ),
+                  : () => setState(() => _selection.toggleGroup(ids)),
               child: Text(allOn ? '取消' : '全选'),
             ),
           ),
@@ -1317,16 +1277,14 @@ class GalleryGridContentState extends ConsumerState<GalleryGridContent>
 
   void _enterSelect([String? pick]) {
     setState(() {
-      _selecting = true;
-      if (pick != null) _picked.add(pick);
+      _selection.enter(pick);
     });
   }
 
   void _exitSelect() {
     _dragSelectionKey.currentState?.cancel();
     setState(() {
-      _selecting = false;
-      _picked.clear();
+      _selection.exit();
     });
   }
 
@@ -1349,7 +1307,7 @@ class GalleryGridContentState extends ConsumerState<GalleryGridContent>
   }
 
   void _toggle(String id) {
-    setState(() => _picked.contains(id) ? _picked.remove(id) : _picked.add(id));
+    setState(() => _selection.toggle(id));
   }
 
   final _dragSelectionKey = GlobalKey<GalleryDragSelectionState>();
@@ -1556,15 +1514,7 @@ class GalleryGridContentState extends ConsumerState<GalleryGridContent>
   }
 
   void _toggleAll(List<ResultImage> results) {
-    setState(() {
-      if (_picked.length == results.length) {
-        _picked.clear();
-      } else {
-        _picked
-          ..clear()
-          ..addAll([for (final r in results) r.id]);
-      }
-    });
+    setState(() => _selection.toggleAll(results));
   }
 
   /// 批量保存:按生成时间从旧到新，逐张处理并等待写入后再存下一张;逐张计数,
@@ -1915,28 +1865,9 @@ class GalleryGridContentState extends ConsumerState<GalleryGridContent>
   Future<void> _deletePicked() async {
     final ids = _picked.toList();
     if (ids.isEmpty) return;
-    final scheme = context.scheme;
-    final yes = await showDialog<bool>(
-      context: context,
-      builder: (dctx) => AlertDialog(
-        title: Text('删除 ${ids.length} 张作品?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dctx).pop(false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: scheme.error,
-              foregroundColor: scheme.onError,
-            ),
-            onPressed: () => Navigator.of(dctx).pop(true),
-            child: const Text('删除'),
-          ),
-        ],
-      ),
-    );
-    if (yes != true || !mounted) return;
+    if (!await confirmGalleryBatchDelete(context, ids.length) || !mounted) {
+      return;
+    }
     final deleted = await ref.read(galleryProvider.notifier).deleteResults(ids);
     if (!mounted) return;
     _exitSelect();
@@ -1967,8 +1898,7 @@ class GalleryGridContentState extends ConsumerState<GalleryGridContent>
       _searchCtrl.clear();
       _searchDebounce?.cancel();
       _modelFilter = null;
-      _picked.clear();
-      _selecting = false;
+      _selection.exit();
       _openKey = null;
       _wallOffset = 0;
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1981,15 +1911,16 @@ class GalleryGridContentState extends ConsumerState<GalleryGridContent>
     final search = ref.watch(gallerySearchProvider);
 
     // 筛选管线(先廉价的时间,再查表)
-    final terms = searchTerms(_query);
-    final filtered = <ResultImage>[
-      for (final r in results)
-        if ((!_favoritesOnly || r.favorite) &&
-            _dateFilter.matches(r.createdAt, now) &&
-            _passModel(r, search.byId) &&
-            _passQuery(r, search.byId, terms))
-          r,
-    ];
+    final filtered = filterGalleryImages(
+      images: results,
+      date: _dateFilter,
+      now: now,
+      byId: search.byId,
+      query: _query,
+      model: _modelFilter,
+      favoritesOnly: _favoritesOnly,
+      includeImageDetails: widget.desktop || browser != null,
+    );
     final filtering =
         _query.isNotEmpty ||
         _modelFilter != null ||
@@ -2020,8 +1951,7 @@ class GalleryGridContentState extends ConsumerState<GalleryGridContent>
     // Selection follows both the active filters and the opened group. The
     // Select all action must not include images hidden in other groups.
     final selectable = open?.items ?? filtered;
-    final visible = {for (final r in selectable) r.id};
-    _picked.removeWhere((id) => !visible.contains(id));
+    _selection.retainVisible(selectable);
     final viewing = open?.items ?? [for (final group in groups) ...group.items];
     _inStack = open != null;
     _order = [
@@ -2034,12 +1964,12 @@ class GalleryGridContentState extends ConsumerState<GalleryGridContent>
 
     final scheme = context.scheme;
     final h = MediaQuery.of(context).size.height * 0.82;
-    final canAct =
-        _picked.isNotEmpty &&
-        !_saving &&
-        !_sharing &&
-        !_zipping &&
-        !_organizing;
+    final canAct = _selection.canAct(
+      saving: _saving,
+      sharing: _sharing,
+      zipping: _zipping,
+      organizing: _organizing,
+    );
 
     final content = PopScope(
       // 多选态下系统返回/侧滑先退多选,不关弹层 —— 勾了十几张再手滑退出,

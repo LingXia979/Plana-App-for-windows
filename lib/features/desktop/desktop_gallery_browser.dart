@@ -146,17 +146,27 @@ class _DesktopGalleryBrowserState extends ConsumerState<DesktopGalleryBrowser>
     final all = ref.watch(galleryProvider).results;
     final now = DateTime.now();
     final terms = searchTerms(_search.text);
+    final summaries = ref.watch(albumSummariesProvider);
+    final dateHits = <String?>{};
+    if (_date.active) {
+      for (final image in all) {
+        if (!_date.matches(image.createdAt, now)) continue;
+        dateHits
+          ..add(null)
+          ..addAll(albums.ofImage(image.id));
+      }
+    }
     final entries = [
       (id: null, name: '全部作品', createdAt: all.firstOrNull?.createdAt ?? 0),
       for (final album in albums.albums)
         (id: album.id, name: album.name, createdAt: album.createdAt),
     ];
     final libraries = entries.where((entry) {
-      final images = all.where((r) => albums.contains(entry.id, r.id));
       final timeMatch =
           _date.kind == GalleryDateKind.all ||
-          images.any((r) => _date.matches(r.createdAt, now)) ||
-          (images.isEmpty && _date.matches(entry.createdAt, now));
+          dateHits.contains(entry.id) ||
+          (summaries[entry.id]!.count == 0 &&
+              _date.matches(entry.createdAt, now));
       return timeMatch && searchMatch(normalizeSearchText(entry.name), terms);
     }).toList();
 
@@ -265,16 +275,13 @@ class _DesktopGalleryBrowserState extends ConsumerState<DesktopGalleryBrowser>
                         itemCount: libraries.length,
                         itemBuilder: (context, i) {
                           final entry = libraries[i];
-                          final members = all
-                              .where((r) => albums.contains(entry.id, r.id))
-                              .toList();
                           return _GalleryTile(
                             key: ValueKey(
                               'desktop-library-card-${entry.id ?? 'all'}',
                             ),
                             albumId: entry.id,
                             title: entry.name,
-                            detail: '${members.length} 张作品',
+                            detail: '${summaries[entry.id]!.count} 张作品',
                             onTap: () => _open(entry.id),
                             onSecondaryTapDown: (details) => _albumMenu.show(
                               context,

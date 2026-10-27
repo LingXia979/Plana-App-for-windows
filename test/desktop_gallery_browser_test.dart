@@ -15,6 +15,7 @@ import 'package:plana_app/features/desktop/desktop_gallery_browser.dart';
 import 'package:plana_app/features/desktop/desktop_gallery_page.dart';
 import 'package:plana_app/features/desktop/desktop_library_state.dart';
 import 'package:plana_app/features/gallery/albums/album_state.dart';
+import 'package:plana_app/features/gallery/albums/album_models.dart';
 import 'package:plana_app/features/gallery/gallery_groups.dart';
 import 'package:plana_app/features/gallery/gallery_search.dart';
 import 'package:plana_app/features/gallery/gallery_state.dart';
@@ -56,6 +57,37 @@ class _Characters extends GalleryCharTags {
     'sample0': [(key: 'cat', label: '猫猫')],
     'sample1': [(key: 'cat', label: '猫猫')],
   };
+}
+
+class _CountingAlbums extends AlbumsData {
+  _CountingAlbums()
+    : super(
+        albums: [
+          for (var i = 0; i < 6; i++)
+            GalleryAlbum(id: 'empty$i', name: 'Empty $i', createdAt: 1),
+        ],
+      );
+  int membershipChecks = 0;
+  int membershipLookups = 0;
+
+  @override
+  bool contains(String? albumId, String imageId) {
+    membershipChecks++;
+    return super.contains(albumId, imageId);
+  }
+
+  @override
+  Set<String> ofImage(String imageId) {
+    membershipLookups++;
+    return super.ofImage(imageId);
+  }
+}
+
+class _Albums extends AlbumsNotifier {
+  _Albums(this.data);
+  final AlbumsData data;
+  @override
+  AlbumsData build() => data;
 }
 
 void main() {
@@ -351,6 +383,102 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.textContaining('已选 '), findsNothing);
       expect(key('desktop-gallery-grid'), findsOneWidget);
+      await finish(tester);
+    },
+  );
+
+  testWidgets(
+    'empty album covers share a cached summary across search changes',
+    (tester) async {
+      container.dispose();
+      final data = _CountingAlbums();
+      final pixel = Uint8List.fromList(
+        img.encodePng(img.Image(width: 1, height: 1)),
+      );
+      images = [
+        for (var i = 0; i < 128; i++)
+          ResultImage(id: 'many$i', width: 1, height: 1, seed: i, bytes: pixel),
+      ];
+      container = ProviderContainer(
+        overrides: [
+          appStoresProvider.overrideWithValue(stores),
+          desktopModeProvider.overrideWithValue(true),
+          galleryProvider.overrideWith(() => _Gallery(images)),
+          albumsProvider.overrideWith(() => _Albums(data)),
+        ],
+      );
+      await mount(tester);
+      expect(find.text('0 张作品'), findsNWidgets(6));
+      expect(find.text('128 张作品'), findsOneWidget);
+      expect(data.membershipChecks, 0);
+      expect(data.membershipLookups, images.length);
+
+      await tester.enterText(key('desktop-gallery-search'), 'Empty');
+      await tester.pumpAndSettle();
+      expect(find.text('0 张作品'), findsNWidgets(6));
+      expect(data.membershipChecks, 0);
+      expect(
+        data.membershipLookups,
+        images.length,
+        reason: 'Changing search must reuse the existing counts and covers',
+      );
+      await finish(tester);
+    },
+  );
+
+  testWidgets(
+    'library counts and date matches include shared images and empty new libraries',
+    (tester) async {
+      final first = (await tester.runAsync(
+        () => container.read(albumsProvider.notifier).create('第一个图库'),
+      ))!;
+      final second = (await tester.runAsync(
+        () => container.read(albumsProvider.notifier).create('第二个图库'),
+      ))!;
+      final empty = (await tester.runAsync(
+        () => container.read(albumsProvider.notifier).create('空图库'),
+      ))!;
+      await tester.runAsync(
+        () => container
+            .read(albumsProvider.notifier)
+            .organize({'sample0', 'sample1'}, {first}),
+      );
+      await tester.runAsync(
+        () => container
+            .read(albumsProvider.notifier)
+            .organize({'sample0', 'sample2'}, {second}),
+      );
+      await mount(tester);
+      expect(
+        find.descendant(
+          of: key('desktop-library-card-all'),
+          matching: find.text('3 张作品'),
+        ),
+        findsOneWidget,
+      );
+      for (final id in [first, second]) {
+        expect(
+          find.descendant(
+            of: key('desktop-library-card-$id'),
+            matching: find.text('2 张作品'),
+          ),
+          findsOneWidget,
+        );
+      }
+      expect(
+        find.descendant(
+          of: key('desktop-library-card-$empty'),
+          matching: find.text('0 张作品'),
+        ),
+        findsOneWidget,
+      );
+      await tester.tap(key('desktop-gallery-date'));
+      await tester.pumpAndSettle();
+      await tester.tap(key('gallery-date-kind-today'));
+      await tester.pumpAndSettle();
+      for (final id in [first, second, empty]) {
+        expect(key('desktop-library-card-$id'), findsOneWidget);
+      }
       await finish(tester);
     },
   );

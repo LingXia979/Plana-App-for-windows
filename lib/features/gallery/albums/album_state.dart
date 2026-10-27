@@ -10,10 +10,17 @@ import '../../../core/store/ui_prefs.dart';
 import '../../generate/generation_controller.dart';
 import '../gallery_state.dart';
 import 'album_models.dart';
+import 'album_summary.dart';
 
 final albumsProvider = NotifierProvider<AlbumsNotifier, AlbumsData>(
   AlbumsNotifier.new,
 );
+
+final albumSummariesProvider = Provider<Map<String?, AlbumSummary>>((ref) {
+  final albums = ref.watch(albumsProvider);
+  final images = ref.watch(galleryProvider.select((state) => state.results));
+  return summarizeAlbums(albums, images);
+});
 
 final galleryBrowseAlbumProvider = Provider<String?>((ref) {
   if (ref.watch(desktopModeProvider)) {
