@@ -116,7 +116,8 @@ class _CodexViewState extends ConsumerState<CodexView>
         if (_underCat(e) &&
             (q.isEmpty ||
                 e.title.toLowerCase().contains(q) ||
-                e.tags.toLowerCase().contains(q)))
+                e.tags.toLowerCase().contains(q) ||
+                e.characters.any((c) => c.prompt.toLowerCase().contains(q))))
           e,
     ];
   }

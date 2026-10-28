@@ -365,6 +365,31 @@ void main() {
     expect(st().sections.last.name, '法典');
   });
 
+  test('正向已在提示词里不另建格子、同名格子只重新打开的,负面照样带进来', () {
+    // 正向全在主体里:不建格子,负面接到主体负面,草稿里的禁用词留着
+    gen.setPrompts(
+      positive: '1girl, artist:wlop, artist:ask',
+      negative: 'lowres',
+      negativeRaw: 'lowres, ~bad hands~',
+    );
+    gen.addEntrySections([_a12]);
+    expect(st().sections, isEmpty);
+    expect(st().negativePrompt, 'lowres, blurry');
+    expect(st().negativePromptRaw, 'lowres, ~bad hands~, blurry');
+    // 同名同词的格子负面被清掉后再加:重新打开,缺的负面接到主体负面
+    gen.setPrompts(positive: '1girl', negative: 'bad anatomy');
+    gen.addEntrySections([_a12]);
+    gen.replacePrompts(negative: 'bad anatomy');
+    final id = st().sections.firstWhere((s) => s.artist).id;
+    gen.updateSection(id, enabled: false);
+    gen.addEntrySections([_a12]);
+    expect(st().sections.where((s) => s.artist).single.enabled, isTrue);
+    expect(st().negativePrompt, 'bad anatomy, lowres, blurry');
+    // 格子里已有负面的不再往主体重复
+    gen.addEntrySections([_a12]);
+    expect(st().negativePrompt, 'bad anatomy, lowres, blurry');
+  });
+
   group('多选合并', () {
     GenerateState base(List<PromptSection> secs) => GenerateState.initial()
         .copyWith(prompt: '1girl', negativePrompt: 'lowres', sections: secs);

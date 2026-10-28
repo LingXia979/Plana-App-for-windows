@@ -2814,6 +2814,23 @@ void main() {
       // 没选过照旧发空串,让后端用全局默认
       expect(d.read(assistantModelKeyProvider), '');
     });
+
+    test('有 free_choices 时没授权按它列:同 key 换名、只在免费表的也列', () {
+      final j = withFree({'gemini'});
+      j['free_choices'] = {
+        'glm': {'name': 'GLM 5.3 Flash', 'recommended': true},
+        'gemini': {'name': 'Gemini 3.8 Flash'},
+        'haiku55': {'label': 'Claude Haiku 5.5(官方)'},
+      };
+      final l = parseAgentModels(j);
+      expect([for (final c in l.free) c.key], ['glm', 'gemini', 'haiku55']);
+      expect(l.free.every((c) => c.free), isTrue);
+      expect(l.pick('gemini', authorized: false)!.name, 'Gemini 3.8 Flash');
+      expect(l.pick('haiku55', authorized: false)!.name, 'Claude Haiku 5.5');
+      // 授权那边照旧用 choices 的名字,也没有 haiku55
+      expect(l.pick('gemini', authorized: true)!.name, 'Gemini 3.7 Flash');
+      expect(l.byKey('haiku55'), isNull);
+    });
   });
 
   test('replaceCharacters 原样恢复,连 id 一起', () async {

@@ -170,6 +170,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
       },
     );
     _controller.addListener(_onCtrl);
+    _focus.addListener(_onFieldFocus);
     _sessions = ref.read(editorSessionsProvider);
     _sessions.prepareInputs.add(_prepareInputForSwitch);
     // 占位符要从一开始就在:框子真空过一次,那一次的退格就收不到信号。
@@ -278,6 +279,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
     _lifecycle?.dispose();
     _debounce?.cancel();
     _transSvc.removeListener(_refreshAnnotations);
+    _focus.removeListener(_onFieldFocus);
     _tabAnim.dispose();
     _controller.dispose();
     _input.dispose();
@@ -321,11 +323,31 @@ class _EditorPageState extends ConsumerState<EditorPage>
   }
 
   /// 把注音未命中的词喂给后端翻译通道(增强模式;离线模式 no-op)。
-  void _feedTranslation(String text) {
+  ///
+  /// [caret] = 打字/挪光标时的光标位置:落在哪枚词上,那枚这一轮先不喂 ——
+  /// 它多半还没打完,打 from_side 会先后问出 from_s、from_si、from_sid,每个
+  /// 都让服务端调一次模型,注音层还会闪出「来自si」这种半截译文。打了逗号、
+  /// 光标挪走、失焦([_onFieldFocus])时会再喂一轮,它就补上了。
+  /// 只是这一轮不往队里加,早已入队的照样问。
+  void _feedTranslation(String text, {int? caret}) {
+    final toks = parseToks(text);
+    final held = caret == null ? -1 : tokIndexAt(text, caret, toks);
     _transSvc.request([
-      for (final t in parseToks(text))
-        if (t.trans == null) t.name,
+      for (var i = 0; i < toks.length; i++)
+        if (i != held && toks[i].trans == null) toks[i].name,
     ]);
+  }
+
+  /// 正文里正在打字的光标位置;没焦点或划了选区时 null(那不是在打字)。
+  int? get _typingCaret {
+    if (!_focus.hasFocus) return null;
+    final s = _controller.selection;
+    return s.isValid && s.isCollapsed ? s.baseOffset : null;
+  }
+
+  /// 正文失焦:打字时扣下的那枚(见 [_feedTranslation])不再算「还在打」,补喂。
+  void _onFieldFocus() {
+    if (mounted && !_focus.hasFocus) _feedTranslation(_controller.text);
   }
 
   /// 补全结果里没译文的行,交给同一条后端翻译通道(共享库 → LLM → 回写)。
@@ -408,8 +430,14 @@ class _EditorPageState extends ConsumerState<EditorPage>
       _syncedText = text;
       _notifier.editActive(text);
       _routeTyping(); // 打字一律走补全
-      _feedTranslation(text);
+      _feedTranslation(text, caret: _typingCaret);
     } else {
+      // 光标挪了:打字时扣下的那枚若已不在光标下,这一喂就补上。
+      // 只比落点 —— 输入法只改 composing 的那种通知不算挪。
+      if (_prevSel.baseOffset != prevSel.baseOffset ||
+          _prevSel.extentOffset != prevSel.extentOffset) {
+        _feedTranslation(text, caret: _typingCaret);
+      }
       // 双击/长按选词 → 扩到整枚词条;改完选区会再进一次监听走 _routeCursor
       if (_captureTagSelection(prevSel)) return;
       if (_snapCaretOutOfFold()) return;

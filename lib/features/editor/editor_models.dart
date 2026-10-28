@@ -1974,8 +1974,8 @@ String reorderUnits(String text, Map<String, String> bodies, int from, int to) {
 /// 顶层单元多选移动:把 [from] 里的若干单元整体搬到间隙 [to](原序下标,
 /// 0..n 表示"插到第 to 个单元之前")。被选中的单元保持彼此原有相对顺序。
 ///
-/// 与 [reorderUnits] 同一套槽位法:各单元原文按新序填回原槽,槽间分隔
-/// (逗号/换行)原样留在原地,不会因为搬动而多出或吃掉逗号。
+/// 槽间分隔(逗号/换行)原样留在原地,不会因为搬动而多出或吃掉逗号;权重组
+/// 记号跟着组员走(见 [_moveWithGroups])。
 String moveUnits(
   String text,
   Map<String, String> bodies,
@@ -1990,8 +1990,9 @@ String moveUnits(
       if (i >= 0 && i < n) i,
   }.toList()..sort();
   if (sel.isEmpty || sel.length == n) return text;
-  // 选中的**正好**是一整个权重组 → 连组记号一起搬(见 [_moveGroupBlock])。
-  // 只挑了组里的一部分不走这条:那时用户要的是把这几枚拿出去,组留在原地。
+  final grouped = _moveWithGroups(text, bodies, units, sel, to);
+  if (grouped != null) return grouped;
+  // 以下为组记号解析不出时的兜底:选中整组连记号一起搬,其余走槽位法
   for (final g in unitGroups(text, units)) {
     if (g.coversExactly(sel)) return _moveGroupBlock(text, units, g, to);
   }
@@ -2011,6 +2012,199 @@ String moveUnits(
     out = out.replaceRange(units[i].start, units[i].end, rest[i]);
   }
   return out;
+}
+
+/// 选中的 [sel] 整批搬到间隙 [to] 后,是否属于成员区间为 [first, last] 的组:
+/// 落在两枚留下的组员之间 = 进组;落在组的首尾边上,只有这批本来全是组员才
+/// 留在组里,否则落在组外。
+bool joinsGroupOnMove(int first, int last, Set<int> sel, int to, int n) {
+  bool has(int i) => i >= first && i <= last;
+  var l = to - 1;
+  while (l >= 0 && sel.contains(l)) {
+    l--;
+  }
+  var r = to;
+  while (r < n && sel.contains(r)) {
+    r++;
+  }
+  final inL = l >= 0 && has(l), inR = r < n && has(r);
+  if (inL && inR) return true;
+  return (inL || inR) && sel.every(has);
+}
+
+/// [moveUnits] 的主路径:组记号跟着组员走。
+/// - 没被搬的单元组归属不变;
+/// - 成员全被选中的组,记号随这批一起走;
+/// - 被搬的这批按 [joinsGroupOnMove] 进组或落在组外。
+///
+/// 槽间分隔按槽位留在原处,组记号从分隔里拆出来按新的成员区间重新放。
+/// 记号不在分隔里、或改写后复核不过时返回 null。
+String? _moveWithGroups(
+  String text,
+  Map<String, String> bodies,
+  List<TopUnit> units,
+  List<int> sel,
+  int to,
+) {
+  final n = units.length;
+  final infos = <_GroupInfo>[];
+  final toks = _parse(text, groupInfos: infos);
+  if (toks.length != n) return null;
+  // 第 i 个分隔:第 i 枚之前那段(第 n 个是文末那段)
+  int sepStart(int i) => i == 0 ? 0 : toks[i - 1].segEnd;
+  int sepEnd(int i) => i == n ? text.length : toks[i].segStart;
+
+  final groups = <_GroupInfo>[];
+  for (final g in infos) {
+    if (g.empty) continue;
+    final f = g.firstTok, l = g.lastTok;
+    if (f < 0 || l >= n) return null;
+    final openOk = g.openStart >= sepStart(f) && g.openEnd <= sepEnd(f);
+    final closeOk =
+        g.closeStart < 0 ||
+        (g.closeStart >= sepStart(l + 1) && g.closeEnd <= sepEnd(l + 1));
+    if (!openOk || !closeOk) return null;
+    groups.add(g);
+  }
+  double groupMultAt(int i, (int, int) Function(_GroupInfo) span) {
+    var m = 1.0;
+    for (final g in groups) {
+      final (a, b) = span(g);
+      if (a <= i && i <= b) m *= g.mult;
+    }
+    return m;
+  }
+
+  for (var i = 0; i < n; i++) {
+    final m = groupMultAt(i, (g) => (g.firstTok, g.lastTok));
+    if ((m - toks[i].groupMult).abs() > 1e-6) return null;
+  }
+
+  // 拆分隔:收口记号(连同它前面那截)· 槽位分隔 · 开记号
+  final closeStr = <_GroupInfo, String>{};
+  final openStr = <_GroupInfo, String>{};
+  final plain = List.filled(n + 1, '');
+  for (var i = 0; i <= n; i++) {
+    final closes = [
+      for (final g in groups)
+        if (g.lastTok == i - 1 && g.closeStart >= 0) g,
+    ]..sort((x, y) => x.closeEnd.compareTo(y.closeEnd));
+    final opens = [
+      for (final g in groups)
+        if (g.firstTok == i) g,
+    ]..sort((x, y) => x.openStart.compareTo(y.openStart));
+    var p = sepStart(i);
+    for (final g in closes) {
+      if (g.closeStart < p) return null;
+      closeStr[g] = text.substring(p, g.closeEnd);
+      p = g.closeEnd;
+    }
+    final q = opens.isEmpty ? sepEnd(i) : opens.first.openStart;
+    if (q < p) return null;
+    plain[i] = text.substring(p, q);
+    for (var k = 0; k < opens.length; k++) {
+      final e = k + 1 < opens.length ? opens[k + 1].openStart : sepEnd(i);
+      if (opens[k].openEnd > e) return null;
+      openStr[opens[k]] = text.substring(opens[k].openStart, e);
+    }
+  }
+
+  final selSet = sel.toSet();
+  var at = 0;
+  for (var i = 0; i < to && i < n; i++) {
+    if (!selSet.contains(i)) at++;
+  }
+  final order = [
+    for (var i = 0; i < n; i++)
+      if (!selSet.contains(i)) i,
+  ]..insertAll(at, sel);
+  final pos = List.filled(n, 0);
+  for (var j = 0; j < n; j++) {
+    pos[order[j]] = j;
+  }
+  // 各组搬动后的成员区间(新下标)
+  final span = <_GroupInfo, (int, int)>{};
+  for (final g in groups) {
+    final kept = [
+      for (var i = g.firstTok; i <= g.lastTok; i++)
+        if (!selSet.contains(i)) pos[i],
+    ];
+    if (kept.isEmpty) {
+      span[g] = (pos[g.firstTok], pos[g.lastTok]);
+      continue;
+    }
+    var a = kept.first, b = kept.last;
+    if (joinsGroupOnMove(g.firstTok, g.lastTok, selSet, to, n)) {
+      a = math.min(a, at);
+      b = math.max(b, at + sel.length - 1);
+    }
+    span[g] = (a, b);
+  }
+
+  final segs = [for (final u in units) text.substring(u.start, u.end)];
+  // [closeOpen]:没收口的组若后面还有词,补上收口,免得一路吞到文末
+  String build(bool closeOpen) {
+    final out = StringBuffer();
+    for (var j = 0; j <= n; j++) {
+      // 收口由内到外,开记号由外到内
+      final closes =
+          [
+            for (final g in groups)
+              if (span[g]!.$2 == j - 1) g,
+          ]..sort((x, y) {
+            final c = span[y]!.$1.compareTo(span[x]!.$1);
+            return c != 0 ? c : y.openStart.compareTo(x.openStart);
+          });
+      for (final g in closes) {
+        out.write(
+          closeStr[g] ??
+              (!closeOpen || j == n
+                  ? ''
+                  : g.brace
+                  ? (text[g.openStart] == '{' ? '}' : ']')
+                  : '::'),
+        );
+      }
+      out.write(plain[j]);
+      final opens =
+          [
+            for (final g in groups)
+              if (span[g]!.$1 == j) g,
+          ]..sort((x, y) {
+            final c = span[y]!.$2.compareTo(span[x]!.$2);
+            return c != 0 ? c : x.openStart.compareTo(y.openStart);
+          });
+      for (final g in opens) {
+        out.write(openStr[g]);
+      }
+      if (j < n) out.write(segs[order[j]]);
+    }
+    return out.toString();
+  }
+
+  // 复核:单元个数、名字、禁用、折叠与有效倍率都与预期一致
+  bool ok(String out) {
+    final t2 = parseToks(out);
+    final u2 = topLevelUnits(out, bodies);
+    if (t2.length != n || u2.length != n) return false;
+    for (var j = 0; j < n; j++) {
+      final was = toks[order[j]];
+      final m = was.ownMult * groupMultAt(j, (g) => span[g]!);
+      if (t2[j].name != was.name ||
+          t2[j].disabled != was.disabled ||
+          u2[j].isFold != units[order[j]].isFold ||
+          (t2[j].effMult - m).abs() > 1e-6) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  for (final closeOpen in const [false, true]) {
+    final out = build(closeOpen);
+    if (ok(out)) return out;
+  }
+  return null;
 }
 
 /// 选中单元切成**极大连续段**。权重类批量按段整体包裹(`{a, b}` /
@@ -2040,11 +2234,8 @@ List<(int, int)> weightRuns(List<TopUnit> units, Iterable<int> idx) {
 }
 
 /// 整组搬动:把 [g] 的成员**连同外面那层组记号**当一整块挪到间隙 [to]。
-///
-/// 为什么要单开一条路:组记号(`1.3::` 与收尾的 `::`)落在词条 seg **之外**的
-/// 分隔区,而 [moveUnits] 的槽位法只搬各单元自己那一格 —— 于是壳子会原地不动,
-/// 谁滑进那两格谁就接管这份加权,搬走的那批反倒裸着出去。这里把整组并成一格
-/// 槽,组内的逗号跟着一起走,记号自然也就跟着走了。
+/// [moveUnits] 的兜底路径([_moveWithGroups] 解析不出时用):整组并成一格槽,
+/// 组内的逗号与组记号一起走。
 String _moveGroupBlock(String text, List<TopUnit> units, UnitGroup g, int to) {
   final n = units.length;
   // 槽:组前面每枚各一格 + 组自己一格(含记号)+ 组后面每枚各一格

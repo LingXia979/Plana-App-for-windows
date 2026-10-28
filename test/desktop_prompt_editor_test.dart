@@ -658,6 +658,36 @@ void main() {
   );
 
   testWidgets(
+    'dragging one group member out does not transfer its weight to other tags',
+    (tester) async {
+      const original = '2::alpha, beta::, gamma, delta';
+      gen.setPrompts(positive: original);
+      await mount(tester);
+      await tap(tester, 'desktop-prompt-mode');
+      final flow = tester.state<ChipFlowViewState>(find.byType(ChipFlowView));
+      final drag = await tester.startGesture(
+        flow.chipAnchor(0)!.center,
+        kind: PointerDeviceKind.mouse,
+      );
+      await drag.moveBy(const Offset(5, 0));
+      await tester.pump();
+      final last = flow.chipAnchor(3)!;
+      await drag.moveTo(Offset(last.right - 1, last.center.dy));
+      await tester.pump();
+      expect(gen.state.prompt, original);
+      await drag.up();
+      await tester.pumpAndSettle();
+      final tokens = parseToks(gen.state.prompt);
+      expect(tokens.map((t) => t.name), ['beta', 'gamma', 'delta', 'alpha']);
+      expect(tokens.map((t) => t.effMult), [2, 1, 1, 1]);
+      await tap(tester, 'desktop-prompt-undo');
+      expect(gen.state.prompt, original);
+      await finish(tester);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
     'dragging at the viewport edge scrolls and cancellation leaves the prompt intact',
     (tester) async {
       final original = List.generate(60, (i) => 'mountain $i').join(', ');

@@ -4,8 +4,10 @@ import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/store/app_stores.dart';
-import '../editor/editor_models.dart' show PromptFoldLink, draftOf, outputOf;
-import '../inspiration/tag_models.dart' show TagEntry, tagCategoryDef;
+import '../editor/editor_models.dart'
+    show PromptFoldLink, draftOf, outputOf, pickEditorText;
+import '../inspiration/tag_models.dart'
+    show TagEntry, appendTagNegatives, tagCategoryDef;
 import '../vibe_library/naiv4vibe_codec.dart' show kModelToEncodingKey;
 import 'agent_chars.dart';
 import 'canvas_state.dart';
@@ -868,13 +870,36 @@ class GenerateNotifier extends Notifier<GenerateState> {
 
   /// 灵感库条目各自成一格,不折叠(见 [withEntrySections])。格子名是分类名
   /// (画风 / 角色 / 场景…),给了 [name] 就用它(法典词条叫「法典」)。
-  void addEntrySections(Iterable<TagEntry> entries, {String? name}) =>
-      state = state.copyWith(
-        sections: withEntrySections(_rows, state.prompt, [
-          for (final e in entries)
-            e.copyWith(name: name ?? tagCategoryDef(e.category).label),
-        ], newId: _newId),
-      );
+  ///
+  /// 正向已全在提示词里没另建格子的、同名同词的格子只是重新打开的,条目负面里
+  /// 整张卡还没有的词接到主体负面。
+  void addEntrySections(Iterable<TagEntry> entries, {String? name}) {
+    final named = [
+      for (final e in entries)
+        e.copyWith(name: name ?? tagCategoryDef(e.category).label),
+    ];
+    final sections = withEntrySections(
+      _rows,
+      state.prompt,
+      named,
+      newId: _newId,
+    );
+    final negDraft = pickEditorText(
+      state.negativePromptRaw,
+      state.negativePrompt,
+    ).trim();
+    final nextDraft = appendTagNegatives(
+      negDraft,
+      named,
+      present: joinSections(sections, state.negativePrompt, positive: false),
+    );
+    final neg = nextDraft == negDraft ? null : outputOf(nextDraft);
+    state = state.copyWith(
+      sections: sections,
+      negativePrompt: neg,
+      negativePromptRaw: neg == null ? null : draftOf(nextDraft, neg),
+    );
+  }
 
   /// 编辑器多选「提取为新分区」:这段草稿(权重、禁用、折叠照旧)成一格,
   /// 接在最后,返回新建的这一格(编辑器撤销时按它拿掉)。[positive] 为 false

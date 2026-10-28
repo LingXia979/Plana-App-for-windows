@@ -319,11 +319,11 @@ class InpaintJob {
 
   /// 发送尺寸(宽, 高):遮罩与底图同尺寸,读遮罩的 PNG 头即得。重绘只能按这个
   /// 尺寸发 —— 声明的宽高和图对不上,服务端拒单,贴回也对不上框。读不出 null。
-  (int, int)? get sendSize => _pngSizeOf(mask);
+  (int, int)? get sendSize => pngSizeOf(mask);
 }
 
 /// 只读 PNG 头拿宽高(IHDR 在 offset 16 / 20),不解码整图;不是 PNG 给 null。
-(int, int)? _pngSizeOf(Uint8List b) {
+(int, int)? pngSizeOf(Uint8List b) {
   const sig = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
   if (b.length < 24) return null;
   for (var i = 0; i < sig.length; i++) {

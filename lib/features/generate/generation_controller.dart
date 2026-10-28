@@ -1479,6 +1479,10 @@ class GenerationNotifier extends Notifier<GenPool> {
       } catch (e) {
         logd('[gen] pasteBack failed: $e'); // 贴回失败退化为子图入库
       }
+    } else if (pngSizeOf(bytes) case (final pw, final ph)) {
+      // 按成图实际尺寸记:Max 放大重绘、Anima 重绘放大的出图都比请求宽高大
+      w = pw;
+      h = ph;
     }
     await ref
         .read(galleryProvider.notifier)

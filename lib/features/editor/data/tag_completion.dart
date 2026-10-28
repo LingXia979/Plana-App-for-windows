@@ -494,7 +494,7 @@ class TagCompletion {
         () => _client.get(
           Uri.parse(
             '$baseUrl/api/tags/wiki-preview',
-          ).replace(queryParameters: {'tag': t}),
+          ).replace(queryParameters: {'tag': t, 'examples': '0'}),
         ),
       );
       if (pv.statusCode != 200) return null;

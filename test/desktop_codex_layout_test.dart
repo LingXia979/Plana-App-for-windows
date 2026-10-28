@@ -51,6 +51,9 @@ void main() {
           'garden, flowers, afternoon',
         ][i % 3],
         path: i < 6 ? ['自然', if (i < 3) '森林' else '花园'] : ['光影'],
+        characters: i == 0 || i == 7
+            ? const [CodexCharacter('char1', 'test CHARACTER-only detail')]
+            : const [],
       ),
   ];
   late Directory temp;
@@ -250,6 +253,23 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets('character prompt search still respects the chosen category', (
+    tester,
+  ) async {
+    await mount(tester);
+    await tester.enterText(key('desktop-codex-search'), 'character-ONLY');
+    await tester.pumpAndSettle(const Duration(milliseconds: 300));
+    expect(key('desktop-codex-card-style0'), findsOneWidget);
+    expect(key('desktop-codex-card-style7'), findsOneWidget);
+    expect(key('desktop-codex-card-style1'), findsNothing);
+    await tester.tap(key('codex-category-自然'));
+    await tester.pumpAndSettle();
+    expect(key('desktop-codex-card-style0'), findsOneWidget);
+    expect(key('desktop-codex-card-style7'), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets('dismissing the dropdown preserves selection and entry search', (
     tester,

@@ -8,8 +8,8 @@
 /// `_normalize_model_key` 认不出就回落全局默认,最坏结果是「换了个模型答」,
 /// 不会报错。
 ///
-/// **没有 Bot 授权时只列后端标了 `free` 的渠道**(免费模型),再加自定义接口
-/// (见 [assistantBotAuthorizedProvider])。后端一条都没标就只剩自定义接口。
+/// **没有 Bot 授权时只列后端 `free_choices` 那张表**(免费模型),再加自定义接口
+/// (见 [assistantBotAuthorizedProvider])。后端一条都没有就只剩自定义接口。
 library;
 
 import 'dart:async';
@@ -48,13 +48,22 @@ class AgentModelChoice {
 }
 
 class AgentModelList {
-  const AgentModelList({this.choices = const [], this.active = ''});
+  const AgentModelList({
+    this.choices = const [],
+    this.active = '',
+    this.freeChoices,
+  });
 
   /// 已按「推荐在前」排好,同档保持后端给的顺序。
   final List<AgentModelChoice> choices;
 
   /// 后端当前的全局默认。用户没自己选过时就显示它。
   final String active;
+
+  /// 后端 `free_choices`,排法同 [choices]。同一个 key 免费和授权可能是两个型号
+  /// (gemini 授权走 4 Argon、免费走 3.8 Flash),也可能只在这张表里(haiku55),
+  /// 所以没授权时名字和候选都得从这里取。老后端没这个字段时为 null。
+  final List<AgentModelChoice>? freeChoices;
 
   AgentModelChoice? byKey(String key) {
     for (final c in choices) {
@@ -63,11 +72,13 @@ class AgentModelList {
     return null;
   }
 
-  /// 没有 Bot 授权时能选的。
-  List<AgentModelChoice> get free => [
-    for (final c in choices)
-      if (c.free) c,
-  ];
+  /// 没有 Bot 授权时能选的。老后端没给 `free_choices` 就退回 [choices] 里标了 free 的。
+  List<AgentModelChoice> get free =>
+      freeChoices ??
+      [
+        for (final c in choices)
+          if (c.free) c,
+      ];
 
   /// 该用哪一条:选过的 [pinned] 能用就是它,否则后端默认。
   ///
@@ -76,8 +87,9 @@ class AgentModelList {
   AgentModelChoice? pick(String pinned, {required bool authorized}) {
     final pool = authorized ? choices : free;
     for (final k in [pinned, active]) {
-      final c = byKey(k);
-      if (c != null && pool.contains(c)) return c;
+      for (final c in pool) {
+        if (c.key == k) return c;
+      }
     }
     return authorized ? null : pool.firstOrNull;
   }
@@ -103,6 +115,16 @@ String modelDisplayName(String key, Map<String, dynamic> choice) {
 AgentModelList parseAgentModels(Map<String, dynamic> j) {
   final raw = j['choices'];
   if (raw is! Map) return const AgentModelList();
+  final freeRaw = j['free_choices'];
+  return AgentModelList(
+    choices: _parseChoices(raw),
+    active: j['active']?.toString() ?? '',
+    freeChoices: freeRaw is Map ? _parseChoices(freeRaw, free: true) : null,
+  );
+}
+
+/// 一张 choice 表 → 选项列表。[free] 为 true 时整张表都算免费(`free_choices` 不带标记)。
+List<AgentModelChoice> _parseChoices(Map raw, {bool free = false}) {
   final out = <AgentModelChoice>[];
   raw.forEach((k, v) {
     final key = k.toString();
@@ -113,7 +135,7 @@ AgentModelList parseAgentModels(Map<String, dynamic> j) {
         key: key,
         name: modelDisplayName(key, choice),
         recommended: choice['recommended'] == true,
-        free: choice['free'] == true,
+        free: free || choice['free'] == true,
       ),
     );
   });
@@ -127,10 +149,7 @@ AgentModelList parseAgentModels(Map<String, dynamic> j) {
     for (final c in out)
       if (!c.recommended) c,
   ];
-  return AgentModelList(
-    choices: [...recommended, ...rest],
-    active: j['active']?.toString() ?? '',
-  );
+  return [...recommended, ...rest];
 }
 
 /// 可选渠道。后端基址变了自动重取(provider 依赖 client)。

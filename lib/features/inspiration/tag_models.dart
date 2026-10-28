@@ -428,9 +428,14 @@ String appendTagPositivesFolded(String draft, Iterable<TagEntry> entries) {
 }
 
 /// 追加负面:逗号拆词、与现有去重后逐词追加(对齐 web appendArtistNegatives)。
-String appendTagNegatives(String negative, Iterable<TagEntry> entries) {
+/// 给了 [present] 就按它判重,不给按 [negative] 自己。
+String appendTagNegatives(
+  String negative,
+  Iterable<TagEntry> entries, {
+  String? present,
+}) {
   var out = negative.trim();
-  final have = tokenizeSet(out);
+  final have = tokenizeSet(present ?? out);
   for (final e in entries) {
     for (final piece in e.negative.split(RegExp(r'[，,]'))) {
       final raw = piece.trim();
