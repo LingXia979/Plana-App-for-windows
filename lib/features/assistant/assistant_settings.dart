@@ -11,6 +11,7 @@ import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/store/app_stores.dart';
+import '../generate/prompt_sections.dart' show SectionImport;
 
 const _key = 'assistant_settings';
 
@@ -87,6 +88,12 @@ LibraryScope effectiveLibraryScope(
 /// 把「线上协议」和「本地枚举」的耦合摆到明面上:改名字要一起改。
 String libraryScopeWire(LibraryScope s) => s.name;
 
+String sectionImportLabel(SectionImport m) => switch (m) {
+  SectionImport.main => '替换主体',
+  SectionImport.newSection => '新建分区',
+  SectionImport.clear => '清空分区',
+};
+
 /// 首次引导的版本。引导内容改版时加一:走过旧版的人进 AI 页会再看到一次。
 const kAssistantIntroVersion = 2;
 
@@ -103,6 +110,7 @@ class AssistantSettings {
     this.fontSize = fontSizeDefault,
     this.historyTurns = historyTurnsDefault,
     this.stream = true,
+    this.importTo = SectionImport.main,
     this.showSidebarImagePicker = true,
     this.showSidebarHistoryPicker = true,
     this.showSidebarClipboardButton = true,
@@ -194,6 +202,9 @@ class AssistantSettings {
   /// 字段、或者就是不想看字一个个蹦的人。
   final bool stream;
 
+  /// 导入与直接生成共用的主提示词分区写入方式。
+  final SectionImport importTo;
+
   /// 创作页侧栏输入框的图片按钮。保留 Windows 原有默认显示，可在设置中隐藏。
   final bool showSidebarImagePicker;
   final bool showSidebarHistoryPicker;
@@ -211,6 +222,7 @@ class AssistantSettings {
     double? fontSize,
     int? historyTurns,
     bool? stream,
+    SectionImport? importTo,
     bool? showSidebarImagePicker,
     bool? showSidebarHistoryPicker,
     bool? showSidebarClipboardButton,
@@ -226,6 +238,7 @@ class AssistantSettings {
     fontSize: fontSize ?? this.fontSize,
     historyTurns: historyTurns ?? this.historyTurns,
     stream: stream ?? this.stream,
+    importTo: importTo ?? this.importTo,
     showSidebarImagePicker:
         showSidebarImagePicker ?? this.showSidebarImagePicker,
     showSidebarHistoryPicker:
@@ -246,6 +259,7 @@ class AssistantSettings {
     'fontSize': fontSize,
     'historyTurns': historyTurns,
     'stream': stream,
+    'importTo': importTo.name,
     'showSidebarImagePicker': showSidebarImagePicker,
     'showSidebarHistoryPicker': showSidebarHistoryPicker,
     'showSidebarClipboardButton': showSidebarClipboardButton,
@@ -267,6 +281,9 @@ class AssistantSettings {
         noDraw: j['noDraw'] == true,
         // 缺键 = 老存档,按开算:新行为更好,不必等用户自己去翻设置
         stream: j['stream'] != false,
+        importTo:
+            SectionImport.values.asNameMap()[j['importTo']] ??
+            SectionImport.main,
         showSidebarImagePicker: j['showSidebarImagePicker'] != false,
         showSidebarHistoryPicker: j['showSidebarHistoryPicker'] != false,
         showSidebarClipboardButton: j['showSidebarClipboardButton'] != false,

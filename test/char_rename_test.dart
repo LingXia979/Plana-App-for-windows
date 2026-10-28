@@ -185,4 +185,29 @@ void main() {
     expect(gen.state.characters.first.enabled, isTrue);
     await _flushAutosave(tester);
   });
+
+  testWidgets('卡右侧 token 数两行:上正向、下负面', (tester) async {
+    await _pumpCard(tester);
+    // 两张空卡,每张两个 0
+    expect(find.text('0'), findsNWidgets(4));
+    await _flushAutosave(tester);
+  });
+
+  testWidgets('删除给撤销,撤销放回原位', (tester) async {
+    final gen = await _pumpCard(tester);
+    gen.updateCharacter(gen.state.characters[0].id, positive: '1girl');
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('删除角色').first);
+    await tester.pumpAndSettle();
+    expect(_names(gen), ['角色 2']);
+    expect(find.text('已删除「角色 1」'), findsOneWidget);
+
+    await tester.tap(find.text('撤销'));
+    await tester.pumpAndSettle();
+    expect(_names(gen), ['角色 1', '角色 2']);
+    expect(gen.state.characters.first.positive, '1girl');
+    // 提示条自己的计时器也走完
+    await tester.pump(const Duration(seconds: 5));
+  });
 }

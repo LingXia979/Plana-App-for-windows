@@ -866,6 +866,14 @@ class GenerateNotifier extends Notifier<GenerateState> {
     );
   }
 
+  /// AI 助手的提议写进来(见 [importPromptsInto])。
+  void importPrompts(String positive, String negative, SectionImport mode) =>
+      state = importPromptsInto(state, positive, negative, mode, newId: _newId);
+
+  /// 整列换回一份分区(AI 写回的撤销),id 原样。
+  void replaceSections(List<PromptSection> sections) =>
+      state = state.copyWith(sections: List.of(sections));
+
   // ---- 主提示词分区 ----
 
   /// 灵感库条目各自成一格,不折叠(见 [withEntrySections])。格子名是分类名

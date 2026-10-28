@@ -5,6 +5,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/theme_settings.dart';
 import '../../../core/platform/desktop.dart';
 import 'desktop_prompt_card.dart';
+import 'prompt_token_counts.dart';
 import '../../../core/util/nai_tokenizer.dart';
 import '../../editor/editor_models.dart'
     show outputOf, parseFolds, pickEditorText;
@@ -770,6 +771,12 @@ class _SectionRows extends ConsumerWidget {
               tok,
               main: s.isMain ? state.prompt : s.positive,
             ),
+            negTokens: state.params.isNaiMedium
+                ? null
+                : totalPromptTokens(
+                    tok,
+                    main: s.isMain ? state.negativePrompt : s.negative,
+                  ),
             selecting: selecting,
             picked: picked.contains(s.id),
             onToggle: () => onToggle(s.id),
@@ -807,6 +814,7 @@ class _SectionRow extends ConsumerStatefulWidget {
     required this.fallbackName,
     required this.draft,
     required this.tokens,
+    required this.negTokens,
     this.selecting = false,
     this.picked = false,
     this.onToggle,
@@ -832,6 +840,7 @@ class _SectionRow extends ConsumerStatefulWidget {
   /// 这一格的编辑器草稿(折叠在预览里显示成名字)。
   final String draft;
   final int tokens;
+  final int? negTokens;
 
   @override
   ConsumerState<_SectionRow> createState() => _SectionRowState();
@@ -844,6 +853,7 @@ class _SectionRowState extends ConsumerState<_SectionRow> {
   String get fallbackName => widget.fallbackName;
   String get draft => widget.draft;
   int get tokens => widget.tokens;
+  int? get negTokens => widget.negTokens;
   bool get selecting => widget.selecting;
   bool get picked => widget.picked;
   VoidCallback? get onToggle => widget.onToggle;
@@ -1049,6 +1059,11 @@ class _SectionRowState extends ConsumerState<_SectionRow> {
                         Expanded(
                           child: _Preview(draft: draft, enabled: s.enabled),
                         ),
+                        const SizedBox(width: 8),
+                        PromptTokenCounts(
+                          positive: tokens,
+                          negative: negTokens,
+                        ),
                       ],
                     ),
                   ),
@@ -1103,18 +1118,7 @@ class _SectionRowState extends ConsumerState<_SectionRow> {
               child: _Preview(draft: draft, enabled: on),
             ),
             const SizedBox(width: 8),
-            SizedBox(
-              width: 26,
-              child: Text(
-                '$tokens',
-                textAlign: TextAlign.right,
-                style: mono(
-                  context,
-                  size: 11,
-                  weight: FontWeight.w500,
-                ).copyWith(color: scheme.outline),
-              ),
-            ),
+            PromptTokenCounts(positive: tokens, negative: negTokens),
             const SizedBox(width: 6),
             if (selecting)
               // 勾选圈放在删除钮那一格,和卡头最右那颗对齐

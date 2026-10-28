@@ -206,7 +206,7 @@ void main() {
   );
 
   test(
-    'assistant import clears old section words and undo restores drafts after restart on source canvas',
+    'assistant import preserves sections and undo restores drafts after restart on source canvas',
     () async {
       stores.assistant.initialCurrent = const [
         AssistantMsg(
@@ -221,11 +221,17 @@ void main() {
       final a = c.read(canvasWorkspaceProvider).activeId;
       final before = PromptSnapshot.of(c.read(generateProvider));
       final preview = assistant.previewSendState('reply')!;
-      expect(preview.prompt, 'new scene');
+      expect(preview.prompt, 'new scene, watercolor, soft light');
       expect(preview.sections, isEmpty);
       expect(assistant.applyProposal('reply'), isTrue);
-      expect(composeSections(c.read(generateProvider)).prompt, 'new scene');
-      expect(composeSections(c.read(generateProvider)).negativePrompt, isEmpty);
+      expect(
+        composeSections(c.read(generateProvider)).prompt,
+        'new scene, watercolor, soft light',
+      );
+      expect(
+        composeSections(c.read(generateProvider)).negativePrompt,
+        'hard shadows',
+      );
       c
           .read(generateProvider.notifier)
           .updateSection('section900', name: '用户修改');

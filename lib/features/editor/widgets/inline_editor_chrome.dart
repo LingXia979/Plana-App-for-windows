@@ -8,6 +8,7 @@ import '../../generate/models.dart' show tokenLimitOf;
 import '../../generate/prompt_presets.dart';
 import '../../generate/prompt_sections.dart' show mainEnabled, sectionTexts;
 import '../../generate/widgets/common.dart' show hintSnack;
+import '../../generate/widgets/prompt_token_counts.dart';
 import '../data/tag_favorites.dart';
 import '../editor_state.dart';
 import 'prompt_preset_menu_button.dart';
@@ -228,12 +229,32 @@ class InlineEditorChrome extends ConsumerWidget {
           ),
         ),
         const SizedBox(height: 6),
-        Text(
-          '$tokens / $limit',
-          textAlign: TextAlign.end,
-          style: context.texts.labelSmall!.copyWith(
-            color: over ? scheme.error : scheme.outline,
-          ),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Expanded(
+              child: Text(
+                '$tokens / $limit',
+                textAlign: TextAlign.end,
+                style: context.texts.labelSmall!.copyWith(
+                  color: over ? scheme.error : scheme.outline,
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            PromptTokenCounts(
+              positive: totalPromptTokens(
+                ref.watch(naiTokenizerProvider).value,
+                main: notifier.outputPositive(),
+              ),
+              negative: medium
+                  ? null
+                  : totalPromptTokens(
+                      ref.watch(naiTokenizerProvider).value,
+                      main: notifier.outputNegative(),
+                    ),
+            ),
+          ],
         ),
       ],
     );

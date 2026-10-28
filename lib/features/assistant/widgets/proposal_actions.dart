@@ -122,7 +122,7 @@ class ProposalActions extends ConsumerWidget {
               ),
             ),
             const SizedBox(width: 8),
-            // 不导入也能出这一版 —— 出的就是 AI 这份,与创作页当前是什么样无关。
+            // 不导入也能出这一版,和导入后再生成是同一张(见 proposalSendState)。
             FilledButton(
               onPressed: () => _generate(ref),
               style: FilledButton.styleFrom(

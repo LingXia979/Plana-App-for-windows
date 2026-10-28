@@ -14,6 +14,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/platform/desktop.dart';
 import '../../../core/ui/setting_row.dart';
+import '../../generate/prompt_sections.dart' show SectionImport;
 import '../../generate/widgets/common.dart' show dropFocusSoon, hintSnack;
 import '../agent_model.dart'
     show assistantBotAuthorizedProvider, assistantEndpointProvider;
@@ -333,6 +334,18 @@ class _DesktopSettingsPanel extends ConsumerWidget {
                                           (o) => o.copyWith(noDraw: v),
                                         ),
                                       ),
+                                      SettingChoiceRow<SectionImport>(
+                                        icon: Icons.splitscreen_outlined,
+                                        title: '导入方式',
+                                        desc: '提示词写入主提示词的位置；直接生成采用相同方式',
+                                        enabled: !s.noDraw,
+                                        value: s.importTo,
+                                        options: SectionImport.values,
+                                        labelOf: sectionImportLabel,
+                                        onChanged: (v) => n.patch(
+                                          (o) => o.copyWith(importTo: v),
+                                        ),
+                                      ),
                                     ]),
                                     section('自动操作', [
                                       SettingRow(
@@ -541,6 +554,16 @@ class _SettingsSheet extends ConsumerWidget {
             desc: '提示词只显示为文本,不导入也不出图',
             value: s.noDraw,
             onChanged: (v) => n.patch((o) => o.copyWith(noDraw: v)),
+          ),
+          SettingChoiceRow<SectionImport>(
+            icon: Icons.splitscreen_outlined,
+            title: '导入方式',
+            desc: '提示词写入创作页主提示词的位置',
+            enabled: !s.noDraw,
+            value: s.importTo,
+            options: SectionImport.values,
+            labelOf: sectionImportLabel,
+            onChanged: (v) => n.patch((o) => o.copyWith(importTo: v)),
           ),
           settingSection(context, '自动'),
           // 纯文本格式开着时这两项不会发生,淡显

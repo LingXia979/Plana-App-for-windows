@@ -32,6 +32,8 @@ import 'package:plana_app/features/assistant/widgets/reply_body.dart';
 import 'package:plana_app/features/generate/generate_state.dart';
 import 'package:plana_app/features/inspiration/codex/codex_char_split.dart';
 import 'package:plana_app/features/generate/models.dart';
+import 'package:plana_app/features/generate/prompt_sections.dart';
+import 'package:plana_app/features/inspiration/tag_models.dart';
 
 Directory _tempRoot() {
   final root = Directory.systemTemp.createTempSync('plana_assistant');
@@ -376,7 +378,12 @@ void main() {
 
     GenerateState send(DrawProposal r) {
       var i = 0;
-      return proposalSendState(canvas, r, newId: () => 'p${i++}');
+      return proposalSendState(
+        canvas,
+        r,
+        SectionImport.main,
+        newId: () => 'p${i++}',
+      );
     }
 
     test('AI 没写角色分区,出图就没有分区', () {
@@ -407,6 +414,7 @@ void main() {
       final s = proposalSendState(
         withModules,
         const DrawProposal(positive: '1girl'),
+        SectionImport.main,
         newId: () => 'p${i++}',
       );
       expect(s.vibes.single.id, 'v1');
@@ -456,6 +464,199 @@ void main() {
         'flandre_scarlet',
         'remilia_scarlet',
       ]);
+    });
+  });
+
+  group('主提示词分区:读整串,导入按设置写', () {
+    final canvas = GenerateState.initial().copyWith(
+      prompt: '1girl, smile',
+      negativePrompt: 'lowres',
+      sections: const [
+        PromptSection.main(),
+        PromptSection(
+          id: 's1',
+          name: '画风',
+          positive: 'artist:foo, 1.2::artist:bar::, masterpiece',
+          negative: 'blurry',
+          artist: true,
+        ),
+        PromptSection(id: 's2', name: '场景', positive: 'night', enabled: false),
+      ],
+    );
+    // AI 读到的就是这一串,原样带回再改两处
+    const ai =
+        '1girl, smile, cat ears, artist:foo, 1.2::artist:bar::, masterpiece';
+
+    GenerateState into(SectionImport mode, {GenerateState? from}) {
+      var i = 0;
+      return importPromptsInto(
+        from ?? canvas,
+        ai,
+        'lowres, blurry, bad hands',
+        mode,
+        newId: () => 'n${i++}',
+      );
+    }
+
+    test('引用时发主体和启用分区拼好的整串', () {
+      expect(
+        canvasPositive(canvas),
+        '1girl, smile, artist:foo, 1.2::artist:bar::, masterpiece',
+      );
+      expect(canvasNegative(canvas), 'lowres, blurry');
+    });
+
+    test('只有分区有词时也能引用', () {
+      final s = canvas.copyWith(prompt: '', negativePrompt: '');
+      expect(canvasHasContent(s), isTrue);
+    });
+
+    test('替换主体:分区留着,分区已有的词不再进主体', () {
+      final s = into(SectionImport.main);
+      expect(s.prompt, '1girl, smile, cat ears');
+      expect(s.negativePrompt, 'lowres, bad hands');
+      expect(s.sections.map((x) => x.id), ['main', 's1', 's2']);
+      expect(
+        composeSections(s).prompt,
+        '1girl, smile, cat ears, artist:foo, 1.2::artist:bar::, masterpiece',
+        reason: '带权重的画师词不能叠成两份',
+      );
+    });
+
+    test('替换主体:主体停用着就打开,AI 的词不会被丢掉', () {
+      final off = canvas.copyWith(
+        sections: [
+          for (final x in canvas.sections)
+            x.isMain ? x.copyWith(enabled: false) : x,
+        ],
+      );
+      final s = into(SectionImport.main, from: off);
+      expect(s.sections.first.enabled, isTrue);
+      expect(composeSections(s).prompt, startsWith('1girl, smile, cat ears'));
+    });
+
+    test('新建分区:原有的不动,新的一格只放没有的词', () {
+      final s = into(SectionImport.newSection);
+      expect(s.prompt, '1girl, smile');
+      expect(s.sections.length, 4);
+      final added = s.sections.last;
+      expect(added.name, 'AI');
+      expect(added.positive, 'cat ears');
+      expect(added.negative, 'bad hands');
+    });
+
+    test('新建分区:没分区时连主体一起建出来', () {
+      final s = into(
+        SectionImport.newSection,
+        from: canvas.copyWith(sections: const []),
+      );
+      expect(s.sections.map((x) => x.isMain), [true, false]);
+      expect(s.sections.last.positive, contains('artist:foo'));
+    });
+
+    test('清空分区:整列清掉,整份进主体', () {
+      final s = into(SectionImport.clear);
+      expect(s.sections, isEmpty);
+      expect(s.prompt, ai);
+      expect(s.negativePrompt, 'lowres, blurry, bad hands');
+    });
+
+    test('组里的词不单独拿掉', () {
+      final s = canvas.copyWith(
+        sections: const [
+          PromptSection.main(),
+          PromptSection(id: 's1', name: '画风', positive: 'a, b'),
+        ],
+      );
+      expect(
+        dropSectionWords(
+          '{a, c}, 1.1::b, d::, b',
+          s.sections,
+          s.prompt,
+          positive: true,
+        ),
+        '{a, c}, 1.1::b, d::',
+      );
+    });
+
+    test('直接生成和导入后再生成是同一串', () {
+      const r = DrawProposal(positive: ai, negative: 'lowres, bad hands');
+      for (final mode in SectionImport.values) {
+        var i = 0;
+        final direct = proposalSendState(
+          canvas,
+          r,
+          mode,
+          newId: () => 'n${i++}',
+        );
+        var j = 0;
+        final imported = importPromptsInto(
+          canvas,
+          r.positive,
+          r.negative,
+          mode,
+          newId: () => 'n${j++}',
+        );
+        expect(
+          composeSections(direct).prompt,
+          composeSections(imported).prompt,
+          reason: mode.name,
+        );
+      }
+    });
+
+    test('快照带分区;Windows 历史空分区记录保持兼容', () {
+      final snap = PromptSnapshot(positive: 'a', sections: canvas.sections);
+      final back = PromptSnapshot.fromJson(
+        jsonDecode(jsonEncode(snap.toJson())) as Map<String, dynamic>,
+      );
+      expect(back.sections.map((x) => x.id), ['main', 's1', 's2']);
+      expect(back.sameAs(snap), isTrue);
+      expect(
+        PromptSnapshot.fromJson(const {'positive': 'a'}).sections,
+        isEmpty,
+      );
+    });
+  });
+
+  group('库内画师串的负面跟着进提议', () {
+    const a1 = TagEntry(
+      id: 'a1',
+      category: TagCategory.artist,
+      name: 'A1',
+      positive: 'artist:foo, 1.2::artist:bar::',
+      negative: 'lowres, bad hands, sketch',
+    );
+    const a2 = TagEntry(
+      id: 'a2',
+      category: TagCategory.artist,
+      name: 'A2',
+      positive: 'artist:baz',
+      negative: 'monochrome',
+    );
+
+    test('用到的画师串补负面,已有的词不重复', () {
+      const r = DrawProposal(
+        positive: 'artist:foo, 1.2::artist:bar::, 1girl',
+        negative: 'lowres, blurry',
+      );
+      expect(
+        withArtistNegatives(r, const [a1, a2]),
+        'lowres, blurry, bad hands, sketch',
+      );
+    });
+
+    test('写在角色正向里的也算', () {
+      const r = DrawProposal(
+        positive: '1girl',
+        characters: [AgentCharacter(name: 'x', positive: 'artist:baz, smile')],
+      );
+      expect(withArtistNegatives(r, const [a1, a2]), 'monochrome');
+    });
+
+    test('没用到、只用了一半都不补', () {
+      const r = DrawProposal(positive: 'artist:foo, 1girl', negative: 'n');
+      expect(withArtistNegatives(r, const [a1]), 'n');
     });
   });
 

@@ -180,13 +180,23 @@ class _BottomActionBarState extends ConsumerState<BottomActionBar> {
                           key: ValueKey('desktop-summary-${item.$1.name}'),
                           label: item.$2,
                           value: item.$3,
-                          tooltip: item.$1 == GenerationSettingTarget.seed
+                          muted:
+                              p.isNaiMedium &&
+                              item.$1 == GenerationSettingTarget.steps,
+                          tooltip:
+                              p.isNaiMedium &&
+                                  item.$1 == GenerationSettingTarget.steps
+                              ? 'Medium 步数固定为 ${p.activeSteps}'
+                              : item.$1 == GenerationSettingTarget.seed
                               ? '清空种子，改为每次随机'
                               : null,
                           onTap:
                               p.isNaiMedium &&
                                   item.$1 == GenerationSettingTarget.steps
-                              ? null
+                              ? () => hintSnack(
+                                  context,
+                                  'Medium 步数固定为 ${p.activeSteps}',
+                                )
                               : item.$1 == GenerationSettingTarget.seed
                               ? () => ref
                                     .read(generateProvider.notifier)
@@ -392,8 +402,10 @@ class _DesktopReadout extends StatelessWidget {
     required this.value,
     required this.onTap,
     this.tooltip,
+    this.muted = false,
   });
   final String label, value;
+  final bool muted;
   final VoidCallback? onTap;
   final String? tooltip;
 
@@ -421,6 +433,7 @@ class _DesktopReadout extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
               style: context.texts.labelLarge!.copyWith(
                 fontSize: 13,
+                color: muted ? context.scheme.outline : null,
                 fontWeight: FontWeight.w700,
               ),
             ),
@@ -750,15 +763,16 @@ class _StepsChip extends ConsumerWidget {
     final fixed = ref.watch(
       generateProvider.select((s) => s.params.isNaiMedium),
     );
-    final open = pill.isOpen(FloatingPill.steps);
+    final open = !fixed && pill.isOpen(FloatingPill.steps);
     return _ReadoutChip(
       caption: '步数',
+      valueMuted: fixed,
       value: '${(open ? pill.draft?.round() : null) ?? committed}',
       active: open,
       // 拖动时逐帧换数,再叠淡入淡出只会糊成一团
       animateValue: !open,
       onTap: fixed
-          ? null
+          ? () => hintSnack(context, 'Medium 步数固定为 $committed')
           : () => ref
                 .read(floatingPillProvider.notifier)
                 .toggle(FloatingPill.steps),

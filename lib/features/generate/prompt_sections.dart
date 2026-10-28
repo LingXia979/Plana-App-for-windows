@@ -87,6 +87,148 @@ String _dropSeen(String text, Set<String> seen) {
   return _clean(kept.join(','));
 }
 
+/// 去重比对用的键:普通词按 [cleanPromptToken],带记号的按原样(空白归一)。
+String _wordKey(String piece) {
+  final t = piece.trim();
+  if (!_syntax.hasMatch(t)) return 'p:${cleanPromptToken(t)}';
+  return 's:${t.replaceAll(RegExp(r'\s+'), ' ').toLowerCase()}';
+}
+
+/// 逗号切开,标出哪几段是能整段拿掉的顶层词:不在 `{}` `[]` `::` 组里,
+/// 自身记号也收了口。
+List<(String, bool)> _topPieces(String text) {
+  final out = <(String, bool)>[];
+  var depth = 0;
+  var inWeight = false;
+  var inDisabled = false;
+  var foldDepth = 0;
+  for (final piece in text.split(RegExp(r'[,，]'))) {
+    final top = depth == 0 && !inWeight && !inDisabled && foldDepth == 0;
+    var d = 0;
+    var tildes = 0;
+    for (final c in piece.split('')) {
+      if (c == '{' || c == '[') d++;
+      if (c == '}' || c == ']') d--;
+      if (c == '~') tildes++;
+    }
+    final weights = '::'.allMatches(piece).length;
+    depth += d;
+    foldDepth += '<#'.allMatches(piece).length - '#>'.allMatches(piece).length;
+    if (weights.isOdd) inWeight = !inWeight;
+    if (tildes.isOdd) inDisabled = !inDisabled;
+    out.add((
+      piece,
+      top &&
+          d == 0 &&
+          foldDepth == 0 &&
+          !inDisabled &&
+          weights.isEven &&
+          tildes.isEven &&
+          piece.trim().isNotEmpty,
+    ));
+  }
+  return out;
+}
+
+/// 从 [text] 里拿掉启用的格子里已有的顶层词。[main] 是主体那一侧的词,
+/// [withMain] 为 false 时主体不算。
+String dropSectionWords(
+  String text,
+  List<PromptSection> sections,
+  String main, {
+  required bool positive,
+  bool withMain = false,
+}) {
+  if (text.trim().isEmpty) return text;
+  final have = <String>{
+    for (final s in _withMain(sections))
+      if ((withMain || !s.isMain) && _on(s, positive: positive))
+        for (final (p, top) in _topPieces(
+          s.isMain ? main : (positive ? s.positive : s.negative),
+        ))
+          if (top) _wordKey(p),
+  };
+  if (have.isEmpty) return text;
+  return _clean(
+    [
+      for (final (p, top) in _topPieces(text))
+        if (!top || !have.contains(_wordKey(p))) p,
+    ].join(','),
+  );
+}
+
+/// AI 助手的提议写进创作页的方式。
+enum SectionImport {
+  /// 只换主体,分区留着;分区里已有的词不再写进主体。
+  main,
+
+  /// 接在最后新建一格,原有的不动;已有的词不再写进这一格。
+  newSection,
+
+  /// 分区整列清掉,整份写进主体。
+  clear,
+}
+
+/// 一组正负向按 [mode] 写进 [s]。导入和「直接生成」共用,两条路出同一张图。
+GenerateState importPromptsInto(
+  GenerateState s,
+  String positive,
+  String negative,
+  SectionImport mode, {
+  required String Function() newId,
+}) {
+  final mainMode = mode == SectionImport.main && s.sections.isNotEmpty;
+  if (mode == SectionImport.newSection) {
+    final pos = dropSectionWords(
+      positive,
+      s.sections,
+      s.prompt,
+      positive: true,
+      withMain: true,
+    );
+    final neg = dropSectionWords(
+      negative,
+      s.sections,
+      s.negativePrompt,
+      positive: false,
+      withMain: true,
+    );
+    if (pos.trim().isEmpty && neg.trim().isEmpty) return s;
+    final rows = s.sections.isEmpty
+        ? const [PromptSection.main()]
+        : withMainRow(s.sections, s.prompt);
+    return s.copyWith(
+      sections: [
+        ...rows,
+        PromptSection(id: newId(), name: 'AI', positive: pos, negative: neg),
+      ],
+    );
+  }
+  final pos = mainMode
+      ? dropSectionWords(positive, s.sections, s.prompt, positive: true)
+      : positive;
+  final neg = mainMode
+      ? dropSectionWords(
+          negative,
+          s.sections,
+          s.negativePrompt,
+          positive: false,
+        )
+      : negative;
+  return s.copyWith(
+    prompt: pos,
+    promptRaw: pos == s.prompt ? s.promptRaw : '',
+    negativePrompt: neg,
+    negativePromptRaw: neg == s.negativePrompt ? s.negativePromptRaw : '',
+    sections: !mainMode
+        ? const []
+        : [
+            for (final x in withMainRow(s.sections, pos))
+              x.isMain && pos.trim().isNotEmpty ? x.copyWith(enabled: true) : x,
+          ],
+  );
+}
+
 /// Compose raw drafts as well as their paired-fold provenance. Fold names and
 /// link IDs are local to an editor, so separate sections may reuse both.
 (String, String, List<PromptFoldLink>) _composeDrafts(GenerateState state) {
