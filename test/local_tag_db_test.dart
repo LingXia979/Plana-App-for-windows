@@ -12,20 +12,15 @@ void main() {
     final db = LocalTagDb();
     final r = await db.search('1girl');
     expect(r, isNotEmpty, reason: 'asset 要能读进来');
-    expect(r.first.text, '1girl');
-    expect(r.first.kind, SuggestionKind.tag);
+    expect(r.first.tag, '1girl');
     expect(r.first.count, greaterThan(0));
   }, timeout: const Timeout(Duration(seconds: 60)));
 
-  // 注意:结果是 [标签名命中..., 别名命中...] 两段拼接,**各段内**按热度降序,
-  // 整体并非全局有序(实现注释明写)。所以这里不断言全局降序 —— 一个冷门的
-  // 标签名命中本来就应该排在热门的别名命中前面。
-  test('前缀匹配:标签名命中优先,下划线转空格', () async {
+  test('词边界命中:从中间的词打起也补得出', () async {
     final db = LocalTagDb();
-    final r = await db.search('long_h', limit: 5);
-    expect(r, isNotEmpty);
-    expect(r.first.text, isNot(contains('_')), reason: '展示用空格而非下划线');
-    expect(r.first.text, startsWith('long h'), reason: '标签名命中排在别名命中之前');
+    final r = await db.search('kimono', limit: 5);
+    expect(r.first.tag, 'kimono');
+    expect(r.map((h) => h.tag), contains('white_kimono'));
   }, timeout: const Timeout(Duration(seconds: 60)));
 
   test('查询短于 2 字符不检索(省得每敲一个字符扫全库)', () async {
@@ -51,7 +46,9 @@ void main() {
     );
     expect(transOf(own), '自带的');
     expect(
-      transOf(const Suggestion(text: 'cache only tag', kind: SuggestionKind.tag)),
+      transOf(
+        const Suggestion(text: 'cache only tag', kind: SuggestionKind.tag),
+      ),
       '只在缓存里',
       reason: 'D 站来的行没有 trans,得回头查缓存',
     );
@@ -79,7 +76,10 @@ void main() {
     // 「玉藻前（命运/额外）」变成「玉藻前（命运」,83 条角色名都是这么断的。
     expect(firstTransSegment('玉藻前（命运/额外）'), '玉藻前（命运/额外）');
     expect(firstTransSegment('珊璞 (乱马 1/2)'), '珊璞 (乱马 1/2)');
-    expect(firstTransSegment('莫德雷德 (Fate/Apocrypha),红saber'), '莫德雷德 (Fate/Apocrypha)');
+    expect(
+      firstTransSegment('莫德雷德 (Fate/Apocrypha),红saber'),
+      '莫德雷德 (Fate/Apocrypha)',
+    );
     // 括号外照切
     expect(firstTransSegment('户外/野战'), '户外');
     // 只有右括号(数据脏)不能把深度带成负数,否则后面的分隔符就切不掉了
@@ -93,7 +93,10 @@ void main() {
     expect(firstTransSegment('乱马1/2', tag: 'ranma_1/2'), '乱马1/2');
     expect(firstTransSegment('22/7', tag: '22/7'), '22/7');
     // 斜杠豁免只对斜杠生效,别的分隔符照切
-    expect(firstTransSegment('K/DA,女团', tag: 'k/da_(league_of_legends)'), 'K/DA');
+    expect(
+      firstTransSegment('K/DA,女团', tag: 'k/da_(league_of_legends)'),
+      'K/DA',
+    );
     // 标签不含斜杠时,斜杠仍是多译分隔符
     expect(firstTransSegment('伪娘/变装', tag: 'crossdressing'), '伪娘');
   });
@@ -102,8 +105,14 @@ void main() {
     // translationOf 先查缓存与离线库、都没有才扫静态表。两边都有同一个词、译名却
     // 不同的话,静态表那条永远轮不到(清理前实测 6 条:red eyes 红眼→红眼睛、
     // bad anatomy 解剖错误→身体结构崩坏、yuuki asuna 结城明日奈→亚丝娜…)。
-    const conflicted = ['red eyes', 'bad anatomy', 'bad hands', 'jpeg artifacts',
-        'chiaroscuro', 'yuuki asuna'];
+    const conflicted = [
+      'red eyes',
+      'bad anatomy',
+      'bad hands',
+      'jpeg artifacts',
+      'chiaroscuro',
+      'yuuki asuna',
+    ];
     final before = {for (final w in conflicted) w: translationOf(w)};
     await LocalTagDb().install();
     for (final w in conflicted) {
@@ -151,16 +160,20 @@ void main() {
 
   // ---- 角色反查(danbooru.tsv 第 5 列 category)----
 
-  test('charactersIn:认出角色标签,普通标签/作品/画师都不算', () async {
-    final db = LocalTagDb();
-    final hit = await db.charactersIn(
-      tokenizeSet('1girl, hakurei_reimu, long hair, highres, touhou, wlop'),
-    );
-    expect(hit.map((e) => e.tag), ['hakurei_reimu']);
-    expect(hit.single.zh, '博丽灵梦');
-    // touhou 是作品(类目 3)、wlop 是画师(类目 1)—— 本轮 category 只填了角色,
-    // 这两类留空,不能被当成角色捞出来。
-  }, timeout: const Timeout(Duration(seconds: 60)));
+  test(
+    'charactersIn:认出角色标签,普通标签/作品/画师都不算',
+    () async {
+      final db = LocalTagDb();
+      final hit = await db.charactersIn(
+        tokenizeSet('1girl, hakurei_reimu, long hair, highres, touhou, wlop'),
+      );
+      expect(hit.map((e) => e.tag), ['hakurei_reimu']);
+      expect(hit.single.zh, '博丽灵梦');
+      // touhou 是作品(类目 3)、wlop 是画师(类目 1)—— 本轮 category 只填了角色,
+      // 这两类留空,不能被当成角色捞出来。
+    },
+    timeout: const Timeout(Duration(seconds: 60)),
+  );
 
   test('charactersIn:下划线/括号两种写法同归一', () async {
     final db = LocalTagDb();
@@ -175,11 +188,15 @@ void main() {
     }
   }, timeout: const Timeout(Duration(seconds: 60)));
 
-  test('charactersIn:别名也认(reimu_hakurei → 博丽灵梦)', () async {
-    final db = LocalTagDb();
-    final hit = await db.charactersIn(tokenizeSet('reimu_hakurei'));
-    expect(hit.map((e) => e.tag), ['hakurei_reimu']);
-  }, timeout: const Timeout(Duration(seconds: 60)));
+  test(
+    'charactersIn:别名也认(reimu_hakurei → 博丽灵梦)',
+    () async {
+      final db = LocalTagDb();
+      final hit = await db.charactersIn(tokenizeSet('reimu_hakurei'));
+      expect(hit.map((e) => e.tag), ['hakurei_reimu']);
+    },
+    timeout: const Timeout(Duration(seconds: 60)),
+  );
 
   test('charactersIn:多角色按热度降序,空输入零命中', () async {
     final db = LocalTagDb();
@@ -194,30 +211,34 @@ void main() {
 
   // ---- 帖子数反查(图库归类加权用)----
 
-  test('postCountsOf:按清洗口径查帖子数,别名与带括号的正名都认,没收的回 0', () async {
-    final db = LocalTagDb();
-    final got = await db.postCountsOf(
-      tokenizeSet(
-        'long_hair, hires, ganyu (genshin impact), watercolor(medium), '
-        '独一无二的描述',
-      ),
-    );
-    expect(got['long hair'], greaterThan(100000));
-    expect(
-      got['hires'],
-      greaterThan(100000),
-      reason: '别名 hires 记的是 highres 的帖子数',
-    );
-    expect(got['ganyu genshin impact'], greaterThan(0), reason: '带括号的角色正名');
-    expect(got['watercolor medium'], greaterThan(0), reason: '带括号的普通标签');
-    expect(got['独一无二的描述'], 0);
+  test(
+    'postCountsOf:按清洗口径查帖子数,别名与带括号的正名都认,没收的回 0',
+    () async {
+      final db = LocalTagDb();
+      final got = await db.postCountsOf(
+        tokenizeSet(
+          'long_hair, hires, ganyu (genshin impact), watercolor(medium), '
+          '独一无二的描述',
+        ),
+      );
+      expect(got['long hair'], greaterThan(100000));
+      expect(
+        got['hires'],
+        greaterThan(100000),
+        reason: '别名 hires 记的是 highres 的帖子数',
+      );
+      expect(got['ganyu genshin impact'], greaterThan(0), reason: '带括号的角色正名');
+      expect(got['watercolor medium'], greaterThan(0), reason: '带括号的普通标签');
+      expect(got['独一无二的描述'], 0);
 
-    // 查过的记下来:同一批词再查一遍结果一致
-    expect(await db.postCountsOf(['long hair', '独一无二的描述']), {
-      'long hair': got['long hair'],
-      '独一无二的描述': 0,
-    });
-  }, timeout: const Timeout(Duration(seconds: 60)));
+      // 查过的记下来:同一批词再查一遍结果一致
+      expect(await db.postCountsOf(['long hair', '独一无二的描述']), {
+        'long hair': got['long hair'],
+        '独一无二的描述': 0,
+      });
+    },
+    timeout: const Timeout(Duration(seconds: 60)),
+  );
 
   test('cacheTagMeta:译名等于标签本身不收,刻意排版过的专有名词照收', () {
     // 生造词:真实标签(rwby 之类)离线库里可能自带大写译名,测不到缓存这一层

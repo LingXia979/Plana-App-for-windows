@@ -173,34 +173,19 @@ class ArtistOcLibrary {
       }
     }
 
-    bool ocHit(String name, List<String> aliases) =>
-        name.toLowerCase().contains(q) ||
-        aliases.any((x) => x.toLowerCase().contains(q));
-
-    final localOut = <Suggestion>[];
+    final localOut = searchLocal(query, localOcs, limit: limit);
     final mineIds = <String>{}, mineNames = <String>{};
     for (final e in localOcs) {
-      final name = e.name.trim(), group = e.positive.trim();
-      if (name.isEmpty || group.isEmpty) continue;
+      final name = e.name.trim();
+      if (name.isEmpty || e.positive.trim().isEmpty) continue;
       mineNames.add(name);
       if (e.publicId case final id?) mineIds.add(id);
-      if (localOut.length < limit && ocHit(name, e.aliases)) {
-        localOut.add(
-          Suggestion(
-            text: name,
-            kind: SuggestionKind.oc,
-            source: '本地库',
-            insertText: group,
-            local: true,
-          ),
-        );
-      }
     }
     final publicOut = <Suggestion>[];
     for (final o in ocs) {
       if (publicOut.length >= limit) break;
       if (mineIds.contains(o.en) || mineNames.contains(o.name.trim())) continue;
-      if (!ocHit(o.name, o.aliases)) continue;
+      if (!_ocHit(q, o.name, o.aliases)) continue;
       publicOut.add(
         Suggestion(
           text: o.name,
@@ -215,6 +200,39 @@ class ArtistOcLibrary {
     }
     return (aOut, [...localOut, ...publicOut]);
   }
+
+  /// 本机灵感库的角色条目里,名字 / 别名含 [query] 的前 [limit] 个,底行写「本地库」。
+  /// 不联网,离线词库模式也用它。
+  static List<Suggestion> searchLocal(
+    String query,
+    List<TagEntry> localOcs, {
+    int limit = 5,
+  }) {
+    final q = query.trim().toLowerCase();
+    if (q.isEmpty) return const [];
+    final out = <Suggestion>[];
+    for (final e in localOcs) {
+      if (out.length >= limit) break;
+      final name = e.name.trim(), group = e.positive.trim();
+      if (name.isEmpty || group.isEmpty || !_ocHit(q, name, e.aliases)) {
+        continue;
+      }
+      out.add(
+        Suggestion(
+          text: name,
+          kind: SuggestionKind.oc,
+          source: '本地库',
+          insertText: group,
+          local: true,
+        ),
+      );
+    }
+    return out;
+  }
+
+  static bool _ocHit(String q, String name, List<String> aliases) =>
+      name.toLowerCase().contains(q) ||
+      aliases.any((x) => x.toLowerCase().contains(q));
 }
 
 class _Artist {

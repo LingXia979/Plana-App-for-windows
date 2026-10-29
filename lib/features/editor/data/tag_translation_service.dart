@@ -6,8 +6,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 
 import '../../../core/net/backend_config.dart';
+import '../../../core/store/app_stores.dart';
 import 'completion_source.dart';
 import 'suggestions.dart';
+import 'trans_cache_store.dart';
 
 /// 注音层的后端翻译通道(仅增强补全模式)。
 ///
@@ -24,7 +26,7 @@ import 'suggestions.dart';
 /// LLM 译文**不回写**公共映射库(服务端 2026-08-25 起也不再收 `ai` 源):那张库
 /// 攒到 24.2 万条时有 19.7 万条是 AI 回写的,抽样核实 94.6% 的 key 连
 /// danbooru.tsv 都不认识 —— 全是被当成 tag 提交的整段提示词碎片。译文照常显示、
-/// 照常进本地反查缓存,只是不固化。
+/// 照常进本地反查缓存,并存进本机 [TransCacheStore],重启后无需重复翻译。
 ///
 /// 命中回填 [cacheTagMeta](transCacheRev 随之自增)后 notifyListeners,编辑器
 /// 刷新注音层/词条栏。离线补全模式不联网(enabled=false 全程 no-op)。
@@ -32,11 +34,13 @@ class TagTranslationService extends ChangeNotifier {
   TagTranslationService({
     required this.enabled,
     required this.baseUrl,
+    this.saved,
     http.Client? client,
   }) : _client = client ?? http.Client();
 
   final bool enabled;
   final String baseUrl;
+  final TransCacheStore? saved;
   final http.Client _client;
 
   static const _timeout = Duration(seconds: 20);
@@ -50,6 +54,7 @@ class TagTranslationService extends ChangeNotifier {
   final _asked = <String>{}; // 已有定论(含 LLM 也答不出的),本进程不再问
   Timer? _timer;
   bool _busy = false;
+  bool _disposed = false;
   DateTime? _cooldownUntil; // 撞限流(429)后的退避窗口
 
   /// 上一次问后端没问成(连不上 / 出错 / 限流)。这期间不画加载态,后台照常重试,
@@ -79,7 +84,7 @@ class TagTranslationService extends ChangeNotifier {
   /// 挂着加载动画等于骗人;`_asked` 里的也算有定论(含 LLM 答不出的),
   /// 不能一直转下去。
   bool isPending(String name) {
-    if (!enabled || baseUrl.isEmpty || _failing) return false;
+    if (_disposed || !enabled || baseUrl.isEmpty || _failing) return false;
     final k = metaKey(name); // 与反查缓存同一套键,见 [metaKey]
     if (!_worthAsking(k) || _asked.contains(k)) return false;
     return translationOf(k) == null;
@@ -87,7 +92,7 @@ class TagTranslationService extends ChangeNotifier {
 
   /// 编辑器解析后把注音未命中的名字塞进来;防抖攒批后查询。
   void request(Iterable<String> names) {
-    if (!enabled || baseUrl.isEmpty) return;
+    if (_disposed || !enabled || baseUrl.isEmpty) return;
     var added = false;
     for (final n in names) {
       final k = metaKey(n); // 同上:下划线/连续空白归一,否则同一个词会问两遍
@@ -99,12 +104,13 @@ class TagTranslationService extends ChangeNotifier {
   }
 
   void _arm(Duration d) {
+    if (_disposed) return;
     _timer?.cancel();
     _timer = Timer(d, _flush);
   }
 
   Future<void> _flush() async {
-    if (_busy || _pending.isEmpty) return;
+    if (_disposed || _busy || _pending.isEmpty) return;
     _busy = true;
     final askedBefore = _asked.length;
     try {
@@ -123,6 +129,8 @@ class TagTranslationService extends ChangeNotifier {
       }
 
       final res = await _translate(batch);
+      // 来源或后端切换后,旧请求不能再回填、写盘、通知或安排重试。
+      if (_disposed) return;
       if (res == null) {
         // 网络失败 / 非 200:整批放回稍后再试。撞限流时 [_translate] 已经把
         // [_cooldownUntil] 设好,上面那道会拦住下一次。加载态收掉。
@@ -140,6 +148,7 @@ class TagTranslationService extends ChangeNotifier {
       var gotAny = false;
       res.hits.forEach((name, zh) {
         cacheTagMeta(name, trans: zh); // 只进本地反查缓存,不回写公共库
+        saved?.put(name, zh);
         _asked.add(name);
         gotAny = true;
       });
@@ -205,6 +214,8 @@ class TagTranslationService extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
+    _pending.clear();
     _timer?.cancel();
     _client.close();
     super.dispose();
@@ -220,6 +231,7 @@ final tagTranslationServiceProvider = Provider<TagTranslationService>((ref) {
   final s = TagTranslationService(
     enabled: source == CompletionSource.enhanced,
     baseUrl: base,
+    saved: ref.watch(appStoresProvider).transCache,
   );
   ref.onDispose(s.dispose);
   return s;

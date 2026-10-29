@@ -1,10 +1,13 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:plana_app/features/editor/data/suggestions.dart';
 import 'package:plana_app/features/editor/data/tag_translation_service.dart';
+import 'package:plana_app/features/editor/data/trans_cache_store.dart';
 
 /// 2026-08-28 把两步(`/api/tags/translations/lookup` + `/api/translate/en2zh`)
 /// 合成一次 `POST /api/tags/translate`。这个类一直留着 `http.Client` 注入口却零测试
@@ -107,4 +110,50 @@ void main() {
     expect(calls, 0);
     expect(svc.isPending('zzz delta tag'), isFalse, reason: '没人去问,挂着加载动画等于骗人');
   });
+
+  for (final failed in [false, true]) {
+    testWidgets('来源切换销毁服务后,旧${failed ? '失败' : '成功'}响应不回填也不重试', (tester) async {
+      final root = Directory.systemTemp.createTempSync('plana_trans_disposed');
+      addTearDown(() => root.deleteSync(recursive: true));
+      final response = Completer<http.Response>();
+      final tag = 'zzz disposed ${failed ? 'failure' : 'success'}';
+      final store = TransCacheStore(root);
+      var requests = 0;
+      var notifications = 0;
+      final svc = TagTranslationService(
+        enabled: true,
+        baseUrl: 'https://x.test',
+        saved: store,
+        client: MockClient((_) {
+          requests++;
+          return response.future;
+        }),
+      )..addListener(() => notifications++);
+      svc.request([tag]);
+      await tester.pump(const Duration(milliseconds: 750));
+      expect(requests, 1);
+      svc.dispose();
+      response.complete(
+        http.Response(
+          failed
+              ? '{}'
+              : jsonEncode({
+                  'translations': {tag: '过期译文'},
+                }),
+          failed ? 500 : 200,
+          headers: {'content-type': 'application/json; charset=utf-8'},
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(minutes: 2));
+      svc.request(['zzz request after dispose']);
+      await tester.pump(const Duration(seconds: 1));
+      expect(translationOf(tag), isNull);
+      expect(store.length, 0);
+      expect(notifications, 0);
+      expect(requests, 1);
+      expect(svc.isPending(tag), isFalse);
+      expect(tester.takeException(), isNull);
+    });
+  }
 }

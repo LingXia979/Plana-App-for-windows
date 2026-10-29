@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../../features/assistant/session_store.dart';
+import '../../features/editor/data/trans_cache_store.dart';
 import '../../features/gallery/gallery_store.dart';
 import '../../features/gallery/albums/album_store.dart';
 import '../../features/generate/workspace_store.dart';
@@ -29,6 +30,7 @@ class AppStores {
     this.ledger,
     this.assistant,
     this.prefs,
+    this.transCache,
     this.albums,
     this.desktopOutput,
     this.saveError,
@@ -46,6 +48,9 @@ class AppStores {
 
   /// 非机密设置(主题/生成参数/编辑器…),见 [PrefsStore]。
   final PrefsStore prefs;
+
+  /// 仅本机的译名缓存,不进入公共库或备份上传。
+  final TransCacheStore transCache;
 
   /// A failed debounced write remains in memory and can be retried from the UI.
   final ValueNotifier<String?> saveError;
@@ -76,6 +81,10 @@ class AppStores {
         onSaveError: (_) => saveError.value = '助手会话保存失败，修改仍在内存，请检查磁盘后重试',
       ),
       PrefsStore.emptyForTest(root),
+      TransCacheStore(
+        root,
+        onSaveError: (_) => saveError.value = '译名缓存保存失败，修改仍在内存，请检查磁盘后重试',
+      ),
       AlbumStore(root),
       DesktopOutputStore(Directory('${root.path}/outputs')),
       saveError,
@@ -133,6 +142,11 @@ class AppStores {
     );
     await ledger.load();
     await assistant.load();
+    final transCache = TransCacheStore(
+      root,
+      onSaveError: (_) => saveError.value = '译名缓存保存失败，修改仍在内存，请检查磁盘后重试',
+    );
+    await transCache.load();
     Directory outputRoot = Directory('${root.path}/outputs');
     final legacyOutputRoots = <Directory>[];
     final outputLocationIssues = <String>[];
@@ -160,6 +174,7 @@ class AppStores {
       ledger,
       assistant,
       prefs,
+      transCache,
       albums,
       DesktopOutputStore(
         outputRoot,
@@ -176,6 +191,7 @@ class AppStores {
     gallery.flushIndex();
     ledger.flush();
     assistant.flush();
+    transCache.flush();
   }
 
   /// 普通退出和更新退出都等待真正落盘，不能只触发队列后立即结束进程。
@@ -186,6 +202,7 @@ class AppStores {
       gallery.idle,
       ledger.idle,
       assistant.idle,
+      transCache.idle,
       albums.idle,
       desktopOutput.idle,
       prefs.idle,

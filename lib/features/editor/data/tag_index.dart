@@ -17,7 +17,8 @@ import 'suggestions.dart';
 /// 格式(小端,偏移都从文件头算起):
 /// ```
 /// 头部   magic 'PTIX' | 版本 | 条目段 | 条目数 | 键段 | 哈希表 | 槽数 | 文件总长
-/// 条目段 按热度降序:u16+标签 | u16+首段译名 | u32 热度 | u16+别名(逗号连)
+/// 条目段 按热度降序:u16+标签 | u16+首段译名 | u32 热度 | u8 类目 | u16+别名(逗号连,
+///        含 `/lh` 这类快捷别名)
 /// 键段   u16+键 | u32 注音条目 | u16 译名字节数 | u32 帖子数条目 | u32 角色条目
 /// 哈希表 u32 × 槽数(2 的幂),存键记录偏移,0 为空;FNV-1a + 线性探测
 /// ```
@@ -30,21 +31,101 @@ const kTagIndexAsset = 'assets/danbooru.tagidx';
 const kTagTsv = 'assets/danbooru.tsv';
 
 const _magic = 0x58495450; // 'PTIX'
-const _version = 1;
+const _version = 2;
 const _headerSize = 32;
 
 /// 清洗结果与「下划线换空格」对不上的标签:带括号、方括号、花括号或冒号的。
 final _reOddTag = RegExp(r'[()\[\]{}:]');
 
+/// 补全拆词的分隔符,同后端 `autocomplete.py` 的 `_SPLIT`。
+final _reSplit = RegExp(r"[_\s\-():\[\]/.,'!?&;~*+=]+");
+
+/// [_reSplit] 的逐字节版(分隔符全是 ASCII,UTF-8 多字节字符里不会撞上)。
+final _splitBytes = () {
+  final t = Uint8List(128);
+  for (final c in "_-():[]/.,'!?&;~*+=".codeUnits) {
+    t[c] = 1;
+  }
+  for (final c in [
+    0x09,
+    0x0A,
+    0x0B,
+    0x0C,
+    0x0D,
+    0x1C,
+    0x1D,
+    0x1E,
+    0x1F,
+    0x20,
+  ]) {
+    t[c] = 1;
+  }
+  return t;
+}();
+
+bool _isSplit(int b) => b < 128 && _splitBytes[b] == 1;
+
+/// pg_trgm 的三元组:按字母数字切词,每个词前补两个空格、后补一个,
+/// 取每三个连续字符。三个字节压成一个 int,排序去重。
+List<int> _trigrams(Uint8List b, int at, int len) {
+  bool alnum(int c) => (c >= 0x61 && c <= 0x7A) || (c >= 0x30 && c <= 0x39);
+  final out = <int>[];
+  var i = at;
+  final end = at + len;
+  while (i < end) {
+    if (!alnum(b[i])) {
+      i++;
+      continue;
+    }
+    var a = 0x20, c = 0x20;
+    for (; i < end && alnum(b[i]); i++) {
+      out.add((a << 16) | (c << 8) | b[i]);
+      a = c;
+      c = b[i];
+    }
+    out.add((a << 16) | (c << 8) | 0x20);
+  }
+  out.sort();
+  var n = 0;
+  for (var k = 0; k < out.length; k++) {
+    if (k == 0 || out[k] != out[k - 1]) out[n++] = out[k];
+  }
+  return out..length = n;
+}
+
+/// pg_trgm 的 similarity:共有三元组数 / 合起来的三元组数。两边都已排序去重。
+double _similarity(List<int> x, List<int> y) {
+  var i = 0, j = 0, common = 0;
+  while (i < x.length && j < y.length) {
+    if (x[i] == y[j]) {
+      common++;
+      i++;
+      j++;
+    } else if (x[i] < y[j]) {
+      i++;
+    } else {
+      j++;
+    }
+  }
+  final union = x.length + y.length - common;
+  return union == 0 ? 0 : common / union;
+}
+
 /// 一枚命中的角色标签。[tag] 是词库正名(下划线形式),[zh] 可空。
 typedef CharacterTag = ({String tag, String? zh, int count});
 
+/// 一条补全结果。[tag] 是词库正名(下划线形式),[category] 是 Danbooru 类目。
+typedef TagHit = ({String tag, String? zh, int count, int category});
+
 /// 词库一行。热度 <50 的冷门行建库时就滤掉了。
+/// [shortcuts] 是 `/lh` 这类快捷别名,只参与补全,不进反查表。
 typedef TagRow = ({
   String tag,
   int count,
   String? zh,
   List<String> aliases,
+  List<String> shortcuts,
+  int category,
   bool isChar,
 });
 
@@ -123,22 +204,33 @@ class TagIndexSpec {
       if (f.length < 2) continue;
       final count = int.tryParse(f[1]) ?? 0;
       if (count < 50) continue; // 滤冷门(与 web <50 剔除一致)
+      // 名字与别名去空白、转小写,同后端补全(tag_search/autocomplete.py)
+      final all = f.length > 3
+          ? [
+              for (final s in f[3].split(','))
+                if (s.trim().isNotEmpty) s.trim().toLowerCase(),
+            ]
+          : const <String>[];
+      // 第 5 列 category 是 Danbooru 类目(0 一般 / 1 画师 / 3 作品 / 4 角色 /
+      // 5 meta);少数保留的旧行留空 = 未定类,按 0 算
+      final category = f.length > 4 ? int.tryParse(f[4]) ?? 0 : 0;
       rows.add((
-        tag: f[0],
+        tag: f[0].trim().toLowerCase(),
         count: count,
         zh: firstTransSegment(
           (f.length > 2 && f[2].isNotEmpty) ? f[2] : null,
           tag: f[0],
         ),
-        aliases: (f.length > 3 && f[3].isNotEmpty)
-            ? [
-                for (final s in f[3].split(','))
-                  if (s.isNotEmpty && !s.startsWith('/')) s, // 去掉 /lh 之类快捷别名
-              ]
-            : const <String>[],
-        // 第 5 列 category 是 Danbooru 类目(0 一般 / 1 画师 / 3 作品 / 4 角色 /
-        // 5 meta),这里只用得上角色;少数保留的旧行留空 = 未定类
-        isChar: f.length > 4 && f[4] == '4',
+        aliases: [
+          for (final s in all)
+            if (!s.startsWith('/')) s,
+        ],
+        shortcuts: [
+          for (final s in all)
+            if (s.startsWith('/')) s,
+        ],
+        category: category,
+        isChar: category == 4,
       ));
     }
     return rows;
@@ -155,7 +247,8 @@ class TagIndexSpec {
         ..str16(r.tag)
         ..str16(r.zh ?? '')
         ..u32(r.count)
-        ..str16(r.aliases.join(','));
+        ..u8(r.category)
+        ..str16([...r.aliases, ...r.shortcuts].join(','));
     }
 
     final keysOff = w.length;
@@ -278,37 +371,170 @@ class TagIndex implements OfflineTagMeta {
     return out;
   }
 
-  /// 前缀匹配:标签名命中优先、别名命中次之(各自因源已按热度降序)。取前 [limit] 条。
-  ///
-  /// 结果是两段拼接,**各段内**按热度降序,整体并非全局有序 —— 一个冷门的
-  /// 标签名命中本来就该排在热门的别名命中前面。
-  List<Suggestion> search(String query, {int limit = 15}) {
-    final q = query.trim().toLowerCase().replaceAll(' ', '_');
+  /// 英文补全,匹配口径同后端 `tag_search/autocomplete.py`(仿 Danbooru tag_query)。
+  /// 标签名和别名都参与,按命中强度分档,档高的排前、同档按热度:
+  ///   4 与标签名或别名完全相同           `seifuku` → school uniform
+  ///   3 输入整串出现在标签名开头或词边界   `kimono` → white kimono
+  ///   2 同上,命中在别名上
+  ///   1 多词输入各词散落命中标签名,不论顺序 `white ser` → white album (series)
+  ///   0 同上,命中在别名上
+  /// 单词输入不收 1、0 两档(`:d` 拆出的 `d` 会捞来 dress 一类)。
+  /// `test/tag_index_test.dart` 拿后端导出的结果逐条对拍。
+  List<TagHit> search(String query, {int limit = 15}) {
+    final q = query
+        .trim()
+        .toLowerCase()
+        .replaceAll(' ', '_')
+        .replaceAll(RegExp('_+'), '_');
     if (q.length < 2) return const [];
     final qb = utf8.encode(q);
-    final primary = <int>[]; // 标签名前缀命中
-    final secondary = <int>[]; // 仅别名前缀命中
-    final seen = <String>{};
+    final words = [
+      for (final w in q.split(_reSplit))
+        if (w.isNotEmpty) utf8.encode(w),
+    ];
+    final scattered = words.length >= 2;
+    // 条目按热度降序,同档先扫到的热度就高:每档攒够 limit 条即可
+    final tiers = List.generate(5, (_) => <int>[]);
     var p = _entriesOff;
     for (var i = 0; i < _entryCount; i++) {
       final row = p;
       final tagLen = _u16(row);
       final zhAt = row + 2 + tagLen;
-      final aliasAt = zhAt + 2 + _u16(zhAt) + 4;
+      final aliasAt = zhAt + 2 + _u16(zhAt) + 5;
       final aliasLen = _u16(aliasAt);
       p = aliasAt + 2 + aliasLen;
-      if (_startsWith(row + 2, tagLen, qb)) {
-        if (seen.add(_str(row + 2, tagLen))) primary.add(row);
-        if (primary.length >= limit) break; // 已按热度,够了就停
-      } else if (secondary.length < limit &&
-          _aliasStartsWith(aliasAt + 2, aliasLen, qb)) {
-        if (seen.add(_str(row + 2, tagLen))) secondary.add(row);
+      var best = _tier(row + 2, tagLen, qb, words, alias: false);
+      final end = aliasAt + 2 + aliasLen;
+      for (var s = aliasAt + 2; s < end && best < 4;) {
+        var e = s;
+        while (e < end && _b[e] != 0x2C) {
+          e++;
+        }
+        final t = _tier(s, e - s, qb, words, alias: true);
+        if (t > best) best = t;
+        s = e + 1;
       }
+      if (best < 0 || (best <= 1 && !scattered)) continue;
+      if (tiers[best].length < limit) tiers[best].add(row);
+      if (tiers[4].length >= limit) break;
     }
     return [
-      for (final row in [...primary, ...secondary].take(limit))
-        _suggestion(row),
+      for (final row in tiers.reversed.expand((t) => t).take(limit)) _hit(row),
     ];
+  }
+
+  /// [at] 起 [len] 字节这个名字(标签名或别名)的命中档,没命中回 -1。档位见 [search]。
+  int _tier(
+    int at,
+    int len,
+    Uint8List q,
+    List<Uint8List> words, {
+    required bool alias,
+  }) {
+    final prefix = _startsWith(at, len, q);
+    if (!prefix) {
+      if (words.isEmpty) return -1;
+      for (final w in words) {
+        if (!_hasWordStartingWith(at, len, w)) return -1;
+      }
+    }
+    if (prefix && len == q.length) return 4;
+    for (var i = 0; i + q.length <= len; i++) {
+      if ((i == 0 || _isSplit(_b[at + i - 1])) &&
+          _startsWith(at + i, len - i, q)) {
+        return alias ? 2 : 3;
+      }
+    }
+    return alias ? 0 : 1;
+  }
+
+  /// 名字里有没有哪个词以 [w] 开头。词 = 开头或分隔符之后的那一段。
+  bool _hasWordStartingWith(int at, int len, Uint8List w) {
+    for (var i = 0; i + w.length <= len; i++) {
+      if ((i == 0 || _isSplit(_b[at + i - 1])) &&
+          _startsWith(at + i, len - i, w)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// 拼写纠错,口径同 Danbooru 补全的 autocorrect(`Tag.autocorrect_matches`):
+  /// 只比标签名,编辑距离 < max(输入长度 ÷ 4, 3) 且三元组相似度 ≥ 0.3
+  /// (pg_trgm 的 `%`),按编辑距离、热度降序、名字排。
+  /// 输入要是 ASCII、不以 `/` 开头、至少 3 个字母数字。
+  List<TagHit> correct(String query, {int limit = 15}) {
+    final q = query.trim().toLowerCase().replaceAll(' ', '_');
+    if (q.startsWith('/') || q.codeUnits.any((c) => c > 0x7F)) return const [];
+    if (q.replaceAll(RegExp('[^a-z0-9]'), '').length < 3) return const [];
+    final qb = Uint8List.fromList(q.codeUnits);
+    final maxDist = q.length ~/ 4 > 3 ? q.length ~/ 4 : 3;
+    final qTri = _trigrams(qb, 0, qb.length);
+    final prev = Int32List(qb.length + 1), cur = Int32List(qb.length + 1);
+    final found = <(int, int)>[]; // (编辑距离, 条目)
+    var p = _entriesOff;
+    for (var i = 0; i < _entryCount; i++) {
+      final row = p;
+      final tagLen = _u16(row);
+      final zhAt = row + 2 + tagLen;
+      final aliasAt = zhAt + 2 + _u16(zhAt) + 5;
+      p = aliasAt + 2 + _u16(aliasAt);
+      // 编辑距离不小于长度差:先按长度筛掉绝大多数
+      if ((tagLen - qb.length).abs() >= maxDist) continue;
+      final d = _levenshtein(row + 2, tagLen, qb, maxDist, prev, cur);
+      if (d >= maxDist) continue;
+      if (_similarity(qTri, _trigrams(_b, row + 2, tagLen)) < 0.3) continue;
+      found.add((d, row));
+    }
+    final hits = [for (final (d, row) in found) (d, _hit(row))];
+    hits.sort((a, b) {
+      if (a.$1 != b.$1) return a.$1 - b.$1;
+      if (a.$2.count != b.$2.count) return b.$2.count - a.$2.count;
+      return a.$2.tag.compareTo(b.$2.tag);
+    });
+    return [for (final h in hits.take(limit)) h.$2];
+  }
+
+  /// [at] 起 [len] 字节与 [q] 的编辑距离;到 [cap] 就不再算,回 [cap]。
+  int _levenshtein(
+    int at,
+    int len,
+    Uint8List q,
+    int cap,
+    Int32List prev,
+    Int32List cur,
+  ) {
+    for (var j = 0; j <= q.length; j++) {
+      prev[j] = j;
+    }
+    for (var i = 1; i <= len; i++) {
+      cur[0] = i;
+      var rowMin = i;
+      final c = _b[at + i - 1];
+      for (var j = 1; j <= q.length; j++) {
+        var v = prev[j - 1] + (c == q[j - 1] ? 0 : 1);
+        if (prev[j] + 1 < v) v = prev[j] + 1;
+        if (cur[j - 1] + 1 < v) v = cur[j - 1] + 1;
+        cur[j] = v;
+        if (v < rowMin) rowMin = v;
+      }
+      if (rowMin >= cap) return cap;
+      for (var j = 0; j <= q.length; j++) {
+        prev[j] = cur[j];
+      }
+    }
+    return prev[q.length] < cap ? prev[q.length] : cap;
+  }
+
+  TagHit _hit(int row) {
+    final c = _character(row);
+    final zhAt = row + 2 + _u16(row);
+    return (
+      tag: c.tag,
+      zh: c.zh,
+      count: c.count,
+      category: _b[zhAt + 2 + _u16(zhAt) + 4],
+    );
   }
 
   /// 键记录里键之后那几个字段的起点;没有这个键回 -1。
@@ -341,37 +567,12 @@ class TagIndex implements OfflineTagMeta {
     );
   }
 
-  Suggestion _suggestion(int row) {
-    final c = _character(row);
-    return Suggestion(
-      text: c.tag.replaceAll('_', ' '),
-      kind: SuggestionKind.tag,
-      trans: c.zh,
-      count: c.count,
-    );
-  }
-
   bool _startsWith(int at, int len, Uint8List q) {
     if (len < q.length) return false;
     for (var i = 0; i < q.length; i++) {
       if (_b[at + i] != q[i]) return false;
     }
     return true;
-  }
-
-  /// 逗号连起来的别名里,有没有哪个以 [q] 开头。
-  bool _aliasStartsWith(int at, int len, Uint8List q) {
-    final end = at + len;
-    var s = at;
-    while (s < end) {
-      var e = s;
-      while (e < end && _b[e] != 0x2C) {
-        e++;
-      }
-      if (_startsWith(s, e - s, q)) return true;
-      s = e + 1;
-    }
-    return false;
   }
 
   String _str(int at, int len) =>
@@ -410,6 +611,12 @@ class _Writer {
     _grow(b.length);
     _buf.setRange(length, length + b.length, b);
     length += b.length;
+  }
+
+  void u8(int v) {
+    if (v > 0xFF) throw StateError('字段超长:$v');
+    _grow(1);
+    _buf[length++] = v;
   }
 
   void u16(int v) {

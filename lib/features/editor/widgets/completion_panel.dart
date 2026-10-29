@@ -317,13 +317,16 @@ class _CompletionPanelState extends ConsumerState<CompletionPanel> {
   Widget _row(Suggestion s) {
     final scheme = context.scheme;
     final isWork = s.kind == SuggestionKind.work;
+    // 离线词库没有 wiki 数据,也抽不了角色(fetchWiki / randomCharacterOf 第一行
+    // 就 return null),眼睛和骰子给了也是死的。
+    final online =
+        ref.watch(effectiveCompletionSourceProvider) ==
+        CompletionSource.enhanced;
     // 眼睛 = Danbooru Wiki 预览。画师串是自建条目、OC 是本地条目,
     // Danbooru 上没有对应词条,给了按钮点开也是空,所以这两类不出。
-    // 离线词库没有 wiki 数据(fetchWiki 第一行就 return null),给了按钮也是死的。
     final canWiki =
         (s.kind == SuggestionKind.tag || s.kind == SuggestionKind.character) &&
-        ref.watch(effectiveCompletionSourceProvider) ==
-            CompletionSource.enhanced;
+        online;
     final subtitle = _subtitle(s);
     final count = isWork ? null : formatCount(s.count);
     final open = _wikiOpen == s.text;
@@ -372,7 +375,7 @@ class _CompletionPanelState extends ConsumerState<CompletionPanel> {
                   ),
                   const SizedBox(width: 6),
                 ],
-                if (isWork) ...[
+                if (isWork && online) ...[
                   _diceBtn(s),
                   const SizedBox(width: 4),
                 ] else if (canWiki) ...[

@@ -31,9 +31,9 @@ class WikiPreview {
 }
 
 /// 标签补全引擎。按生效来源分流:
-///  - `danbooru`:**离线**词库 [LocalTagDb](assets/danbooru.tsv),仅英文,不碰网络
-///    (手机直连 danbooru.donmai.us 被 Cloudflare 挡死,早改离线了)。
-///  - `enhanced`:走后端 `/api/tags/*`——英文过 `/autocomplete` + `/wiki` 补中文;
+///  - `danbooru`:**离线**词库 [LocalTagDb](assets/danbooru.tsv) + 本机灵感库的角色,
+///    不碰网络(手机直连 danbooru.donmai.us 被 Cloudflare 挡死,早改离线了)。
+///  - `enhanced`:英文先查离线词库,一条没有才问后端 `/autocomplete`;
 ///    中文过 `/tags/search` 语义搜词。
 /// query→result 结果缓存;顺带回填注音/热度缓存([cacheTagMeta]),供词下注音层与词条栏反查。
 class TagCompletion {
@@ -52,7 +52,7 @@ class TagCompletion {
   /// 后端基址(enhanced 用),形如 `https://nai.sora214.top`,末尾无斜杠。
   final String baseUrl;
 
-  /// 离线 Danbooru 标签库(danbooru 来源用)。
+  /// 离线 Danbooru 标签库(两种来源的英文补全都用)。
   final LocalTagDb localDb;
 
   /// 画师/OC 库(增强模式合并)。角色·作品不再走本地库,见 [_enhanced]。
@@ -136,7 +136,7 @@ class TagCompletion {
           }),
         ),
       );
-      if (r.statusCode != 200) return const [];
+      if (r.statusCode != 200) return relatedTags(key);
       final j = jsonDecode(utf8.decode(r.bodyBytes));
       final results = j is Map ? j['results'] : null;
       final out = <String>[];
@@ -154,7 +154,7 @@ class TagCompletion {
       _capped(_relatedCache, key, out);
       return out;
     } catch (_) {
-      return const [];
+      return relatedTags(key);
     }
   }
 
@@ -217,26 +217,36 @@ class TagCompletion {
     }
   }
 
-  // ---- Danbooru 离线库(仅英文,不碰网络/Cloudflare)----
+  // ---- Danbooru 离线库(不碰网络/Cloudflare)----
+  // 英文查离线词库,本机灵感库的角色条目中英文都并进来。
   Future<SuggestResult> _danbooru(String q, bool cjk) async {
-    if (cjk) return const SuggestResult(); // 离线英文库
-    return SuggestResult(tags: await localDb.search(q, limit: _limit));
+    final tags = cjk
+        ? const <Suggestion>[]
+        : await _localEnglishTags(q, dice: false);
+    final local = await (localOcs ?? Future.value(const <TagEntry>[]));
+    return _group(tags, const [], ArtistOcLibrary.searchLocal(q, local));
   }
 
   // ---- 后端增强:上游标签 + 画师/OC 库,并行合并 ----
   //
-  // 角色与作品已全量交给上游(2026-08-25 跟 web 同步退役本地 `role_tag_mapping.json`):
-  // 英文走 autocomplete 的 category 3/4,中文走语义搜词的 Copyright/Character。
-  // 本地只剩画师串和 OC 两个自有数据源。
+  // 角色与作品按类目归组:英文用离线词库 / autocomplete 的 category 3/4,
+  // 中文用语义搜词的 Copyright/Character。后端失败也保留本机 OC。
   Future<SuggestResult> _enhanced(String q, bool cjk) async {
-    if (baseUrl.isEmpty) return const SuggestResult();
     final tagsF = cjk ? _enhancedChineseTags(q) : _enhancedEnglishTags(q);
     final aoF = (localOcs ?? Future.value(const <TagEntry>[])).then(
       (local) => artistOcLib.search(q, localOcs: local),
     );
     final tags = await tagsF;
     final (artists, ocs) = await aoF;
+    return _group(tags, artists, ocs);
+  }
 
+  /// 标签按类目分组,与画师 / OC 合成一份结果。
+  SuggestResult _group(
+    List<Suggestion> tags,
+    List<Suggestion> artists,
+    List<Suggestion> ocs,
+  ) {
     // 上游标签里也有画师类条目,与库实体同名时两行重复 → tags 剔除同名(实体行
     // 信息更全,保实体);顺手把同名 tag 的热度转给实体(库条目无热度,补上便于排序)。
     String norm(String s) => s.trim().toLowerCase().replaceAll('_', ' ');
@@ -275,11 +285,36 @@ class TagCompletion {
     );
   }
 
-  /// 英文:后端 autocomplete + wiki 补中文译名。
+  /// 英文:先查离线词库(匹配口径同后端补全,见 [LocalTagDb.search]),译名用词库的。
+  /// 拼错也在离线词库里纠;还是一条都没有(多半是词库之后的新标签)才问后端。
   Future<List<Suggestion>> _enhancedEnglishTags(String q) async {
-    final tags = await _backendAutocomplete(q);
-    if (tags.isNotEmpty) await _attachTranslations(tags);
-    return tags;
+    final tags = await _localEnglishTags(q, dice: baseUrl.isNotEmpty);
+    if (tags.isNotEmpty || baseUrl.isEmpty) return tags;
+    try {
+      return await _backendAutocomplete(q);
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// 离线词库的英文结果,一条都没有就按拼错纠一次(见 [LocalTagDb.correct])。
+  /// [dice] = 作品行带骰子提示(抽角色要联网)。
+  Future<List<Suggestion>> _localEnglishTags(
+    String q, {
+    required bool dice,
+  }) async {
+    var hits = await localDb.search(q, limit: _limit);
+    if (hits.isEmpty) hits = await localDb.correct(q, limit: _limit);
+    return _rankEnglish([
+      for (final h in hits)
+        _tagSuggestion(
+          _spaces(h.tag),
+          h.count,
+          h.category,
+          trans: h.zh,
+          dice: dice,
+        ),
+    ], q);
   }
 
   /// 中文:语义搜词(`/api/tags/search`)。
@@ -289,10 +324,17 @@ class TagCompletion {
   /// 收任意 messages 的通用 chat 代理,那个端点已被收编成固定格式的翻译接口。
   /// web 那半边(aiRecommendTags / aiDirectTranslate)同时删掉。
   Future<List<Suggestion>> _enhancedChineseTags(String q) async {
+    if (baseUrl.isEmpty) return const [];
+    final List<Suggestion> found;
+    try {
+      found = await _backendSearch(q);
+    } catch (_) {
+      return const []; // 中文联网查询失败时仍保留本地 OC。
+    }
     final seen = <String>{};
     final out = <Suggestion>[];
     // 去重保留:上游同一次搜索里角色与作品分类可能给出同名条目。
-    for (final s in await _backendSearch(q)) {
+    for (final s in found) {
       if (seen.add(s.text.toLowerCase())) out.add(s);
     }
     // 「翻译为英文」行:含中文逗号或 >3 个 CJK 字 → 顶部插一条整句翻译入口
@@ -417,34 +459,10 @@ class TagCompletion {
     return out;
   }
 
-  /// 给英文补全结果补中文名(后端 wiki/词库),best-effort。
-  Future<void> _attachTranslations(List<Suggestion> tags) async {
-    final names = [for (final t in tags) _unders(t.text)];
-    final uri = Uri.parse(
-      '$baseUrl/api/tags/wiki',
-    ).replace(queryParameters: {'tags': names.join(',')});
-    try {
-      final resp = await _retry(() => _client.get(uri));
-      if (resp.statusCode != 200) return;
-      final body = jsonDecode(utf8.decode(resp.bodyBytes));
-      if (body is! Map) return;
-      for (var i = 0; i < tags.length; i++) {
-        final zh = body[names[i]];
-        if (zh is List && zh.isNotEmpty && zh.first is String) {
-          final t = (zh.first as String).trim();
-          if (t.isEmpty) continue;
-          tags[i] = tags[i].copyWith(trans: t);
-          cacheTagMeta(tags[i].text, trans: t);
-        }
-      }
-    } catch (_) {}
-  }
-
   /// 解析 Danbooru `autocomplete.json` 数组 → 标签建议(前缀优先 → 热度降序,剔除 <50 冷门)。
   List<Suggestion> _parseDanbooru(List<int> bytes, String q) {
     final data = jsonDecode(utf8.decode(bytes));
     if (data is! List) return const [];
-    final ql = q.toLowerCase();
     final out = <Suggestion>[];
     for (final e in data) {
       if (e is! Map) continue;
@@ -454,29 +472,43 @@ class TagCompletion {
       if (count != 0 && count < 50) continue; // 冷门标签剔除
       final text = _spaces(value);
       cacheTagMeta(text, count: count);
-      // Danbooru 的 category 是数字:4 = 角色、3 = 作品(copyright)。各自归组 ——
-      // 混在几十条普通标签里根本挑不出来(对齐 web isCharacter/isOrigin)。
-      final kind = switch ((e['category'] as num?)?.toInt()) {
-        4 => SuggestionKind.character,
-        3 => SuggestionKind.work,
-        _ => SuggestionKind.tag,
-      };
-      out.add(
-        Suggestion(
-          text: text,
-          kind: kind,
-          note: kind == SuggestionKind.work ? _kWorkNote : null,
-          count: count,
-        ),
-      );
+      out.add(_tagSuggestion(text, count, (e['category'] as num?)?.toInt()));
     }
-    out.sort((a, b) {
+    return _rankEnglish(out, q);
+  }
+
+  /// Danbooru 的 category 是数字:4 = 角色、3 = 作品(copyright)。各自归组 ——
+  /// 混在几十条普通标签里根本挑不出来(对齐 web isCharacter/isOrigin)。
+  Suggestion _tagSuggestion(
+    String text,
+    int count,
+    int? category, {
+    String? trans,
+    bool dice = true,
+  }) {
+    final kind = switch (category) {
+      4 => SuggestionKind.character,
+      3 => SuggestionKind.work,
+      _ => SuggestionKind.tag,
+    };
+    return Suggestion(
+      text: text,
+      kind: kind,
+      note: kind == SuggestionKind.work && dice ? _kWorkNote : null,
+      trans: trans,
+      count: count,
+    );
+  }
+
+  /// 英文结果排序:以输入开头的在前,再按热度降序。
+  static List<Suggestion> _rankEnglish(List<Suggestion> xs, String q) {
+    final ql = q.toLowerCase();
+    return xs..sort((a, b) {
       final ap = a.text.toLowerCase().startsWith(ql);
       final bp = b.text.toLowerCase().startsWith(ql);
       if (ap != bp) return ap ? -1 : 1;
       return b.count.compareTo(a.count);
     });
-    return out;
   }
 
   /// 拉某标签的 Danbooru wiki 预览(仅增强模式;danbooru/离线返回 null)。文本走后端;

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -83,52 +84,50 @@ void main() {
     ]);
   });
 
-  test('补全与逐行扫描的结果一致', () {
-    // 对照:按行的字符串版本(旧实现同一段逻辑)
-    List<String> scan(String query, int limit) {
-      final q = query.trim().toLowerCase().replaceAll(' ', '_');
-      if (q.length < 2) return const [];
-      final primary = <TagRow>[];
-      final secondary = <TagRow>[];
-      final seen = <String>{};
-      for (final e in spec.rows) {
-        if (e.tag.startsWith(q)) {
-          if (seen.add(e.tag)) primary.add(e);
-          if (primary.length >= limit) break;
-        } else if (secondary.length < limit &&
-            e.aliases.any((a) => a.startsWith(q))) {
-          if (seen.add(e.tag)) secondary.add(e);
-        }
+  test('补全与后端逐条一致(对拍 tool/autocomplete_parity.py 导出的结果)', () {
+    final fx =
+        jsonDecode(
+              File('test/fixtures/autocomplete_parity.json').readAsStringSync(),
+            )
+            as Map<String, dynamic>;
+    final limit = fx['limit'] as int;
+    final bad = <String>[];
+    for (final c in fx['cases'] as List) {
+      final q = c['q'] as String;
+      final want = (c['want'] as List).cast<String>();
+      final got = [for (final h in idx.search(q, limit: limit)) h.tag];
+      if (got.join('|') != want.join('|') && bad.length < 20) {
+        bad.add('$q\n  后端 $want\n  本地 $got');
       }
-      return [
-        for (final e in [...primary, ...secondary].take(limit))
-          '${e.tag.replaceAll('_', ' ')}|${e.zh}|${e.count}',
-      ];
     }
+    expect(bad, isEmpty);
+  });
 
-    final queries = <String>{
-      'hires',
-      'longhair',
-      'oppai',
-      'Long H',
-      'a',
-      'qx',
-      ' Blue ',
-    };
-    for (final r in spec.rows.take(200)) {
-      queries.add(r.tag.length > 3 ? r.tag.substring(0, 3) : r.tag);
-    }
-    for (final r in spec.rows.skip(20000).take(40)) {
-      if (r.aliases.isNotEmpty && r.aliases.first.length >= 3) {
-        queries.add(r.aliases.first.substring(0, 3));
-      }
-    }
-    for (final q in queries) {
-      final got = [
-        for (final s in idx.search(q, limit: 12))
-          '${s.text}|${s.trans}|${s.count}',
-      ];
-      expect(got, scan(q, 12), reason: q);
-    }
+  test('拼写纠错:口径同 Danbooru autocorrect(样本取自 Danbooru 线上结果)', () {
+    List<String> fix(String q) => [
+      for (final h in idx.correct(q, limit: 12)) h.tag,
+    ];
+    expect(fix('scholl uniform').first, 'school_uniform');
+    expect(fix('blonde har').first, 'blonde_hair');
+    expect(fix('pleted skirt').take(2), ['pleated_skirt', 'pleated_shirt']);
+    expect(fix('hatsune mku').first, 'hatsune_miku');
+    expect(fix('yed_hair').take(3), ['red_hair', 'wet_hair', 'leg_hair']);
+    expect(fix('qqxxzzqq'), isEmpty, reason: '没有相近的');
+    expect(fix('a_b'), isEmpty, reason: '字母数字不足 3 个');
+    expect(fix('/lhh'), isEmpty, reason: '斜杠开头是快捷别名');
+    expect(fix('长发头发'), isEmpty, reason: '只纠英文');
+  });
+
+  test('补全结果带类目与首段译名', () {
+    final miku = idx.search('hatsune miku', limit: 1).single;
+    expect(miku.tag, 'hatsune_miku');
+    expect(miku.category, 4);
+    expect(miku.zh, spec.rows.firstWhere((r) => r.tag == 'hatsune_miku').zh);
+    expect(idx.search('vocaloid', limit: 1).single.category, 3);
+    expect(
+      idx.search('/lh', limit: 1).single.tag,
+      'long_hair',
+      reason: '快捷别名 /lh',
+    );
   });
 }

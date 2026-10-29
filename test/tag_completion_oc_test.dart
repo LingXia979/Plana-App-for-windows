@@ -98,6 +98,8 @@ TagCompletion _completion({String? session}) => TagCompletion(
 );
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized(); // 离线词库从 asset 读
+
   test('本地库排前、底行写「本地库」;公共库底行写作者', () async {
     final ocs = (await _completion(session: 'sid').query('雪')).ocs;
     expect(ocs.map((s) => s.text), ['雪莉', '初雪', '冬雪', '雪兔', '雪梅', '雪花']);
@@ -121,5 +123,37 @@ void main() {
   test('没登录拿不到公共库,本地库照样补', () async {
     final ocs = (await _completion().query('雪')).ocs;
     expect(ocs.map((s) => s.text), ['雪莉', '初雪', '冬雪']);
+  });
+
+  test('离线词库:本地库的角色中英文都补,不联网', () async {
+    var requests = 0;
+    final offline = MockClient((req) async {
+      requests++;
+      return http.Response('{}', 404);
+    });
+    final tc = TagCompletion(
+      source: CompletionSource.danbooru,
+      baseUrl: _base,
+      localDb: LocalTagDb(),
+      artistOcLib: ArtistOcLibrary(_base, 'sid', offline),
+      localOcs: Future.value([
+        ..._local,
+        TagEntry(
+          id: 'character_5',
+          category: TagCategory.character,
+          name: 'Kimono Girl',
+          positive: 'kimono girl tags',
+          origin: TagOrigin.local,
+        ),
+      ]),
+      client: offline,
+    );
+    final zh = await tc.query('雪');
+    expect(zh.ocs.map((s) => s.text), ['雪莉', '初雪', '冬雪']);
+    expect(zh.ocs.map((s) => s.source).toSet(), {'本地库'});
+    final en = await tc.query('kimono');
+    expect(en.ocs.map((s) => s.text), ['Kimono Girl']);
+    expect(en.tags.map((s) => s.text), contains('kimono'));
+    expect(requests, 0);
   });
 }
