@@ -37,7 +37,7 @@ typedef _HistoryInput = ({
 });
 
 /// 图库持久化(`<support>/gallery/`):每张结果 `images/<id>.png` 原图 +
-/// `thumbs/<id>.png` 缩略图 + `inputs/<id>.json` 参数快照(参考图外置
+/// `thumbs/<id>.jpg|png` 缩略图 + `inputs/<id>.json` 参数快照(参考图外置
 /// blob 仓),旁挂 index.json(顺序/选中/发号器)。启动只读索引,像素
 /// 按需懒读——重启不丢图,也不把整库塞回内存。
 class GalleryStore {
@@ -55,7 +55,8 @@ class GalleryStore {
   File imageFileForPreview(String id) => _imageFile(id);
 
   File _imageFile(String id) => File('${_imagesDir.path}/$id.png');
-  File _thumbFile(String id) => File('${_thumbsDir.path}/$id.png');
+  File _thumbPng(String id) => File('${_thumbsDir.path}/$id.png');
+  File _thumbJpg(String id) => File('${_thumbsDir.path}/$id.jpg');
   File _thumbSourceFile(String id) => File('${_thumbsDir.path}/$id.json');
   File _inputFile(String id) => File('${_inputsDir.path}/$id.json');
 
@@ -68,6 +69,9 @@ class GalleryStore {
   int seq = 0;
   final _clearedInpaintIds = <String>{};
   final _thumbReads = <String, Future<Uint8List?>>{};
+  // Limit simultaneous decoding when a whole row of old thumbnails is rebuilt.
+  final _thumbLanes = List.generate(3, (_) => Future<void>.value());
+  int _nextThumbLane = 0;
 
   static final _seqRe = RegExp(r'^gen(\d+)$');
 
@@ -417,7 +421,8 @@ class GalleryStore {
         // the image and its index entry available for a later retry.
         for (final file in [
           original,
-          _thumbFile(id),
+          _thumbPng(id),
+          _thumbJpg(id),
           _thumbSourceFile(id),
           _inputFile(id),
         ]) {
@@ -454,7 +459,8 @@ class GalleryStore {
         continue;
       }
       for (final file in [
-        _thumbFile(id),
+        _thumbPng(id),
+        _thumbJpg(id),
         _thumbSourceFile(id),
         _inputFile(id),
       ]) {
@@ -600,21 +606,46 @@ class GalleryStore {
     Uint8List bytes,
     FileStat source,
   ) async {
-    final thumb = await coverResizePng(bytes, 256, 256, keepAlpha: true);
+    final thumb = await _makeThumb(bytes);
+    await _cacheThumb(id, thumb, source);
+    return thumb.bytes;
+  }
+
+  Future<({Uint8List bytes, bool jpeg})> _makeThumb(Uint8List bytes) {
+    final lane = _nextThumbLane++ % _thumbLanes.length;
+    final work = _thumbLanes[lane].then((_) => makeThumb(bytes));
+    // Release the decoding lane before waiting for the serialized disk writer.
+    _thumbLanes[lane] = work.then<void>((_) {}, onError: (Object _) {});
+    return work;
+  }
+
+  /// Called only on the write queue, so deletion cannot interleave with commits.
+  Future<void> _cacheThumb(
+    String id,
+    ({Uint8List bytes, bool jpeg}) thumb,
+    FileStat source,
+  ) async {
     final current = await _imageFile(id).stat();
-    if (!_sameSource(current, source)) return thumb;
-    await writeBytesAtomic(_thumbFile(id), thumb);
+    if (!_sameSource(current, source)) return;
+    final format = thumb.jpeg ? 'jpg' : 'png';
+    await writeBytesAtomic(
+      thumb.jpeg ? _thumbJpg(id) : _thumbPng(id),
+      thumb.bytes,
+    );
     await writeStringAtomic(
       _thumbSourceFile(id),
       jsonEncode({
-        'v': 2,
+        'v': 3,
         'id': id,
+        'format': format,
         'size': source.size,
         'modified': source.modified.microsecondsSinceEpoch,
-        'thumbSha256': sha256.convert(thumb).toString(),
+        'thumbSha256': sha256.convert(thumb.bytes).toString(),
       }),
     );
-    return thumb;
+    final obsolete = thumb.jpeg ? _thumbPng(id) : _thumbJpg(id);
+    await _deleteRecoveryFiles(obsolete);
+    if (await obsolete.exists()) await obsolete.delete();
   }
 
   bool _sameSource(FileStat a, FileStat b) =>
@@ -631,41 +662,68 @@ class GalleryStore {
     }),
   );
 
-  Future<Uint8List?> _readThumb(String id) async {
+  /// Read and close files before a queued Windows delete/clear can unlink them.
+  Future<({FileStat source, Uint8List bytes, bool cached})?> _thumbInput(
+    String id,
+  ) async {
     final source = await _imageFile(id).stat();
     if (source.type != FileSystemEntityType.file) return null;
     try {
       final signature = jsonDecode(await _thumbSourceFile(id).readAsString());
       if (signature is Map &&
-          signature['v'] == 2 &&
+          signature['v'] == 3 &&
           signature['id'] == id &&
+          (signature['format'] == 'jpg' || signature['format'] == 'png') &&
           signature['size'] == source.size &&
           signature['modified'] == source.modified.microsecondsSinceEpoch) {
-        final thumb = await _thumbFile(id).readAsBytes();
+        final thumb =
+            await (signature['format'] == 'jpg' ? _thumbJpg(id) : _thumbPng(id))
+                .readAsBytes();
         if (signature['thumbSha256'] == sha256.convert(thumb).toString() &&
             _sameSource(await _imageFile(id).stat(), source)) {
-          return thumb;
+          return (source: source, bytes: thumb, cached: true);
         }
       }
     } catch (_) {}
     final bytes = await readImage(id);
     if (bytes == null) return null;
+    return (source: source, bytes: bytes, cached: false);
+  }
+
+  Future<Uint8List?> _readThumb(String id) async {
+    final input = await _enqueue(() => _thumbInput(id));
+    if (input == null) return null;
+    if (input.cached) return input.bytes;
+    final source = input.source;
     try {
-      final thumb = await _writeThumb(id, bytes, source);
+      final thumb = await _makeThumb(input.bytes);
+      // Decoding runs outside the write queue; only a still-current original may
+      // publish its cache. A delete/clear queued during decoding wins safely.
+      await _enqueue(() => _cacheThumb(id, thumb, source));
       final current = await _imageFile(id).stat();
       if (current.type == FileSystemEntityType.notFound) {
-        for (final file in [_thumbFile(id), _thumbSourceFile(id)]) {
-          try {
-            await file.delete();
-          } on FileSystemException {
-            /* already removed */
+        await _enqueue(() async {
+          if (await _imageFile(id).exists()) return;
+          for (final file in [
+            _thumbPng(id),
+            _thumbJpg(id),
+            _thumbSourceFile(id),
+          ]) {
+            try {
+              await _deleteRecoveryFiles(file);
+              if (await file.exists()) await file.delete();
+            } on FileSystemException {
+              /* already removed */
+            }
           }
-        }
+        });
         return null;
       }
-      return _sameSource(current, source) ? thumb : await readImage(id);
+      return _sameSource(current, source)
+          ? thumb.bytes
+          : await _enqueue(() => readImage(id));
     } catch (_) {
-      return bytes;
+      return _enqueue(() => readImage(id));
     }
   }
 

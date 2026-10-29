@@ -248,4 +248,20 @@ void main() {
       expect(a, b);
     });
   });
+
+  group('makeThumb', () {
+    test('带隐写位的不透明图编 JPEG,按短边等比缩', () async {
+      final t = await makeThumb(await _opaque(1024, 1536));
+      expect(t.jpeg, isTrue);
+      expect(t.bytes.sublist(0, 2), [0xFF, 0xD8]);
+      expect(await decodeImageSize(t.bytes), (kThumbShortSide, 768));
+    });
+
+    test('有真透明的编 PNG,透明区带过去,小图不放大', () async {
+      final t = await makeThumb(await _halfTransparent(128, 128));
+      expect(t.jpeg, isFalse);
+      expect(await decodeImageSize(t.bytes), (128, 128));
+      expect((await _rgbaOf(t.bytes))[3], 0);
+    });
+  });
 }

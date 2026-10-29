@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -573,9 +574,11 @@ void main() {
         expect(await stores.gallery.readInputRaw(blocked.id), snapshotBefore);
         // Original is deliberately a directory in this failure fixture. Check
         // retained cache bytes directly; an unverifiable preview is not shown.
-        final thumbnail = File(
-          '${blockedPath.parent.parent.path}/thumbs/${blocked.id}.png',
-        );
+        final prefix = '${blockedPath.parent.parent.path}/thumbs/${blocked.id}';
+        final format =
+            (jsonDecode(await File('$prefix.json').readAsString())
+                as Map<String, dynamic>)['format'];
+        final thumbnail = File('$prefix.$format');
         expect(await thumbnail.readAsBytes(), thumbnailBefore);
       });
       await finish(tester);

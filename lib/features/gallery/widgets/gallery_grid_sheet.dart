@@ -43,6 +43,7 @@ import '../save_settings.dart';
 import '../share_pipeline.dart';
 import 'album_name_sheet.dart';
 import 'result_thumb.dart';
+import 'justified_grid.dart';
 import 'zip_pack_sheet.dart';
 import '../../../core/util/haptics.dart';
 
@@ -1096,11 +1097,7 @@ class GalleryGridContentState extends ConsumerState<GalleryGridContent>
     sliver: SliverLayoutBuilder(
       builder: (_, constraints) => SliverGrid(
         gridDelegate: _zoomDelegate(
-          (cols) => SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: cols,
-            mainAxisSpacing: 6,
-            crossAxisSpacing: 6,
-          ),
+          (cols) => JustifiedGridDelegate(items, cols: cols, gap: 6, inset: 10),
           width: constraints.crossAxisExtent,
         ),
         delegate: SliverChildBuilderDelegate((_, i) {

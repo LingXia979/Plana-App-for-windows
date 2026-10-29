@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart' show compute;
 import 'package:image/image.dart' as img;
 
 import 'image_resources.dart';
+import 'transparency.dart' show rgbaHasAlpha;
 
 /// Read dimensions without allocating a full decoded pixel frame.
 Future<(int, int)> decodeImageSize(Uint8List bytes) async {
@@ -78,6 +79,68 @@ Future<Uint8List> coverResizePng(
     final picture = recorder.endRecording();
     return pictureToPng(picture, targetW, targetH);
   });
+}
+
+/// 缩略图短边像素。
+const kThumbShortSide = 512;
+
+/// 保留原比例，短边至多 512、长边至多 1536，不放大、不裁切。
+/// 不透明图使用 JPEG，透明图使用 PNG；所有解码和渲染资源均在完成后释放。
+Future<({Uint8List bytes, bool jpeg})> makeThumb(Uint8List src) =>
+    withDecodedImage(src, (image) async {
+      final iw = image.width, ih = image.height;
+      final scale = math.min(
+        1.0,
+        math.min(
+          kThumbShortSide / math.min(iw, ih),
+          kThumbShortSide * 3 / math.max(iw, ih),
+        ),
+      );
+      final tw = math.max(1, (iw * scale).round());
+      final th = math.max(1, (ih * scale).round());
+      final recorder = ui.PictureRecorder();
+      final canvas = ui.Canvas(recorder);
+      canvas.drawImageRect(
+        image,
+        ui.Rect.fromLTWH(0, 0, iw.toDouble(), ih.toDouble()),
+        ui.Rect.fromLTWH(0, 0, tw.toDouble(), th.toDouble()),
+        ui.Paint()..filterQuality = ui.FilterQuality.high,
+      );
+      final picture = recorder.endRecording();
+      ui.Image? output;
+      try {
+        output = await picture.toImage(tw, th);
+        final raw = await output.toByteData(format: ui.ImageByteFormat.rawRgba);
+        if (raw == null) throw StateError('缩略图像素读取失败');
+        final rgba = raw.buffer.asUint8List(
+          raw.offsetInBytes,
+          raw.lengthInBytes,
+        );
+        if (!rgbaHasAlpha(rgba)) {
+          return (bytes: await compute(_thumbJpg, (rgba, tw, th)), jpeg: true);
+        }
+        final png = await output.toByteData(format: ui.ImageByteFormat.png);
+        if (png == null) throw StateError('缩略图 PNG 编码失败');
+        return (
+          bytes: png.buffer.asUint8List(png.offsetInBytes, png.lengthInBytes),
+          jpeg: false,
+        );
+      } finally {
+        output?.dispose();
+        picture.dispose();
+      }
+    });
+
+Uint8List _thumbJpg((Uint8List, int, int) arg) {
+  final (rgba, w, h) = arg;
+  final image = img.Image.fromBytes(
+    width: w,
+    height: h,
+    bytes: rgba.buffer,
+    bytesOffset: rgba.offsetInBytes,
+    numChannels: 4,
+  );
+  return Uint8List.fromList(img.encodeJpg(image, quality: 88));
 }
 
 /// Krea 风格参考预处理,复刻 web `applyKreaStyleRefFile`:长边缩到

@@ -276,11 +276,11 @@ void main() {
         }),
       );
       await thumbnail.writeAsBytes(img.encodePng(blue));
-      final repaired = img.decodePng(
+      final repaired = img.decodeImage(
         (await stores.gallery.readThumb(original.id))!,
       )!;
-      expect(repaired.getPixel(100, 100).r, 255);
-      expect(repaired.getPixel(100, 100).b, 0);
+      expect(repaired.getPixel(4, 6).r, closeTo(255, 3));
+      expect(repaired.getPixel(4, 6).b, lessThanOrEqualTo(3));
       expect(await diskOriginal.readAsBytes(), original.bytes);
       expect((await diskOriginal.stat()).modified, sourceStat.modified);
       expect(c.read(galleryProvider).selectedId, original.id);
@@ -290,7 +290,7 @@ void main() {
   test(
     'cached thumbnail replacement is repaired with its signature and timestamps intact',
     () async {
-      final thumbnail = File('${root.path}/gallery/thumbs/${original.id}.png');
+      final thumbnail = File('${root.path}/gallery/thumbs/${original.id}.jpg');
       final signature = File('${root.path}/gallery/thumbs/${original.id}.json');
       final originalSignature = await signature.readAsBytes();
       final thumbnailStat = await thumbnail.stat();
@@ -300,9 +300,9 @@ void main() {
       await thumbnail.setLastModified(thumbnailStat.modified);
       expect(await signature.readAsBytes(), originalSignature);
       final repaired = (await stores.gallery.readThumb(original.id))!;
-      final pixels = img.decodePng(repaired)!;
-      expect(pixels.getPixel(100, 100).r, 255);
-      expect(pixels.getPixel(100, 100).b, 0);
+      final pixels = img.decodeImage(repaired)!;
+      expect(pixels.getPixel(4, 6).r, closeTo(255, 3));
+      expect(pixels.getPixel(4, 6).b, lessThanOrEqualTo(3));
       expect(await thumbnail.readAsBytes(), repaired);
       final repairedStat = await thumbnail.stat();
       expect(await stores.gallery.readThumb(original.id), repaired);
@@ -315,12 +315,12 @@ void main() {
   test(
     'truncated cached thumbnail rebuilds without changing the original',
     () async {
-      final thumbnail = File('${root.path}/gallery/thumbs/${original.id}.png');
+      final thumbnail = File('${root.path}/gallery/thumbs/${original.id}.jpg');
       await thumbnail.writeAsBytes([137, 80, 78, 71]);
-      final repaired = img.decodePng(
+      final repaired = img.decodeImage(
         (await stores.gallery.readThumb(original.id))!,
       )!;
-      expect(repaired.getPixel(100, 100).r, 255);
+      expect(repaired.getPixel(4, 6).r, closeTo(255, 3));
       expect(await stores.gallery.readImage(original.id), original.bytes);
     },
   );
@@ -335,19 +335,19 @@ void main() {
       final blueBytes = img.encodePng(blue);
       await thumbnail.writeAsBytes(blueBytes);
       await signature.delete();
-      final repaired = img.decodePng(
+      final repaired = img.decodeImage(
         (await stores.gallery.readThumb(original.id))!,
       )!;
-      expect(repaired.getPixel(100, 100).r, 255);
-      expect(repaired.getPixel(100, 100).b, 0);
+      expect(repaired.getPixel(4, 6).r, closeTo(255, 3));
+      expect(repaired.getPixel(4, 6).b, lessThanOrEqualTo(3));
       expect(await signature.exists(), isTrue);
       final diskOriginal = stores.gallery.imageFileForPreview(original.id);
       await diskOriginal.writeAsBytes(blueBytes);
       await diskOriginal.setLastModified(DateTime(2030));
-      final refreshed = img.decodePng(
+      final refreshed = img.decodeImage(
         (await stores.gallery.readThumb(original.id))!,
       )!;
-      expect(refreshed.getPixel(100, 100).b, 255);
+      expect(refreshed.getPixel(4, 6).b, closeTo(255, 3));
       await diskOriginal.delete();
       expect(await stores.gallery.readThumb(original.id), isNull);
     },

@@ -50,6 +50,7 @@ void main() {
       final paths = [
         '${root.path}/gallery/images/${image.id}.png',
         '${root.path}/gallery/thumbs/${image.id}.png',
+        '${root.path}/gallery/thumbs/${image.id}.jpg',
         '${root.path}/gallery/thumbs/${image.id}.json',
         '${root.path}/gallery/inputs/${image.id}.json',
       ];

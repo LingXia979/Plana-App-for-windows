@@ -160,6 +160,21 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(key('desktop-quick-gallery'), findsOneWidget);
+    // The app remembers scroll positions across openings; independent fixtures
+    // start at the top before exercising their own selection/export actions.
+    final scrollable = find
+        .descendant(
+          of: find
+              .descendant(
+                of: key('desktop-quick-gallery'),
+                matching: find.byType(CustomScrollView),
+              )
+              .first,
+          matching: find.byType(Scrollable),
+        )
+        .first;
+    tester.state<ScrollableState>(scrollable).position.jumpTo(0);
+    await tester.pumpAndSettle();
   }
 
   Future<void> finish(WidgetTester tester) async {
@@ -268,7 +283,30 @@ void main() {
       await tester.tap(key('desktop-album-'));
       await tester.pumpAndSettle();
       expect(key('desktop-quick-gallery'), findsOneWidget);
+      final gridScroll = find
+          .descendant(
+            of: find
+                .descendant(
+                  of: key('desktop-quick-gallery'),
+                  matching: find.byType(CustomScrollView),
+                )
+                .first,
+            matching: find.byType(Scrollable),
+          )
+          .first;
+      // The third date group can be beyond the lazily built viewport with
+      // proportional portrait rows. Reach it before checking its membership.
+      await tester.scrollUntilVisible(
+        key('quick-gallery-image-sample2'),
+        160,
+        scrollable: gridScroll,
+      );
       expect(key('quick-gallery-image-sample2'), findsOneWidget);
+      await tester.scrollUntilVisible(
+        key('quick-gallery-image-sample1'),
+        -160,
+        scrollable: gridScroll,
+      );
       await tester.tap(key('quick-gallery-image-sample1'));
       await tester.pumpAndSettle();
       expect(key('desktop-quick-gallery'), findsNothing);

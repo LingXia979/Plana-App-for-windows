@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -85,14 +86,11 @@ void main() {
           desktopModeProvider.overrideWithValue(true),
         ],
       );
+      var disposed = false;
+      var flushed = false;
       addTearDown(() async {
-        container.dispose();
-        stores.flushNow();
-        await stores.gallery.idle;
-        await stores.workspace.idle;
-        await stores.assistant.idle;
-        await stores.desktopOutput.idle;
-        await stores.albums.idle;
+        if (!disposed) container.dispose();
+        if (!flushed) return;
         expect(root.parent.absolute.path, Directory.systemTemp.absolute.path);
         expect(
           root.uri.pathSegments.where((s) => s.isNotEmpty).last,
@@ -166,7 +164,12 @@ void main() {
           ((decoded!.height ~/ 2) * decoded.width + decoded.width ~/ 2) * 4;
       expect(
         pixels.buffer.asUint8List(pixels.offsetInBytes + center, 4),
-        [255, 0, 0, 255],
+        orderedEquals([
+          closeTo(255, 3),
+          lessThanOrEqualTo(3),
+          lessThanOrEqualTo(3),
+          255,
+        ]),
         reason:
             'The rendered thumbnail must be the red original, not blue cache',
       );
@@ -180,6 +183,18 @@ void main() {
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
       await tester.pumpAndSettle();
+      container.dispose();
+      disposed = true;
+      // Persistence initiated by a widget uses the test clock as well as real
+      // file I/O. Drain both before the test binding stops advancing frames.
+      unawaited(stores.flushForExit().then((_) => flushed = true));
+      for (var i = 0; i < 300 && !flushed; i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 10)),
+        );
+        await tester.pump(const Duration(milliseconds: 20));
+      }
+      expect(flushed, isTrue);
     },
   );
 }

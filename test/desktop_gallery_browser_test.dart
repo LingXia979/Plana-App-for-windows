@@ -331,6 +331,10 @@ void main() {
     (tester) async {
       await mount(tester);
       await openAll(tester);
+      // Portrait rows are taller now; session scroll restoration may leave the
+      // first tile above the viewport after the preceding independent test.
+      await tester.ensureVisible(key('desktop-image-sample0'));
+      await tester.pumpAndSettle();
       final press = await tester.startGesture(
         tester.getCenter(key('desktop-image-sample0')),
         kind: PointerDeviceKind.mouse,
