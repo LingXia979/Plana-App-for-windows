@@ -8,6 +8,7 @@ import '../models.dart' show CharacterPrompt, GenParams, naiSupportsEffort;
 import '../prompt_sections.dart' show joinSections;
 import '../style_recipes.dart' show recipeDetail, recipeOf;
 import 'bottom_action_bar.dart';
+import 'canvas_history_sheet.dart';
 import 'common.dart';
 
 /// 只显示当前画布，与模型选择共用顶栏。点名称展开全部画布。
@@ -235,6 +236,10 @@ class _CanvasManagerState extends ConsumerState<_CanvasManager> {
           Navigator.pop(context);
         },
         // 默认画布名字固定、删不掉:不给改名键,删除位换成图钉
+        onHistory: () async {
+          final changed = await showCanvasHistory(context, canvas);
+          if (changed == true && context.mounted) Navigator.pop(context);
+        },
         onRename: pinned ? null : () => _renameCanvas(context, ref, canvas),
         onDelete: pinned ? null : () => _delete(canvas),
       ),
@@ -343,6 +348,7 @@ class _CanvasTile extends StatelessWidget {
     required this.canvas,
     required this.active,
     required this.onTap,
+    required this.onHistory,
     this.onRename,
     this.onDelete,
   });
@@ -350,6 +356,7 @@ class _CanvasTile extends StatelessWidget {
   final CanvasDraft canvas;
   final bool active;
   final VoidCallback onTap;
+  final VoidCallback onHistory;
 
   /// 默认画布为 null：名字固定，不显示改名键。
   final VoidCallback? onRename;
@@ -409,6 +416,16 @@ class _CanvasTile extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(width: 4),
+                    IconButton(
+                      tooltip: '历史',
+                      visualDensity: VisualDensity.compact,
+                      onPressed: onHistory,
+                      icon: Icon(
+                        Icons.history,
+                        size: 19,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
                     if (onRename != null)
                       IconButton(
                         tooltip: '重命名',

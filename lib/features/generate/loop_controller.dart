@@ -86,8 +86,12 @@ class LoopNotifier extends Notifier<LoopStatus> {
         );
         dispatched++;
         // 非 ok 一律停(含用户取消):挂机连续失败无意义,也不该替用户决定重试
-        if (await gen.generate(using: snapshot, galleryTarget: galleryTarget) !=
-            GenOutcome.ok) {
+        final outcome = await gen.generate(
+          using: snapshot,
+          galleryTarget: galleryTarget,
+          origin: (canvasId: canvasId, content: prompts),
+        );
+        if (outcome != GenOutcome.ok) {
           ok = false;
           break;
         }

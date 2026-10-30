@@ -565,6 +565,17 @@ class GenerateNotifier extends Notifier<GenerateState> {
     return next.length;
   }
 
+  /// 应用 LoRA 堆:整组替换挂载列表,权重 / CLIP / 启停按堆里的来。
+  /// 下载中 / 下载失败的占位条留在前面;超出上限截断。
+  void applyLoraStack(List<ActiveLora> loras) {
+    final next = [
+      ...state.loras.where((l) => l.pending != null),
+      ...loras,
+    ].take(kMaxActiveLoras).toList();
+    state = state.copyWith(loras: next);
+    if (next.isNotEmpty) openPanel(Panel.lora);
+  }
+
   void updateLora(
     String name, {
     double? weight,

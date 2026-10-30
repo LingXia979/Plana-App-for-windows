@@ -1,3 +1,4 @@
+import 'package:plana_app/features/generate/widgets/canvas_history_sheet.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -14,6 +15,7 @@ import 'package:plana_app/core/store/app_stores.dart';
 import 'package:plana_app/core/theme/app_theme.dart';
 import 'package:plana_app/features/editor/editor_state.dart';
 import 'package:plana_app/features/gallery/albums/album_models.dart';
+import 'package:plana_app/features/generate/canvas_history.dart';
 import 'package:plana_app/features/generate/canvas_state.dart';
 import 'package:plana_app/features/generate/gen_jobs.dart';
 import 'package:plana_app/features/generate/gen_queue.dart';
@@ -67,6 +69,7 @@ class _Presets extends PromptPresetsNotifier {
 
 class _ControlledGeneration extends GenerationNotifier {
   final snapshots = <GenerateState?>[];
+  final origins = <CanvasOrigin?>[];
   final replies = <Completer<GenOutcome>>[];
   @override
   GenPool build() => const GenPool();
@@ -78,8 +81,10 @@ class _ControlledGeneration extends GenerationNotifier {
     GenerateState? using,
     bool stay = false,
     void Function(String)? onJob,
+    CanvasOrigin? origin,
   }) {
     snapshots.add(using);
+    origins.add(origin);
     final reply = Completer<GenOutcome>();
     replies.add(reply);
     return reply.future;
@@ -1041,6 +1046,160 @@ void main() {
     generation.replies[3].complete(GenOutcome.ok);
     await running;
     expect(c.read(generateProvider).prompt, 'forest');
+  });
+
+  test('画布历史:同样内容连着出图只算一条,图追加在前;每张画布最多 50 条', () async {
+    final history = stores.history;
+    final a = c.read(canvasWorkspaceProvider).activeId;
+    gen.setPrompts(positive: 'rain');
+    await history.record(a, CanvasPrompts.of(c.read(generateProvider)), ['g1']);
+    await history.record(a, CanvasPrompts.of(c.read(generateProvider)), [
+      'g2',
+      'g3',
+    ]);
+    var list = await history.load(a);
+    expect(list, hasLength(1));
+    expect(list.single.resultIds, ['g2', 'g3', 'g1']);
+    for (var i = 4; i <= 6; i++) {
+      await history.record(a, CanvasPrompts.of(c.read(generateProvider)), [
+        'g$i',
+      ]);
+    }
+    list = await history.load(a);
+    expect(list.single.resultIds, hasLength(CanvasHistoryStore.maxResults));
+    expect(list.single.resultIds.first, 'g6');
+    gen.setPrompts(positive: 'rain, moon');
+    await history.record(a, CanvasPrompts.of(c.read(generateProvider)), ['x']);
+    list = await history.load(a);
+    expect(list.map((e) => e.preview.prompt), ['rain, moon', 'rain']);
+    for (var i = 0; i < 60; i++) {
+      gen.setPrompts(positive: 'tag$i');
+      await history.record(a, CanvasPrompts.of(c.read(generateProvider)), [
+        'n$i',
+      ]);
+    }
+    list = await history.load(a);
+    expect(list, hasLength(CanvasHistoryStore.cap));
+    expect(list.first.preview.prompt, 'tag59');
+    // 别的画布各记各的
+    final b = canvases.create();
+    expect(await history.load(b), isEmpty);
+  });
+
+  test('画布历史随重启保留,引用的图计入 GC;删掉的画布启动时清掉', () async {
+    c.dispose();
+    final root = Directory.systemTemp.createTempSync('plana_canvas_history');
+    bind(await AppStores.open(rootOverride: root));
+    await c.read(promptPresetsProvider.future);
+    final a = c.read(canvasWorkspaceProvider).activeId;
+    gen.setPrompts(positive: 'rain');
+    gen.addVibe(image: Uint8List.fromList([9, 9, 9]), name: 'v');
+    await stores.history.record(a, CanvasPrompts.of(c.read(generateProvider)), [
+      'g1',
+    ]);
+    final b = canvases.create();
+    await stores.history.record(b, CanvasPrompts.of(c.read(generateProvider)), [
+      'g2',
+    ]);
+    gen.removeVibe(c.read(generateProvider).vibes.firstOrNull?.id ?? '');
+    canvases.select(a);
+    gen.removeVibe(c.read(generateProvider).vibes.single.id);
+    stores.flushNow();
+    await stores.workspace.idle;
+    expect(await stores.workspace.liveRefs(), isEmpty);
+    expect(await stores.history.liveRefs(), hasLength(1));
+    canvases.remove(b);
+    stores.flushNow();
+    await stores.workspace.idle;
+    final reloaded = await AppStores.open(rootOverride: root);
+    final entry = (await reloaded.history.load(a)).single;
+    expect(entry.preview.prompt, 'rain');
+    expect(entry.countOf('vibes'), 1);
+    final back = await reloaded.workspace.decodeCanvas(entry.json);
+    expect(back.vibes.single.image, [9, 9, 9]);
+    await reloaded.history.removeOrphans({
+      for (final d in reloaded.workspace.initialCanvases!.canvases) d.id,
+    }, DateTime.now().add(const Duration(seconds: 1)));
+    expect(await reloaded.history.load(a), hasLength(1));
+    expect(
+      File('${root.path}/workspace/history/$b.json').existsSync(),
+      isFalse,
+    );
+  });
+
+  test('恢复历史整组换回、可撤销;复制成新画布不动原画布', () async {
+    final a = c.read(canvasWorkspaceProvider).activeId;
+    gen.setPrompts(positive: 'rain');
+    gen.addVibe(image: Uint8List.fromList([1]), name: 'v');
+    final old = CanvasPrompts.of(c.read(generateProvider));
+    gen.setPrompts(positive: 'forest');
+    gen.removeVibe(c.read(generateProvider).vibes.single.id);
+    final before = canvases.replace(a, old)!;
+    expect(c.read(generateProvider).prompt, 'rain');
+    expect(c.read(generateProvider).vibes.single.name, 'v');
+    canvases.replace(a, before);
+    expect(c.read(generateProvider).prompt, 'forest');
+    expect(c.read(generateProvider).vibes, isEmpty);
+    final copy = canvases.createFrom(old, from: '默认画布');
+    expect(c.read(canvasWorkspaceProvider).activeId, copy);
+    expect(c.read(canvasWorkspaceProvider).active.name, '默认画布 · 副本');
+    expect(c.read(generateProvider).prompt, 'rain');
+    expect(c.read(canvasWorkspaceProvider).find(a)!.prompts.prompt, 'forest');
+  });
+
+  test('出图带上发起的画布:队列记入队时那张,循环记来源画布', () async {
+    gen.setPrompts(positive: 'rain');
+    final a = c.read(canvasWorkspaceProvider).activeId;
+    final queue = c.read(genQueueProvider.notifier);
+    queue.enqueue();
+    canvases.create();
+    gen.setPrompts(positive: 'forest');
+    final running = queue.maybeStart();
+    await dispatched(1);
+    expect(generation.origins.single!.canvasId, a);
+    expect(generation.origins.single!.content.prompt, 'rain');
+    generation.replies.single.complete(GenOutcome.ok);
+    await running;
+  });
+
+  test('历史一行的改动摘要和时间', () {
+    CanvasHistoryEntry entry(CanvasPrompts p, {int vibes = 0}) =>
+        CanvasHistoryEntry(
+          id: 'h',
+          at: 0,
+          json: {'vibes': List.filled(vibes, {})},
+          preview: p,
+          resultIds: const [],
+          refs: const [],
+        );
+    final base = CanvasPrompts.of(
+      GenerateState.initial().copyWith(prompt: 'a, b, c'),
+    );
+    final next = CanvasPrompts.of(
+      GenerateState.initial().copyWith(
+        prompt: 'a, b, d, e',
+        params: const GenParams().copyWith(steps: 23),
+      ),
+    );
+    expect(
+      historyChanges(entry(base), entry(next, vibes: 1)),
+      '+2 −1 · Vibe 0→1 · 28→23 步',
+    );
+    expect(historyChanges(entry(base), entry(base)), '参数有改动');
+    final now = DateTime(2026, 10, 24, 15);
+    int at(DateTime t) => t.millisecondsSinceEpoch;
+    expect(
+      historyTimeLabel(at(DateTime(2026, 10, 24, 9, 5)), now: now),
+      '09:05',
+    );
+    expect(
+      historyTimeLabel(at(DateTime(2026, 10, 23, 21, 30)), now: now),
+      '昨天 21:30',
+    );
+    expect(
+      historyTimeLabel(at(DateTime(2026, 10, 3, 8, 0)), now: now),
+      '10月3日 08:00',
+    );
   });
 
   Future<void> pumpHeader(WidgetTester tester, {double textScale = 1}) async {

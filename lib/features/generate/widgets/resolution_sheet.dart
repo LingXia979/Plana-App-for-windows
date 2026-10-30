@@ -6,10 +6,14 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/ui/desktop_popover.dart';
 import '../generate_state.dart';
 import '../models.dart';
+import '../res_presets.dart';
 import '../res_rules.dart';
 import 'common.dart';
 
 const _customTab = '自定义';
+const _mineTab = '我的';
+SizePreset _asSize(ResPreset p) =>
+    SizePreset(p.name, formatAspectRatio(p.width, p.height), p.width, p.height);
 
 // 画布满格对应的真实像素(两轴一致);矩形左上角锚定,右下角拖拽定 W/H。
 final double _axisMax = kMaxDim.toDouble();
@@ -70,24 +74,91 @@ class _ResolutionSheetState extends ConsumerState<_ResolutionSheet> {
     customH = snapDim(p.height);
     _width = TextEditingController(text: '$customW');
     _height = TextEditingController(text: '$customH');
-    var matched = false;
-    for (final entry in sizeTabs.entries) {
-      for (final preset in entry.value) {
-        if (preset.width == p.width && preset.height == p.height) {
-          tab = entry.key;
-          selected = preset;
-          matched = true;
-        }
-      }
+    final hit = _match(p.width, p.height);
+    if (hit != null) {
+      tab = hit.$1;
+      selected = hit.$2;
+    } else {
+      tab = _customTab;
     }
-    // 当前尺寸不是任何预设(如图生图按底图设的怪尺寸)→ 落在自定义档回显。
-    if (!matched) tab = _customTab;
     lastPresetTab = _isCustom ? sizeTabs.keys.first : tab;
   }
 
   bool get _isCustom => tab == _customTab;
   int get _effW => _isCustom ? customW : selected.width;
   int get _effH => _isCustom ? customH : selected.height;
+
+  bool _isSel(SizePreset p) =>
+      p.width == selected.width && p.height == selected.height;
+  List<SizePreset> _presetsOf(String t, List<ResPreset> mine) =>
+      t == _mineTab ? [for (final p in mine) _asSize(p)] : sizeTabs[t]!;
+  (String, SizePreset)? _match(int w, int h) {
+    for (final e in sizeTabs.entries) {
+      for (final p in e.value) {
+        if (p.width == w && p.height == h) return (e.key, p);
+      }
+    }
+    final p = ref.read(resPresetsProvider.notifier).find(w, h);
+    return p == null ? null : (_mineTab, _asSize(p));
+  }
+
+  Future<void> _save() async {
+    if (!_commitDimensions() ||
+        classifyPixels(customW, customH) == PixelTier.over) {
+      return;
+    }
+    final w = customW, h = customH;
+    try {
+      await ref.read(resPresetsProvider.notifier).add(w, h);
+    } catch (_) {
+      if (mounted) hintSnack(context, '尺寸预设未能保存，请检查磁盘后重试');
+    }
+    if (!mounted) return;
+    final p = ref.read(resPresetsProvider.notifier).find(w, h);
+    if (p == null) return;
+    setState(() {
+      tab = lastPresetTab = _mineTab;
+      selected = _asSize(p);
+    });
+  }
+
+  Future<void> _remove(SizePreset p) async {
+    final saving = ref
+        .read(resPresetsProvider.notifier)
+        .remove(p.width, p.height);
+    if (!mounted) return;
+    final mine = ref.read(resPresetsProvider);
+    setState(() {
+      if (mine.isEmpty) {
+        customW = p.width;
+        customH = p.height;
+        _width.text = '$customW';
+        _height.text = '$customH';
+        _widthError = _heightError = null;
+        tab = _customTab;
+        lastPresetTab = sizeTabs.keys.first;
+      } else if (_isSel(p)) {
+        selected = _asSize(mine.first);
+      }
+    });
+    try {
+      await saving;
+    } catch (_) {
+      if (mounted) hintSnack(context, '删除未能保存，请检查磁盘后重试');
+    }
+  }
+
+  Widget _saveButton() => OutlinedButton.icon(
+    key: const ValueKey('resolution-save-preset'),
+    onPressed:
+        _widthError == null &&
+            _heightError == null &&
+            classifyPixels(customW, customH) != PixelTier.over
+        ? _save
+        : null,
+    icon: const Icon(Icons.bookmark_add_outlined, size: 18),
+    label: const Text('保存尺寸预设'),
+  );
 
   @override
   void dispose() {
@@ -168,6 +239,7 @@ class _ResolutionSheetState extends ConsumerState<_ResolutionSheet> {
   Widget _desktopPanel() {
     final scheme = context.scheme;
     final over = classifyPixels(_effW, _effH) == PixelTier.over;
+    final mine = ref.watch(resPresetsProvider);
     final canApply =
         !over && (!_isCustom || (_widthError == null && _heightError == null));
     return SingleChildScrollView(
@@ -202,7 +274,11 @@ class _ResolutionSheetState extends ConsumerState<_ResolutionSheet> {
           const Divider(height: 18),
           Row(
             children: [
-              for (final t in [...sizeTabs.keys, _customTab])
+              for (final t in [
+                ...sizeTabs.keys,
+                if (mine.isNotEmpty) _mineTab,
+                _customTab,
+              ])
                 Expanded(
                   child: Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 2),
@@ -211,7 +287,7 @@ class _ResolutionSheetState extends ConsumerState<_ResolutionSheet> {
                         tab = t;
                         if (!_isCustom) {
                           lastPresetTab = t;
-                          selected = sizeTabs[t]!.first;
+                          selected = _presetsOf(t, mine).first;
                         }
                       }),
                       style: TextButton.styleFrom(
@@ -243,20 +319,13 @@ class _ResolutionSheetState extends ConsumerState<_ResolutionSheet> {
               maxSide: 280,
             )
           else
-            Row(
-              children: [
-                for (final p in sizeTabs[tab]!) ...[
-                  Expanded(
-                    child: _PresetCard(
-                      preset: p,
-                      selected: p == selected,
-                      onTap: () => setState(() => selected = p),
-                    ),
-                  ),
-                  if (p != sizeTabs[tab]!.last) const SizedBox(width: 6),
-                ],
-              ],
+            _PresetGrid(
+              presets: _presetsOf(tab, mine),
+              isSelected: _isSel,
+              onTap: (p) => setState(() => selected = p),
+              onLongPress: tab == _mineTab ? _remove : null,
             ),
+          if (_isCustom) _saveButton(),
           const Divider(height: 24),
           Tooltip(
             message: '免费档（≤1.05 MP）：Opus ≤28 步单张免费；更大按张扣 Anlas。',
@@ -319,6 +388,7 @@ class _ResolutionSheetState extends ConsumerState<_ResolutionSheet> {
 
   @override
   Widget build(BuildContext context) {
+    final mine = ref.watch(resPresetsProvider);
     if (widget.desktop) return _desktopPanel();
     final scheme = context.scheme;
     final over = classifyPixels(_effW, _effH) == PixelTier.over;
@@ -351,6 +421,8 @@ class _ResolutionSheetState extends ConsumerState<_ResolutionSheet> {
             segments: [
               for (final t in sizeTabs.keys)
                 ButtonSegment(value: t, label: Text(t)),
+              if (mine.isNotEmpty)
+                const ButtonSegment(value: _mineTab, label: Text(_mineTab)),
               const ButtonSegment(value: _customTab, label: Text(_customTab)),
             ],
             selected: {tab},
@@ -358,10 +430,16 @@ class _ResolutionSheetState extends ConsumerState<_ResolutionSheet> {
               tab = s.first;
               if (!_isCustom) {
                 lastPresetTab = tab;
-                selected = sizeTabs[tab]!.first;
+                selected = _presetsOf(tab, mine).first;
               }
             }),
             showSelectedIcon: false,
+            // 五段时窄屏放得下「自定义」
+            style: const ButtonStyle(
+              padding: WidgetStatePropertyAll(
+                EdgeInsets.symmetric(horizontal: 6),
+              ),
+            ),
           ),
           const SizedBox(height: 14),
           // CrossFade 同步动画高度与透明度:预设行(矮)↔ 画布(高)切换不跳变
@@ -371,20 +449,11 @@ class _ResolutionSheetState extends ConsumerState<_ResolutionSheet> {
             crossFadeState: _isCustom
                 ? CrossFadeState.showSecond
                 : CrossFadeState.showFirst,
-            firstChild: Row(
-              children: [
-                for (final p in sizeTabs[lastPresetTab]!) ...[
-                  Expanded(
-                    child: _PresetCard(
-                      preset: p,
-                      selected: selected == p,
-                      onTap: () => setState(() => selected = p),
-                    ),
-                  ),
-                  if (p != sizeTabs[lastPresetTab]!.last)
-                    const SizedBox(width: 10),
-                ],
-              ],
+            firstChild: _PresetGrid(
+              presets: _presetsOf(lastPresetTab, mine),
+              isSelected: _isSel,
+              onTap: (p) => setState(() => selected = p),
+              onLongPress: lastPresetTab == _mineTab ? _remove : null,
             ),
             secondChild: _CanvasEditor(
               width: customW,
@@ -407,6 +476,7 @@ class _ResolutionSheetState extends ConsumerState<_ResolutionSheet> {
             ),
           ),
           if (_isCustom) ...[
+            _saveButton(),
             const SizedBox(height: 8),
             Text(
               '可手动输入宽高；小数取整数部分，尺寸自动对齐 64 像素。',
@@ -446,6 +516,54 @@ class _ResolutionSheetState extends ConsumerState<_ResolutionSheet> {
 }
 
 /// 档位状态条:MP · 比例 + 免费/付费/超限徽章(与 web classifyPixelStatus 同义)。
+class _PresetGrid extends StatelessWidget {
+  const _PresetGrid({
+    required this.presets,
+    required this.isSelected,
+    required this.onTap,
+    this.onLongPress,
+  });
+
+  final List<SizePreset> presets;
+  final bool Function(SizePreset) isSelected;
+  final ValueChanged<SizePreset> onTap;
+  final ValueChanged<SizePreset>? onLongPress;
+
+  static const _cols = 3;
+  static const _gap = 10.0;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        for (var r = 0; r < presets.length; r += _cols) ...[
+          if (r > 0) const SizedBox(height: _gap),
+          Row(
+            children: [
+              for (var c = 0; c < _cols; c++) ...[
+                if (c > 0) const SizedBox(width: _gap),
+                Expanded(
+                  child: r + c < presets.length
+                      ? _cell(presets[r + c])
+                      : const SizedBox(),
+                ),
+              ],
+            ],
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _cell(SizePreset p) => _PresetCard(
+    key: ValueKey('${p.width}x${p.height}'),
+    preset: p,
+    selected: isSelected(p),
+    onTap: () => onTap(p),
+    onLongPress: onLongPress == null ? null : () => onLongPress!(p),
+  );
+}
+
 class _StatusStrip extends StatelessWidget {
   const _StatusStrip({required this.width, required this.height});
 
@@ -818,14 +936,17 @@ class _QuickChip extends StatelessWidget {
 
 class _PresetCard extends StatelessWidget {
   const _PresetCard({
+    super.key,
     required this.preset,
     required this.selected,
     required this.onTap,
+    this.onLongPress,
   });
 
   final SizePreset preset;
   final bool selected;
   final VoidCallback onTap;
+  final VoidCallback? onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -852,6 +973,8 @@ class _PresetCard extends StatelessWidget {
         clipBehavior: Clip.antiAlias,
         child: InkWell(
           onTap: onTap,
+          onLongPress: onLongPress,
+          onSecondaryTap: onLongPress,
           child: Padding(
             padding: const EdgeInsets.fromLTRB(8, 12, 8, 10),
             child: Column(
@@ -877,6 +1000,8 @@ class _PresetCard extends StatelessWidget {
                 const SizedBox(height: 8),
                 Text(
                   preset.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: context.texts.bodySmall!.copyWith(
                     fontWeight: FontWeight.w600,
                     color: selected
@@ -884,6 +1009,13 @@ class _PresetCard extends StatelessWidget {
                         : scheme.onSurface,
                   ),
                 ),
+                if (onLongPress != null)
+                  IconButton(
+                    tooltip: '删除尺寸预设',
+                    onPressed: onLongPress,
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(Icons.delete_outline, size: 18),
+                  ),
                 Text(
                   preset.ratio,
                   style: TextStyle(

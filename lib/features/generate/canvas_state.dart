@@ -163,6 +163,36 @@ class CanvasWorkspaceNotifier extends Notifier<CanvasWorkspace> {
     return id;
   }
 
+  /// 把 [id] 那张画布整组换成 [prompts](恢复一条历史),返回换之前那组给撤销用;
+  /// 画布已经删了返回 null。
+  CanvasPrompts? replace(String id, CanvasPrompts prompts) {
+    final canvas = state.find(id);
+    if (canvas == null) return null;
+    _prepareSwitch();
+    final before = id == state.activeId
+        ? CanvasPrompts.of(ref.read(generateProvider))
+        : canvas.prompts;
+    updatePrompts(id, (_) => prompts);
+    return before;
+  }
+
+  /// 用 [prompts] 新建一张画布并切过去,名字是 [from] 那张的「· 副本」。
+  String createFrom(CanvasPrompts prompts, {required String from}) {
+    _prepareSwitch();
+    final id = 'canvas${state.nextId}';
+    state = state.copyWith(
+      canvases: [
+        ...state.canvases,
+        CanvasDraft(id: id, name: _copyName(from), prompts: prompts),
+      ],
+      activeId: id,
+      nextId: state.nextId + 1,
+    );
+    ref.read(generateProvider.notifier).applyCanvas(prompts, force: true);
+    _save();
+    return id;
+  }
+
   /// 新画布叫「画布 N」,N 取没被占用的最小号:新装时默认画布之后就是「画布 1」,
   /// 删掉的号下次还能用上。名字只是标签,和 id 的发号器各管各的。
   String _blankName() {

@@ -372,6 +372,34 @@ class WorkspaceStore {
     }, enc.refs);
   }
 
+  /// 一张画布的内容编成存档里 `canvases[].prompts` 那一段(画布历史也存这个)。
+  Future<EncodedState> encodeCanvas(CanvasPrompts p) => _encodePrompts(p);
+
+  /// [encodeCanvas] 的反向。[withImages] 为 false 时不读图:参考图、底图与重绘
+  /// 都是空的,只拿来看词和参数。
+  Future<CanvasPrompts> decodeCanvas(
+    Map<String, dynamic> j, {
+    bool withImages = true,
+    List<String> requiredRefs = const [],
+  }) async {
+    if (withImages) {
+      for (final hash in requiredRefs) {
+        if (await _blobs.get(hash) == null) throw StateError('历史参考图片缺失');
+      }
+    }
+    return _decodePrompts(
+      withImages ? j : ({...j}..removeWhere((k, _) => _imageKeys.contains(k))),
+    );
+  }
+
+  static const _imageKeys = {
+    'vibes',
+    'charRefs',
+    'kreaStyleRefs',
+    'img2img',
+    'inpaint',
+  };
+
   /// [globals] 是同一份存档顶层的整份状态。比画布晚收进来的几项,那之前存下的
   /// 画布没有对应的键,一律接着用当时全局那份:尺寸和种子、重绘放大,以及参考图、
   /// LoRA、底图与重绘(这几项看 `vibes` 键;LoRA 换到这张画布的模型那个底模)。

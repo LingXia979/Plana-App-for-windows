@@ -9,6 +9,7 @@ import '../../../core/net/remote_image.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../lora/lora_install_queue.dart';
 import '../../lora/lora_manager_page.dart';
+import '../../lora/lora_stack_ui.dart';
 import '../generate_state.dart';
 import '../lora_triggers.dart';
 import '../models.dart';
@@ -159,6 +160,13 @@ class _LoraCardState extends ConsumerState<LoraCard> {
       reorderIndex: widget.reorderIndex,
       badge: loras.isEmpty ? null : CountBadge('${loras.length}'),
       actions: [
+        if (loras.any((l) => l.pending == null))
+          RoundIconBtn(
+            Icons.layers_outlined,
+            tooltip: '保存为 LoRA 堆',
+            color: scheme.onSurfaceVariant,
+            onTap: () => showSaveLoraStackDialog(context, ref),
+          ),
         RoundIconBtn(
           Icons.grid_view,
           tooltip: 'LoRA 管理器',

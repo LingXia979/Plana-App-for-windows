@@ -396,6 +396,9 @@ class CanvasDraft {
   );
 }
 
+/// 一次出图来自哪张画布、发起时那张画布的内容(记画布历史用)。
+typedef CanvasOrigin = ({String canvasId, CanvasPrompts content});
+
 /// 默认画布的名字,固定不能改。
 const kDefaultCanvasName = '默认画布';
 

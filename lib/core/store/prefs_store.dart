@@ -1,3 +1,4 @@
+import 'dart:async';
 import '../util/log.dart';
 import 'dart:convert';
 import 'dart:io';
@@ -20,7 +21,10 @@ import 'atomic_file.dart';
 /// 接口刻意与 `FlutterSecureStorage` 对齐(`read` / `write` / `delete` 同名同参),
 /// 各设置模块只需换一个 provider,其余代码一行不动。
 class PrefsStore {
-  PrefsStore._(this._file, this._map);
+  PrefsStore._(this._file, this._map, {this.onSaveError});
+  final void Function(Object)? onSaveError;
+  bool _dirty = false;
+  Object? _error;
 
   final File _file;
   final Map<String, String> _map;
@@ -28,7 +32,14 @@ class PrefsStore {
   Future<void> _chain = Future.value();
 
   /// Wait for settings already queued before closing the application.
-  Future<void> get idle => _chain;
+  Future<void> get idle async {
+    await _chain;
+    if (_error case final e?) throw e;
+  }
+
+  void flush() {
+    if (_dirty) unawaited(_flush());
+  }
 
   /// 需要从 secure storage 迁出的键。
   ///
@@ -54,6 +65,7 @@ class PrefsStore {
   /// 生产走全局那份 [kSecureStorage]。
   static Future<PrefsStore> open(
     Directory supportRoot, {
+    void Function(Object)? onSaveError,
     Future<String?> Function(String key)? legacyRead,
     Future<void> Function(String key)? legacyDelete,
   }) async {
@@ -72,7 +84,7 @@ class PrefsStore {
     } catch (e) {
       logd('[prefs] 载入失败(按默认设置起步): $e');
     }
-    final store = PrefsStore._(file, map);
+    final store = PrefsStore._(file, map, onSaveError: onSaveError);
     await store._migrateFromSecure(
       legacyRead ?? ((k) => kSecureStorage.read(key: k)),
       legacyDelete ?? ((k) => kSecureStorage.delete(key: k)),
@@ -108,8 +120,14 @@ class PrefsStore {
   }
 
   /// 测试用空档:不读盘、不迁移,写入落到临时目录。
-  factory PrefsStore.emptyForTest(Directory root) =>
-      PrefsStore._(File('${root.path}/settings.json'), <String, String>{});
+  factory PrefsStore.emptyForTest(
+    Directory root, {
+    void Function(Object)? onSaveError,
+  }) => PrefsStore._(
+    File('${root.path}/settings.json'),
+    <String, String>{},
+    onSaveError: onSaveError,
+  );
 
   /// 同步取值(内存态)——给 `main()` 里 ProviderScope 建立前的预读用。
   String? get(String key) => _map[key];
@@ -130,10 +148,16 @@ class PrefsStore {
   /// 串行落盘,不与上一次写重叠;走原子写 —— 半截 JSON 会让**全部**设置
   /// 一起回落默认值,正是这次要根除的那类故障。
   Future<void> _flush() {
+    _dirty = true;
     return _chain = _chain.then((_) async {
       try {
         await writeStringAtomic(_file, jsonEncode(_map));
+        _dirty = false;
+        _error = null;
       } catch (e) {
+        _error = e;
+        _dirty = true;
+        onSaveError?.call(e);
         logd('[prefs] 保存失败: $e');
       }
     });

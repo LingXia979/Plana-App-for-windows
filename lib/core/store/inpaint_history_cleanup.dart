@@ -1,6 +1,7 @@
 import '../../features/assistant/session_store.dart';
 import '../../features/gallery/gallery_store.dart';
 import '../../features/generate/workspace_store.dart';
+import '../../features/generate/canvas_history.dart';
 import 'app_stores.dart';
 import 'blob_store.dart';
 
@@ -36,6 +37,7 @@ class InpaintHistoryCleanup {
     required this.gallery,
     required this.workspace,
     required this.assistant,
+    this.history,
   });
 
   factory InpaintHistoryCleanup.forStores(AppStores stores) =>
@@ -44,8 +46,10 @@ class InpaintHistoryCleanup {
         gallery: stores.gallery,
         workspace: stores.workspace,
         assistant: stores.assistant,
+        history: stores.history,
       );
 
+  final CanvasHistoryStore? history;
   final BlobStore blobs;
   final GalleryStore gallery;
   final WorkspaceStore workspace;
@@ -60,6 +64,7 @@ class InpaintHistoryCleanup {
 
   Future<Set<String>> _protectedRefs() async => {
     ...await workspace.liveRefs(strict: true),
+    if (history != null) ...await history!.liveRefs(),
     ...await assistant.liveRefs(strict: true),
   };
 

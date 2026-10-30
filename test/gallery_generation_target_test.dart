@@ -6,6 +6,7 @@ import 'package:plana_app/core/store/app_stores.dart';
 import 'package:plana_app/features/gallery/albums/album_models.dart';
 import 'package:plana_app/features/gallery/albums/album_state.dart';
 import 'package:plana_app/features/generate/gen_jobs.dart';
+import 'package:plana_app/features/generate/canvas_models.dart';
 import 'package:plana_app/features/generate/gen_queue.dart';
 import 'package:plana_app/features/generate/generate_state.dart';
 import 'package:plana_app/features/generate/generation_controller.dart';
@@ -26,6 +27,7 @@ class _ControlledGeneration extends GenerationNotifier {
     GenerateState? using,
     bool stay = false,
     void Function(String)? onJob,
+    CanvasOrigin? origin,
   }) {
     targets.add(galleryTarget);
     final reply = Completer<GenOutcome>();

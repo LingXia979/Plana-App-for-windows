@@ -12,10 +12,13 @@ import '../generate/models.dart';
 import '../generate/widgets/common.dart' show InfoNote, hintSnack;
 import '../generate/widgets/lora_card.dart' show LoraThumb, LoraTypeBadge;
 import 'lora_providers.dart';
+import 'lora_stack_ui.dart';
+import 'lora_stacks.dart';
 import 'lora_upload_sheet.dart';
 
 /// LoRA 管理器(anima / krea 出图渠道,结构对齐 web LoraManagerModal):
 /// 我的(我下载过的 + 我上传的,🗑=移出;无人拥有的 web 条目由后端回收)
+/// LoRA 堆(存下来的整组挂载;「应用」直接替换当前挂载并关页,见 lora_stacks.dart)
 /// 公共库(机房里的公开条目,⭐=加入/移出我的库,按人气排序)
 /// 在线搜索(Civitai 代理,ℹ=详情 ⬇=机房直拉下载,滚到底自动翻页)
 /// 整卡点选 → 底栏「确认挂载」写回创作页(上限 [kMaxActiveLoras] 个)。
@@ -32,6 +35,10 @@ class LoraManagerPage extends ConsumerStatefulWidget {
 
 const _kEdge = 16.0;
 
+/// 页签序:我的 · LoRA 堆 · 公共库 · 在线搜索。
+const _kTabStacks = 1;
+const _kTabOnline = 3;
+
 /// 上传入口的高度。空闲态是按钮、传输态是进度条,两者必须等高,
 /// 否则一开传整个列表会往下跳一格。
 const _kUploadBarHeight = 42.0;
@@ -44,7 +51,7 @@ const _cats = <(String, String)>[
 
 class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
     with SingleTickerProviderStateMixin {
-  late final TabController _tab = TabController(length: 3, vsync: this);
+  late final TabController _tab = TabController(length: 4, vsync: this);
   int _lastTabIndex = 0;
 
   /// 本页认哪个底模的库。进页时定死:模型只能在创作页换,本页开着时不会变,
@@ -130,14 +137,18 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
       _lastTabIndex = _tab.index;
       setState(() {});
       // 切到在线页:没搜过、或搜索框在别的页被改过 → 重搜(省无谓请求,但不留旧词的结果)
-      if (_tab.index == 2 &&
+      if (_tab.index == _kTabOnline &&
           (!_onlineLoadedOnce || _onlineQuery != _search.trim())) {
         _searchDebounce?.cancel();
         _runSearch(reset: true);
       }
     });
     _onlineScroll.addListener(() {
-      if (_tab.index != 2 || _loadingOnline || _onlineCursor == null) return;
+      if (_tab.index != _kTabOnline ||
+          _loadingOnline ||
+          _onlineCursor == null) {
+        return;
+      }
       if (_onlineScroll.position.extentAfter < 400) {
         _autoPages = 0; // 用户自己滚到底,连翻计数重新起算
         _runSearch(reset: false);
@@ -228,7 +239,7 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
   void _autoPageIfShort() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted ||
-          _tab.index != 2 ||
+          _tab.index != _kTabOnline ||
           _loadingOnline ||
           _onlineCursor == null ||
           _autoPages >= _kMaxAutoPages ||
@@ -244,7 +255,7 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
 
   void _onSearchChanged(String v) {
     setState(() => _search = v);
-    if (_tab.index != 2) return; // 本地两页是纯前端过滤,切回在线页时再重搜
+    if (_tab.index != _kTabOnline) return; // 本地几页是纯前端过滤,切回在线页时再重搜
     _searchDebounce?.cancel();
     _searchDebounce = Timer(const Duration(milliseconds: 450), () {
       if (mounted) _startSearch();
@@ -666,13 +677,16 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
               onChanged: _onSearchChanged,
               textInputAction: TextInputAction.search,
               onSubmitted: (_) {
-                if (_tab.index == 2) _startSearch();
+                if (_tab.index == _kTabOnline) _startSearch();
               },
               decoration: InputDecoration(
                 isDense: true,
-                hintText: _tab.index == 2
-                    ? '搜索 Civitai 上的 ${_base == 'krea' ? 'Krea 2' : 'Anima'} LoRA…'
-                    : '搜索名称或触发词…',
+                hintText: switch (_tab.index) {
+                  _kTabOnline =>
+                    '搜索 Civitai 上的 ${_base == 'krea' ? 'Krea 2' : 'Anima'} LoRA…',
+                  _kTabStacks => '搜索 LoRA 堆…',
+                  _ => '搜索名称或触发词…',
+                },
                 prefixIcon: const Icon(Icons.search, size: 20),
                 suffixIcon: _search.isEmpty
                     ? null
@@ -682,7 +696,7 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
                         onPressed: () {
                           _searchCtl.clear();
                           setState(() => _search = '');
-                          if (_tab.index == 2) _startSearch();
+                          if (_tab.index == _kTabOnline) _startSearch();
                         },
                       ),
                 filled: true,
@@ -704,6 +718,7 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
               controller: _tab,
               children: [
                 _mineTab(mine, firstLoad: firstLoad, error: error),
+                _stacksTab(async.hasValue ? all : null),
                 _communityTab(community, firstLoad: firstLoad, error: error),
                 _onlineTab(),
               ],
@@ -715,7 +730,7 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
     );
   }
 
-  // ---- 分段 Tab(视觉对齐 Vibe/画风管理器,3 段) ----
+  // ---- 分段 Tab(视觉对齐 Vibe/画风管理器,4 段) ----
   Widget _segTabs(ColorScheme scheme) {
     return SizedBox(
       height: 42,
@@ -727,10 +742,10 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
         child: AnimatedBuilder(
           animation: _tab.animation!,
           builder: (context, _) {
-            final t = _tab.animation!.value.clamp(0.0, 2.0);
+            final t = _tab.animation!.value.clamp(0.0, 3.0);
             return LayoutBuilder(
               builder: (context, c) {
-                final segW = c.maxWidth / 3;
+                final segW = c.maxWidth / 4;
                 return Stack(
                   alignment: Alignment.center,
                   children: [
@@ -756,8 +771,9 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
                     Row(
                       children: [
                         _segLabel(0, Icons.smartphone, '我的', t),
-                        _segLabel(1, Icons.dns_outlined, '公共库', t),
-                        _segLabel(2, Icons.public, '在线搜索', t),
+                        _segLabel(1, Icons.layers_outlined, 'LoRA 堆', t),
+                        _segLabel(2, Icons.dns_outlined, '公共库', t),
+                        _segLabel(3, Icons.public, '在线搜索', t),
                       ],
                     ),
                   ],
@@ -783,15 +799,19 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
             mainAxisSize: MainAxisSize.min,
             children: [
               Icon(icon, size: 15, color: color),
-              const SizedBox(width: 5),
-              Text(
-                text,
-                style: context.texts.labelLarge!.copyWith(
-                  color: color,
-                  fontWeight: FontWeight.lerp(
-                    FontWeight.w500,
-                    FontWeight.w700,
-                    sel,
+              const SizedBox(width: 4),
+              Flexible(
+                child: Text(
+                  text,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: context.texts.labelLarge!.copyWith(
+                    color: color,
+                    fontWeight: FontWeight.lerp(
+                      FontWeight.w500,
+                      FontWeight.w700,
+                      sel,
+                    ),
                   ),
                 ),
               ),
@@ -827,7 +847,7 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
                   text: mine.isEmpty ? '我的库还是空的' : '没有匹配的 LoRA',
                   action: mine.isEmpty
                       ? TextButton(
-                          onPressed: () => _tab.animateTo(2),
+                          onPressed: () => _tab.animateTo(_kTabOnline),
                           child: const Text('去在线下载 →'),
                         )
                       : null,
@@ -951,6 +971,141 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
         ],
       ),
     );
+  }
+
+  // ---- LoRA 堆 ----
+  /// [library] 为 null = 全集还没读到:列表照常显示,只是不标缺失、不让应用。
+  Widget _stacksTab(List<LoraCardInfo>? library) {
+    final saved = ref.watch(loraStacksProvider);
+    if (saved.hasError) {
+      return _errorBody(
+        'LoRA 组合无法读取，原文件已保留',
+        onRetry: () => ref.invalidate(loraStacksProvider),
+      );
+    }
+    if (saved.isLoading && !saved.hasValue) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    final all = saved.value ?? const <LoraStack>[];
+    final stacks = [
+      for (final s in all)
+        if (s.base == _base) s,
+    ];
+    final q = _search.trim().toLowerCase();
+    final items = q.isEmpty
+        ? stacks
+        : [
+            for (final s in stacks)
+              if (s.name.toLowerCase().contains(q) ||
+                  s.loras.any(
+                    (e) =>
+                        e.displayName.toLowerCase().contains(q) ||
+                        e.name.toLowerCase().contains(q),
+                  ))
+                s,
+          ];
+    final ready = ref
+        .watch(generateProvider.select((s) => s.loras))
+        .where((l) => l.pending == null)
+        .length;
+    final installed = library == null
+        ? null
+        : {for (final x in library) x.name};
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(_kEdge, 4, _kEdge, 8),
+          child: OutlinedButton.icon(
+            onPressed: ready == 0
+                ? null
+                : () => showSaveLoraStackDialog(context, ref),
+            icon: const Icon(Icons.layers_outlined, size: 18),
+            label: Text(
+              ready == 0 ? '当前没有挂载 LoRA' : '把当前挂载的 $ready 个存为 LoRA 堆',
+            ),
+            style: OutlinedButton.styleFrom(
+              minimumSize: const Size.fromHeight(_kUploadBarHeight),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+          ),
+        ),
+        Expanded(
+          child: items.isEmpty
+              ? _emptyBody(
+                  icon: Icons.layers_outlined,
+                  text: stacks.isEmpty ? '还没有 LoRA 堆' : '没有匹配的 LoRA 堆',
+                )
+              : ListView.separated(
+                  padding: const EdgeInsets.fromLTRB(_kEdge, 0, _kEdge, 16),
+                  itemCount: items.length,
+                  separatorBuilder: (_, _) => const SizedBox(height: 8),
+                  itemBuilder: (_, i) {
+                    final s = items[i];
+                    return LoraStackCard(
+                      key: ValueKey(s.id),
+                      stack: s,
+                      installed: installed,
+                      onApply: () => _applyStack(s),
+                      onDelete: () => _deleteStack(s),
+                    );
+                  },
+                ),
+        ),
+      ],
+    );
+  }
+
+  /// 整组替换当前挂载并关页。库里没有 / 未就绪的条目跳过并提示。
+  void _applyStack(LoraStack stack) {
+    final async = ref.read(installedLorasProvider(_base));
+    final library = async.value;
+    if (library == null) {
+      hintSnack(
+        context,
+        async.hasError ? '没读到 LoRA 库,暂时没法应用' : 'LoRA 库还在读取,稍等再应用',
+      );
+      return;
+    }
+    final r = resolveLoraStack(stack, library);
+    if (r.loras.isEmpty) {
+      hintSnack(context, '「${stack.name}」里的 LoRA 现在都用不了');
+      return;
+    }
+    ref.read(generateProvider.notifier).applyLoraStack(r.loras);
+    final skipped = [...r.missing, ...r.notReady];
+    hintSnack(
+      context,
+      skipped.isEmpty
+          ? '已应用「${stack.name}」'
+          : '已应用「${stack.name}」,跳过 ${skipped.length} 个用不了的:${skipped.join('、')}',
+      icon: Icons.layers_outlined,
+    );
+    Navigator.of(context).pop();
+  }
+
+  Future<void> _deleteStack(LoraStack stack) async {
+    final stacks = ref.read(loraStacksProvider.notifier);
+    try {
+      final index = await stacks.remove(stack.id);
+      if (index < 0 || !mounted) return;
+      hintSnack(
+        context,
+        '已删除「${stack.name}」',
+        icon: Icons.delete_outline,
+        actionLabel: '撤销',
+        onAction: () async {
+          try {
+            await stacks.restore(stack, index);
+          } catch (_) {
+            if (mounted) hintSnack(context, '撤销未能保存，请检查磁盘后重试');
+          }
+        },
+      );
+    } catch (_) {
+      if (mounted) hintSnack(context, '删除未能保存，请检查磁盘后重试');
+    }
   }
 
   // ---- 公共库 ----
@@ -1806,11 +1961,14 @@ class _LoraManagerPageState extends ConsumerState<LoraManagerPage>
     );
   }
 
-  Widget _errorBody(String message) {
+  Widget _errorBody(String message, {VoidCallback? onRetry}) {
     return _emptyBody(
       icon: Icons.cloud_off,
       text: message,
-      action: TextButton(onPressed: _loadInstalled, child: const Text('重试')),
+      action: TextButton(
+        onPressed: onRetry ?? _loadInstalled,
+        child: const Text('重试'),
+      ),
     );
   }
 

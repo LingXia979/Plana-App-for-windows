@@ -1,3 +1,4 @@
+import 'package:plana_app/features/generate/canvas_state.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -51,6 +52,7 @@ class _Generation extends GenerationNotifier {
   GenPool build() => const GenPool();
   @override
   Future<GenOutcome> generate({
+    CanvasOrigin? origin,
     GallerySaveTarget? galleryTarget,
     GenerateState? using,
     bool stay = false,

@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 import 'package:plana_app/core/store/app_stores.dart';
+import 'package:plana_app/features/generate/canvas_models.dart';
 import 'package:plana_app/core/store/blob_store.dart';
 import 'package:plana_app/core/store/inpaint_history_cleanup.dart';
 import 'package:plana_app/core/theme/app_theme.dart';
@@ -165,6 +166,28 @@ void main() {
     ])
       await stores.blobs.hashOf(bytes),
   };
+
+  test(
+    'canvas history protects old inpaint inputs during gallery history cleanup',
+    () async {
+      await save('gen1');
+      await stores.history.record('canvas1', CanvasPrompts.of(input), ['gen1']);
+      final refs = await jobRefs();
+      expect((await cleanup.scan()).releasableBytes, 0);
+      final result = await cleanup.clear();
+      expect(result.clearedIds, {'gen1'});
+      expect(result.releasedBytes, 0);
+      for (final hash in refs) {
+        expect(await stores.blobs.get(hash), isNotNull);
+      }
+      final entry = (await stores.history.load('canvas1')).single;
+      final restored = await stores.workspace.decodeCanvas(
+        entry.json,
+        requiredRefs: entry.refs,
+      );
+      expect(restored.inpaint!.paste!.focusMask, job.paste!.focusMask);
+    },
+  );
 
   test(
     'counts shared history blobs once and retains finished images and ordinary parameters',

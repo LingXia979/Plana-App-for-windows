@@ -2,6 +2,7 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/live_progress/live_progress.dart';
+import 'canvas_models.dart';
 import 'gen_modules.dart';
 import 'generate_state.dart';
 import 'generation_controller.dart';
@@ -16,11 +17,15 @@ class QueuedTask {
     required this.id,
     required this.snapshot,
     this.galleryTarget = const GallerySaveTarget.all(),
+    this.origin,
   });
 
   final int id;
   final GenerateState snapshot;
   final GallerySaveTarget galleryTarget;
+
+  /// 入队时那张画布和它的内容,出图后记进它的历史。
+  final CanvasOrigin? origin;
 }
 
 /// items 为待跑任务(不含正在跑的);active = 消费中;
@@ -88,6 +93,7 @@ class GenQueueNotifier extends Notifier<GenQueueState> {
           id: _seq++,
           snapshot: snap,
           galleryTarget: ref.read(gallerySaveTargetProvider),
+          origin: ref.read(generationProvider.notifier).currentCanvasOrigin(),
         ),
       ],
     );
@@ -134,6 +140,7 @@ class GenQueueNotifier extends Notifier<GenQueueState> {
         var outcome = await gen.generate(
           using: task.snapshot,
           galleryTarget: task.galleryTarget,
+          origin: task.origin,
         );
         // **只有「确定未扣点」才重试。** 流中断 / 超时 / 内容审核这类失败,NAI
         // 可能已经受理并扣了点,盲目重试就是第二次扣费,而且没有任何用户动作。
@@ -144,6 +151,7 @@ class GenQueueNotifier extends Notifier<GenQueueState> {
           outcome = await gen.generate(
             using: task.snapshot,
             galleryTarget: task.galleryTarget,
+            origin: task.origin,
           );
         }
         if (outcome != GenOutcome.ok) {

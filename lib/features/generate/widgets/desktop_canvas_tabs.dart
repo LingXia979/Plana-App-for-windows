@@ -1,3 +1,4 @@
+import 'canvas_history_sheet.dart';
 import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -338,6 +339,11 @@ class DesktopCanvasTabsState extends ConsumerState<DesktopCanvasTabs> {
               child: const Text('删除当前画布'),
             ),
             const Divider(height: 8),
+            MenuItemButton(
+              onPressed: () => showCanvasHistory(context, workspace.active),
+              leadingIcon: const Icon(Icons.history),
+              child: const Text('画布历史'),
+            ),
             MenuItemButton(
               onPressed: _showSharedInfo,
               child: const Text('画布与参考图'),

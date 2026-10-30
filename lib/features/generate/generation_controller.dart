@@ -33,6 +33,8 @@ import '../gallery/models.dart' show ResultBadge;
 import '../inpaint/inpaint_ops.dart';
 import '../shell/shell_state.dart';
 import 'bot_request.dart';
+import 'canvas_history.dart';
+import 'canvas_state.dart';
 import 'cost.dart';
 import 'gen_jobs.dart';
 import 'gen_modules.dart';
@@ -209,6 +211,7 @@ class GenNoticeNotifier extends Notifier<String?> {
 
 /// 一条任务的运行时句柄(不进 UI 状态:中止令牌和 Key 槽位对渲染没意义)。
 class _JobRun {
+  CanvasOrigin? origin;
   _JobRun(this.abort, this.presets);
 
   final GenAbort abort;
@@ -362,6 +365,12 @@ class GenerationNotifier extends Notifier<GenPool> {
     return _runLimit(mode == AuthMode.bot);
   }
 
+  /// 当前画布和它此刻的内容(面板发起的单子记历史用)。
+  CanvasOrigin currentCanvasOrigin() => (
+    canvasId: ref.read(canvasWorkspaceProvider).activeId,
+    content: CanvasPrompts.of(ref.read(generateProvider)),
+  );
+
   /// 面板当前这一单:按模块配置剥离了隐藏模块的数据(与手动生成、入队同一口径)。
   GenerateState _panelJob() => stripHiddenModules(
     ref.read(generateProvider),
@@ -481,11 +490,13 @@ class GenerationNotifier extends Notifier<GenPool> {
   /// [onJob] 在占位卡挂上去那一刻同步回调,给调用方一个跟住这一单的把手 ——
   /// AI 助手要拿它在对话里画逐帧预览和进度条。**建卡之前没有 await**,
   /// 所以同步调用方拿到它时这一单必定已经在池子里了。
+  /// [origin] 是这一单来自哪张画布,出图后记进它的历史;面板发起的不用传。
   Future<GenOutcome> generate({
     GallerySaveTarget? galleryTarget,
     GenerateState? using,
     bool stay = false,
     void Function(String jobId)? onJob,
+    CanvasOrigin? origin,
   }) async {
     // 池满拒收。守卫与建卡之间**不能有 await**:按钮不再禁用,连点两下会各自
     // 走一遍这里,中间插一个 await 就等于没守。
@@ -547,7 +558,8 @@ class GenerationNotifier extends Notifier<GenPool> {
         _ => null,
       },
     );
-    final run = _JobRun(GenAbort(), ref.read(promptPresetsProvider.future));
+    final run = _JobRun(GenAbort(), ref.read(promptPresetsProvider.future))
+      ..origin = origin ?? (using == null ? currentCanvasOrigin() : null);
     _focusRevision++;
     _runs[job.id] = run;
     state = state.copyWith(
@@ -1406,17 +1418,28 @@ class GenerationNotifier extends Notifier<GenPool> {
         note: '保存中',
       ),
     );
-    for (var i = 0; i < batch.length; i++) {
-      await _storeOne(
-        s,
-        batch[i],
-        seed,
-        batchIndex: batch.length > 1 ? i : -1,
-        select: followed && i == 0,
-        galleryTarget: galleryTarget,
-        canSelect: () => _focusRevision == focusRevision,
-        focusedOutput: i == 0 ? firstFocused : null,
-      );
+    final origin = _runs[jobId]?.origin;
+    final savedIds = <String>[];
+    try {
+      for (var i = 0; i < batch.length; i++) {
+        savedIds.add(
+          await _storeOne(
+            s,
+            batch[i],
+            seed,
+            batchIndex: batch.length > 1 ? i : -1,
+            select: followed && i == 0,
+            galleryTarget: galleryTarget,
+            canSelect: () => _focusRevision == focusRevision,
+            focusedOutput: i == 0 ? firstFocused : null,
+          ),
+        );
+      }
+    } finally {
+      // A later image can fail to save after earlier batch results succeeded.
+      if (origin != null && savedIds.isNotEmpty) {
+        _recordHistory(origin, savedIds);
+      }
     }
     _remove(jobId);
     // 库来源的 vibe 回写「最近使用」(fire-and-forget,失败无害)
@@ -1439,8 +1462,29 @@ class GenerationNotifier extends Notifier<GenPool> {
     }
   }
 
-  /// 批里的一张入库(重绘贴回 + 落盘)。[batchIndex] < 0 = 不是批次产物。
-  Future<void> _storeOne(
+  /// 出的图记进发起那张画布的历史;那张画布已经删了就不记。
+  void _recordHistory(CanvasOrigin origin, List<String> ids) {
+    if (ref.read(canvasWorkspaceProvider).find(origin.canvasId) == null) return;
+    final history = ref.read(appStoresProvider).history;
+    unawaited(
+      history
+          .record(origin.canvasId, origin.content, ids)
+          .then((_) {
+            if (ref.mounted) {
+              ref.invalidate(canvasHistoryProvider(origin.canvasId));
+            }
+          })
+          .catchError((Object _) {
+            // History retains its dirty snapshot and reports through AppStores.
+            if (ref.mounted) {
+              ref.invalidate(canvasHistoryProvider(origin.canvasId));
+            }
+          }),
+    );
+  }
+
+  /// 批里的一张入库(重绘贴回 + 落盘),返回图库 id。[batchIndex] < 0 = 不是批次产物。
+  Future<String> _storeOne(
     GenerateState s,
     Uint8List bytes,
     int seed, {
@@ -1484,7 +1528,7 @@ class GenerationNotifier extends Notifier<GenPool> {
       w = pw;
       h = ph;
     }
-    await ref
+    final r = await ref
         .read(galleryProvider.notifier)
         .addResultToGallery(
           target: galleryTarget,
@@ -1501,6 +1545,7 @@ class GenerationNotifier extends Notifier<GenPool> {
           input: s, // 参数快照,供图库「重新生成」按本图参数复现
           select: select,
         );
+    return r.id;
   }
 
   /// Krea 风格参考:每张启用的下采样成 JPEG base64。非 krea 模型返回空
