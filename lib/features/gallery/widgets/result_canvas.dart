@@ -16,6 +16,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/ui/param_help.dart';
 import '../../desktop/desktop_canvas_state.dart';
 import '../../generate/generate_state.dart';
+import '../../generate/canvas_state.dart';
 import '../../generate/gen_modules.dart';
 import '../../generate/generation_controller.dart';
 import '../../generate/models.dart';
@@ -825,6 +826,7 @@ class _ActionRailState extends ConsumerState<ResultActions> {
   Future<void> _useAsBaseImage() async {
     if (_settingBaseImage) return;
     final image = result;
+    final canvasId = ref.read(canvasWorkspaceProvider).activeId;
     setState(() => _settingBaseImage = true);
     try {
       // Read this displayed result, never its original generation input or the
@@ -832,13 +834,19 @@ class _ActionRailState extends ConsumerState<ResultActions> {
       final bytes =
           image.bytes ??
           await ref.read(appStoresProvider).gallery.readImage(image.id);
-      if (!mounted) return;
+      if (!mounted || ref.read(canvasWorkspaceProvider).activeId != canvasId) {
+        return;
+      }
       if (bytes == null) throw StateError('图片尚未就绪');
       final (width, height) = await decodeImageSize(bytes);
-      if (!mounted) return;
+      if (!mounted || ref.read(canvasWorkspaceProvider).activeId != canvasId) {
+        return;
+      }
       final resolution = img2imgResolution(width, height);
       await ref.read(genModulesProvider.future);
-      if (!mounted) return;
+      if (!mounted || ref.read(canvasWorkspaceProvider).activeId != canvasId) {
+        return;
+      }
       if (providerOfModel(ref.read(generateProvider).params.model) !=
           GenProvider.nai) {
         return;

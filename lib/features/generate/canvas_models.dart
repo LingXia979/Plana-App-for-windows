@@ -5,15 +5,13 @@ import '../editor/editor_models.dart'
 /// 画布名的长度上限(改名框与「· 副本」后缀共用)。
 const kCanvasNameMax = 32;
 
-/// 一张画布 = 一组提示词 + 出图参数:正负提示词(连同编辑器草稿)、角色(连同
-/// 定位开关)、提示词预设,以及模型、尺寸、种子和高级设置里的采样那一组
-/// (见 [CanvasSampling])。
+/// 一张画布 = 画面用到的全部内容:正负提示词(连同编辑器草稿)、角色(连同
+/// 定位开关)、提示词预设、Vibe、角色参考、Krea 风格参考、LoRA、图生图底图与
+/// 重绘,以及模型、尺寸、种子、采样参数和重绘放大(见 [CanvasSampling])。
 ///
-/// Vibe、角色参考、图生图与重绘、重绘放大、LoRA 都**不跟画布走**,全局一份。
-/// LoRA 按底模各记一份,模型换了底模就跟着换(见 [GenerateState.withLoraBaseOf])。
-/// 凡是会在途中切画布的异步流程(LoRA 下载、重绘编辑、参考图处理)写的都是
-/// 全局那份,不存在写错画布;写模型、尺寸、种子和采样参数的地方全是同步的;
-/// 剩下几处异步写提示词的地方各自按画布 id 收口。
+/// 全局一份的只剩张数、循环档、面板开合和点数。
+/// 写这些内容的地方大多是同步的;会跨过切画布的异步流程各自收口:提示词按
+/// 画布 id 回写,LoRA 下载在所有画布里找占位条转正,选图加参考图时切走了就作废。
 class CanvasPrompts {
   const CanvasPrompts({
     this.prompt = '',
@@ -26,6 +24,15 @@ class CanvasPrompts {
     this.useCoords = false,
     this.promptPresetId = kDefaultPromptPresetId,
     this.sampling,
+    this.vibes = const [],
+    this.normalizeVibe = true,
+    this.charRefs = const [],
+    this.kreaStyleRefs = const [],
+    this.kreaStyleRefWeight = 1.0,
+    this.loras = const [],
+    this.loraMem = const {},
+    this.img2img,
+    this.inpaint,
   });
 
   /// 从完整创作状态里取出跟画布走的那几项。
@@ -40,6 +47,15 @@ class CanvasPrompts {
     useCoords: s.params.useCoords,
     promptPresetId: s.promptPresetId,
     sampling: CanvasSampling.of(s.params),
+    vibes: s.vibes,
+    normalizeVibe: s.params.normalizeVibe,
+    charRefs: s.charRefs,
+    kreaStyleRefs: s.kreaStyleRefs,
+    kreaStyleRefWeight: s.kreaStyleRefWeight,
+    loras: s.loras,
+    loraMem: s.loraMem,
+    img2img: s.img2img,
+    inpaint: s.inpaint,
   );
 
   final String prompt;
@@ -62,18 +78,32 @@ class CanvasPrompts {
   /// 套用时沿用当前那份;载入时就会补成当时的全局参数。
   final CanvasSampling? sampling;
 
+  final List<VibeItem> vibes;
+
+  /// 多张 Vibe 时强度按比例缩(`params.normalizeVibe`)。
+  final bool normalizeVibe;
+  final List<CharRefItem> charRefs;
+  final List<KreaStyleRefItem> kreaStyleRefs;
+  final double kreaStyleRefWeight;
+
+  /// 挂着的 LoRA 与另一个底模收起来的那份(见 [GenerateState.loraMem]),
+  /// 对应的是这张画布自己的模型。
+  final List<ActiveLora> loras;
+  final Map<String, List<ActiveLora>> loraMem;
+  final Img2ImgConfig? img2img;
+  final InpaintJob? inpaint;
+
   /// 把这组内容套到完整创作状态上,其余全局设置原样不动。
   GenerateState applyTo(GenerateState s) {
-    // 模型换了 LoRA 底模,就把挂载列表换成那个底模上次挂的(LoRA 仍是全局一份)
-    final base = switch (sampling) {
-      final sm? => s.withLoraBaseOf(sm.model),
-      null => s,
-    };
-    var params = sampling?.writeInto(base.params) ?? base.params;
-    if (params.useCoords != useCoords) {
-      params = params.copyWith(useCoords: useCoords);
+    var params = sampling?.writeInto(s.params) ?? s.params;
+    if (params.useCoords != useCoords ||
+        params.normalizeVibe != normalizeVibe) {
+      params = params.copyWith(
+        useCoords: useCoords,
+        normalizeVibe: normalizeVibe,
+      );
     }
-    return base.copyWith(
+    return s.copyWith(
       prompt: prompt,
       promptRaw: promptRaw,
       negativePrompt: negativePrompt,
@@ -81,12 +111,20 @@ class CanvasPrompts {
       promptFoldLinks: promptFoldLinks,
       sections: sections,
       characters: characters,
-      params: identical(params, base.params) ? null : params,
+      params: identical(params, s.params) ? null : params,
       promptPresetId: promptPresetId,
+      vibes: vibes,
+      charRefs: charRefs,
+      kreaStyleRefs: kreaStyleRefs,
+      kreaStyleRefWeight: kreaStyleRefWeight,
+      loras: loras,
+      loraMem: loraMem,
+      img2img: img2img,
+      inpaint: inpaint,
     );
   }
 
-  /// 角色、分区列表按引用比:创作状态改别的字段时列表原样沿用,改它们必换新列表。
+  /// 列表、表和图片配置按引用比:创作状态改别的字段时它们原样沿用,改它们必换新的。
   bool sameAs(CanvasPrompts o) =>
       prompt == o.prompt &&
       promptRaw == o.promptRaw &&
@@ -97,12 +135,22 @@ class CanvasPrompts {
       identical(characters, o.characters) &&
       useCoords == o.useCoords &&
       promptPresetId == o.promptPresetId &&
+      identical(vibes, o.vibes) &&
+      normalizeVibe == o.normalizeVibe &&
+      identical(charRefs, o.charRefs) &&
+      identical(kreaStyleRefs, o.kreaStyleRefs) &&
+      kreaStyleRefWeight == o.kreaStyleRefWeight &&
+      identical(loras, o.loras) &&
+      identical(loraMem, o.loraMem) &&
+      identical(img2img, o.img2img) &&
+      identical(inpaint, o.inpaint) &&
       switch ((sampling, o.sampling)) {
         (null, null) => true,
         (final a?, final b?) => a.sameAs(b),
         _ => false,
       };
 
+  /// [img2img]、[inpaint] 传 null 是清掉;不传保持不动。
   CanvasPrompts copyWith({
     String? prompt,
     String? promptRaw,
@@ -114,6 +162,15 @@ class CanvasPrompts {
     bool? useCoords,
     String? promptPresetId,
     CanvasSampling? sampling,
+    List<VibeItem>? vibes,
+    bool? normalizeVibe,
+    List<CharRefItem>? charRefs,
+    List<KreaStyleRefItem>? kreaStyleRefs,
+    double? kreaStyleRefWeight,
+    List<ActiveLora>? loras,
+    Map<String, List<ActiveLora>>? loraMem,
+    Object? img2img = _unset,
+    Object? inpaint = _unset,
   }) => CanvasPrompts(
     prompt: prompt ?? this.prompt,
     promptRaw: promptRaw ?? this.promptRaw,
@@ -139,6 +196,15 @@ class CanvasPrompts {
     useCoords: useCoords ?? this.useCoords,
     promptPresetId: promptPresetId ?? this.promptPresetId,
     sampling: sampling ?? this.sampling,
+    vibes: vibes ?? this.vibes,
+    normalizeVibe: normalizeVibe ?? this.normalizeVibe,
+    charRefs: charRefs ?? this.charRefs,
+    kreaStyleRefs: kreaStyleRefs ?? this.kreaStyleRefs,
+    kreaStyleRefWeight: kreaStyleRefWeight ?? this.kreaStyleRefWeight,
+    loras: loras ?? this.loras,
+    loraMem: loraMem ?? this.loraMem,
+    img2img: img2img == _unset ? this.img2img : img2img as Img2ImgConfig?,
+    inpaint: inpaint == _unset ? this.inpaint : inpaint as InpaintJob?,
   );
 
   /// 换掉采样参数,可以换成 null(读老存档时用)。
@@ -153,11 +219,40 @@ class CanvasPrompts {
     useCoords: useCoords,
     promptPresetId: promptPresetId,
     sampling: sampling,
+    vibes: vibes,
+    normalizeVibe: normalizeVibe,
+    charRefs: charRefs,
+    kreaStyleRefs: kreaStyleRefs,
+    kreaStyleRefWeight: kreaStyleRefWeight,
+    loras: loras,
+    loraMem: loraMem,
+    img2img: img2img,
+    inpaint: inpaint,
   );
+
+  /// 在挂着的和收起来的每一份 LoRA 列表上做 [change](返回 null = 这份里没有
+  /// 要改的);一份都没改到返回 null。
+  CanvasPrompts? changeLoras(
+    List<ActiveLora>? Function(List<ActiveLora>) change,
+  ) {
+    final active = change(loras);
+    final mem = <String, List<ActiveLora>>{};
+    for (final e in loraMem.entries) {
+      final stashed = change(e.value);
+      if (stashed != null) mem[e.key] = stashed;
+    }
+    if (active == null && mem.isEmpty) return null;
+    return copyWith(
+      loras: active,
+      loraMem: mem.isEmpty ? null : {...loraMem, ...mem},
+    );
+  }
 }
 
+const _unset = Object();
+
 /// 跟画布走的出图参数:模型、尺寸、种子,高级设置「采样」那一组(NAI / Anima /
-/// Krea 各一套)加 CFG Rescale,连同 Anima / Krea 的分档记忆。
+/// Krea 各一套)加 CFG Rescale,连同 Anima / Krea 的分档记忆,以及重绘放大。
 ///
 /// 模型和它的采样参数总是一起套回去,所以档位天然对得上。
 class CanvasSampling {
@@ -182,6 +277,7 @@ class CanvasSampling {
     required this.kreaSampler,
     required this.kreaScheduler,
     required this.modalMem,
+    required this.hires,
   });
 
   factory CanvasSampling.of(GenParams p) => CanvasSampling(
@@ -205,6 +301,7 @@ class CanvasSampling {
     kreaSampler: p.kreaSampler,
     kreaScheduler: p.kreaScheduler,
     modalMem: p.modalMem,
+    hires: p.hires,
   );
 
   final String model;
@@ -229,6 +326,7 @@ class CanvasSampling {
   final String kreaSampler;
   final String kreaScheduler;
   final Map<String, ModalSampling> modalMem;
+  final HiresConfig hires;
 
   /// 原样写进 [p],连 [model] 一起。
   GenParams writeInto(GenParams p) => p.copyWith(
@@ -252,9 +350,10 @@ class CanvasSampling {
     kreaSampler: kreaSampler,
     kreaScheduler: kreaScheduler,
     modalMem: modalMem,
+    hires: hires,
   );
 
-  /// 分档记忆按引用比:参数没动时它原样沿用,换档必换新表。
+  /// 分档记忆、重绘放大按引用比:参数没动时原样沿用,改了必换新的。
   bool sameAs(CanvasSampling o) =>
       model == o.model &&
       naiEffort == o.naiEffort &&
@@ -275,7 +374,8 @@ class CanvasSampling {
       kreaCfg == o.kreaCfg &&
       kreaSampler == o.kreaSampler &&
       kreaScheduler == o.kreaScheduler &&
-      identical(modalMem, o.modalMem);
+      identical(modalMem, o.modalMem) &&
+      identical(hires, o.hires);
 }
 
 class CanvasDraft {

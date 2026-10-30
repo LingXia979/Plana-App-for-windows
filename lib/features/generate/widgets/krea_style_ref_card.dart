@@ -9,6 +9,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/platform/desktop.dart';
 import '../../../core/ui/image_drop.dart';
 import '../../../core/util/image_pick.dart';
+import '../canvas_state.dart';
 import '../generate_state.dart';
 import '../models.dart';
 import 'common.dart';
@@ -17,7 +18,7 @@ import 'section_card.dart';
 /// 后台 isolate 算图片内容哈希(sha256 hex)。
 String _sha256Hex(Uint8List bytes) => sha256.convert(bytes).toString();
 
-/// 风格参考卡(Krea 2 专属):缩略图横条 + 选中详情,上方一条全局参考强度。
+/// 风格参考卡(Krea 2 专属):缩略图横条 + 选中详情,上方一条当前画布的参考强度。
 ///
 /// 壳照搬角色参考卡(同一套头栏、同一条缩略图行、同一个详情头),但功能是
 /// 另一回事 —— 它走「参考图 + 官方风格参考 LoRA」,**只搬画风、不认角色**,
@@ -36,18 +37,20 @@ class _KreaStyleRefCardState extends ConsumerState<KreaStyleRefCard> {
   String? _selectedId;
 
   Future<void> _onAdd() async {
+    final canvasId = ref.read(canvasWorkspaceProvider).activeId;
     final files = await pickImageFiles(context);
     if (files.isEmpty || !mounted) return;
-    await _addImages(files);
+    await _addImages(files, canvasId);
   }
 
-  Future<void> _addImages(List<PickedImage> files) async {
+  Future<void> _addImages(List<PickedImage> files, String canvasId) async {
+    bool left() => ref.read(canvasWorkspaceProvider).activeId != canvasId;
     final notifier = ref.read(generateProvider.notifier);
     String? lastId;
     var dropped = 0;
     for (final f in files) {
       final hash = await compute(_sha256Hex, f.bytes); // 后台算内容哈希
-      if (!mounted) return;
+      if (!mounted || left()) return;
       final id = notifier.addKreaStyleRef(
         image: f.bytes,
         name: f.baseName,
@@ -60,7 +63,7 @@ class _KreaStyleRefCardState extends ConsumerState<KreaStyleRefCard> {
         lastId = id;
       }
     }
-    if (!mounted) return;
+    if (!mounted || left()) return;
     if (dropped > 0) {
       hintSnack(context, '最多 $kMaxKreaStyleRefs 张参考图,已忽略 $dropped 张');
     }
@@ -214,9 +217,13 @@ class _KreaStyleRefCardState extends ConsumerState<KreaStyleRefCard> {
     );
     return ref.watch(desktopModeProvider)
         ? ImageDropRegion(
+            key: ValueKey(
+              ref.watch(canvasWorkspaceProvider.select((w) => w.activeId)),
+            ),
             label: '加入风格参考',
             multiple: true,
-            onDrop: (images, _) => _addImages(images),
+            onDrop: (images, _) =>
+                _addImages(images, ref.read(canvasWorkspaceProvider).activeId),
             child: card,
           )
         : card;

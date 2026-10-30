@@ -18,6 +18,7 @@ import '../../core/ui/scroll_memory.dart';
 import '../../core/ui/selection_bar.dart';
 import '../../core/ui/image_drop.dart';
 import '../../core/util/image_pick.dart';
+import '../generate/canvas_state.dart';
 import '../generate/generate_state.dart';
 import '../generate/models.dart' show CharRefItem, VibeItem;
 import '../generate/nai_request.dart' show naiModelId;
@@ -111,6 +112,8 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
 
   /// 进入页面时的 vibe 快照(返回 = 放弃本次全部增删,还原它)。
   /// 点卡即时加入生成面板,没有「攒到最后才生效」的缓冲,反悔只能靠这份底片。
+  late final String _canvasId;
+
   late final List<VibeItem> _snapshot;
 
   /// 加入 Vibe 会因互斥停用角色参考,快照一并存,还原时连同恢复 ——
@@ -120,6 +123,7 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
   @override
   void initState() {
     super.initState();
+    _canvasId = ref.read(canvasWorkspaceProvider).activeId;
     _snapshot = List.of(ref.read(generateProvider).vibes);
     _charRefsSnapshot = List.of(ref.read(generateProvider).charRefs);
   }
@@ -188,7 +192,9 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
   /// 库条目 → 生成面板(本地/公共收藏后共用)。
   Future<void> _addEntryToGenerate(VibeEntry e) async {
     final data = await _lib.loadForGenerate(e, modelKey: _modelKey);
-    if (!mounted) return;
+    if (!mounted || ref.read(canvasWorkspaceProvider).activeId != _canvasId) {
+      return;
+    }
     if (data == null) {
       hintSnack(context, '无法读取该 Vibe 文件', icon: Icons.error_outline);
       return;
@@ -251,9 +257,11 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
       Navigator.of(context).pop();
       return;
     }
+    bool left() => ref.read(canvasWorkspaceProvider).activeId != _canvasId;
     var fail = 0;
     for (var i = 0; i < metas.length; i++) {
       if (!mounted) return;
+      if (left()) break;
       setState(() => _downloading = (i + 1, metas.length));
       final m = metas[i];
       try {
@@ -269,12 +277,16 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
             entry = entries.isEmpty ? null : entries.first;
           }
         }
+        if (!mounted) return;
+        if (left()) break;
         if (entry == null) {
           fail++;
           continue;
         }
         if (_activeItemId(entry) == null) {
           final data = await _lib.loadForGenerate(entry, modelKey: _modelKey);
+          if (!mounted) return;
+          if (left()) break;
           if (data == null) {
             fail++;
             continue;
@@ -300,8 +312,9 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
     if (!mounted) return;
     setState(() {
       _downloading = null;
-      _publicPending.clear();
+      if (!left()) _publicPending.clear();
     });
+    if (left()) return;
     if (fail > 0) hintSnack(context, '$fail 条下载失败', icon: Icons.error_outline);
     if (mounted) Navigator.of(context).pop();
   }
@@ -438,9 +451,12 @@ class _VibeLibraryPageState extends ConsumerState<VibeLibraryPage>
   ///
   /// 只管生成面板的选择 —— 库里删掉/改名/导入的条目是真落盘的,还原不回来。
   void _cancel() {
-    ref.read(generateProvider.notifier)
-      ..restoreVibes(_snapshot)
-      ..restoreCharRefs(_charRefsSnapshot);
+    ref
+        .read(canvasWorkspaceProvider.notifier)
+        .updatePrompts(
+          _canvasId,
+          (p) => p.copyWith(vibes: _snapshot, charRefs: _charRefsSnapshot),
+        );
     Navigator.of(context).pop();
   }
 

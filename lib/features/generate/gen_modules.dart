@@ -284,9 +284,8 @@ GenerateState stripHiddenModules(GenerateState s, GenModuleSettings ms) {
       ),
     );
   }
-  // 重绘按它自己那块的尺寸发(局部是裁切区、扩图是垫大后的整张):尺寸跟着
-  // 画布走,重绘却是全局一份,切了画布,画布那个尺寸就不是这块的了。请求、
-  // 贴回、估价都读这份快照的宽高。
+  // 重绘按它自己那块的尺寸发(局部是裁切区、扩图是垫大后的整张):存入后再改
+  // 尺寸,画布那个尺寸就不是这块的了。请求、贴回、估价都读这份快照的宽高。
   if (out.inpaint?.sendSize case (
     final w,
     final h,

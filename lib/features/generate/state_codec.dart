@@ -345,13 +345,20 @@ Future<EncodedState> encodeGenerateState(
 
 /// [presetFallback]:存的时候还没记提示词预设的(1.1.1 及以前的存档和图库
 /// 快照)用哪一档;不给就用 [kDefaultPromptPresetId]。
+///
+/// [images]:几份状态一起解码时共用的读图表(哈希 → 字节),同一张图只读一次、
+/// 只留一份字节。
 Future<GenerateState> decodeGenerateState(
   Map<String, dynamic> j,
   BlobStore blobs, {
   String? presetFallback,
+  Map<String, Future<Uint8List?>>? images,
 }) async {
-  Future<Uint8List?> img(Object? hash) async =>
-      hash is String && hash.isNotEmpty ? blobs.get(hash) : null;
+  Future<Uint8List?> img(Object? hash) async {
+    if (hash is! String || hash.isEmpty) return null;
+    if (images == null) return blobs.get(hash);
+    return images.putIfAbsent(hash, () => blobs.get(hash));
+  }
 
   final characters = <CharacterPrompt>[];
   if (j['characters'] is List) {

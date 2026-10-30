@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as path;
 
 import '../../core/theme/app_theme.dart';
+import '../generate/canvas_state.dart';
 import '../generate/generate_state.dart';
 import '../generate/nai_request.dart';
 import '../generate/vibe_cache.dart';
@@ -69,6 +70,8 @@ class _LocalVibeFolderPanelState extends ConsumerState<LocalVibeFolderPanel> {
       _adding = true;
       _message = null;
     });
+    final canvasId = ref.read(canvasWorkspaceProvider).activeId;
+    bool left() => ref.read(canvasWorkspaceProvider).activeId != canvasId;
     var count = 0;
     final failed = <String>[];
     final modelKey = _modelKey;
@@ -76,6 +79,7 @@ class _LocalVibeFolderPanelState extends ConsumerState<LocalVibeFolderPanel> {
       try {
         final data = await loadFolderVibeInBackground(entry, modelKey);
         if (!mounted) return;
+        if (left()) break;
         if (data.imageHash case final String hash) {
           final cache = await ref.read(vibeCacheProvider.future);
           for (final encoding in data.encodings) {
@@ -85,6 +89,7 @@ class _LocalVibeFolderPanelState extends ConsumerState<LocalVibeFolderPanel> {
           }
         }
         if (!mounted) return;
+        if (left()) break;
         if (!ref
             .read(generateProvider)
             .vibes
@@ -118,6 +123,7 @@ class _LocalVibeFolderPanelState extends ConsumerState<LocalVibeFolderPanel> {
       _adding = false;
       _message = failed.isEmpty ? null : failed.take(3).join('；');
     });
+    if (left()) return;
     if (failed.isEmpty) {
       hintSnack(context, '已加入 $count 个 Vibe');
       widget.onConfirmed();

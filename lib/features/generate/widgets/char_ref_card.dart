@@ -11,6 +11,7 @@ import '../../../core/ui/image_drop.dart';
 import '../../../core/util/image_pick.dart';
 import '../../char_library/char_library.dart';
 import '../../char_library/char_library_page.dart';
+import '../canvas_state.dart';
 import '../generate_state.dart';
 import '../models.dart';
 import 'common.dart';
@@ -35,19 +36,21 @@ class _CharRefCardState extends ConsumerState<CharRefCard> {
   String? _selectedId;
 
   Future<void> _onAdd() async {
+    final canvasId = ref.read(canvasWorkspaceProvider).activeId;
     final files = await pickImageFiles(context);
     if (files.isEmpty || !mounted) return;
-    await _addImages(files);
+    await _addImages(files, canvasId);
   }
 
-  Future<void> _addImages(List<PickedImage> files) async {
+  Future<void> _addImages(List<PickedImage> files, String canvasId) async {
+    bool left() => ref.read(canvasWorkspaceProvider).activeId != canvasId;
     // 互斥态在加图前取一次:加角色参考会顺手停掉 Vibe
     final hadVibes = ref.read(generateProvider).enabledVibes > 0;
     String? lastId;
     for (final f in files) {
       final bytes = f.bytes;
       final hash = await compute(_sha256Hex, bytes); // 后台算内容哈希
-      if (!mounted) return;
+      if (!mounted || left()) return;
       // 顺手入库(同图去重;下次可从角色参考图库找回)
       try {
         await ref
@@ -56,7 +59,7 @@ class _CharRefCardState extends ConsumerState<CharRefCard> {
       } catch (_) {
         // 入库失败不影响本次使用
       }
-      if (!mounted) return;
+      if (!mounted || left()) return;
       lastId = ref
           .read(generateProvider.notifier)
           .addCharRef(image: bytes, name: f.baseName, imageHash: hash);
@@ -169,9 +172,13 @@ class _CharRefCardState extends ConsumerState<CharRefCard> {
     );
     return ref.watch(desktopModeProvider)
         ? ImageDropRegion(
+            key: ValueKey(
+              ref.watch(canvasWorkspaceProvider.select((w) => w.activeId)),
+            ),
             label: '加入角色参考',
             multiple: true,
-            onDrop: (images, _) => _addImages(images),
+            onDrop: (images, _) =>
+                _addImages(images, ref.read(canvasWorkspaceProvider).activeId),
             child: card,
           )
         : card;

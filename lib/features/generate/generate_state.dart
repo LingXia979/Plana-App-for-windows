@@ -43,14 +43,14 @@ class GenerateNotifier extends Notifier<GenerateState> {
     return ws.initial ?? GenerateState.initial();
   }
 
-  /// 换上画布的提示词、模型和采样参数，保留共享的参考图等输入。
+  /// 换上另一张画布的那组内容;张数、循环档、面板开合等全局设置原样不动。
   void applyCanvas(CanvasPrompts prompts, {bool force = false}) {
     if (!force && CanvasPrompts.of(state).sameAs(prompts)) return;
     state = prompts.applyTo(state);
   }
 
-  /// 把全局设置整份换回 [s],当前画布的词不动(撤销一次整体写入时用,
-  /// 词由 [CanvasWorkspaceNotifier.undoWrite] 另行还给原画布)。
+  /// 把全局设置整份换回 [s],当前画布的内容不动(撤销一次整体写入时用,
+  /// 画布内容由 [CanvasWorkspaceNotifier.undoWrite] 另行还给原画布)。
   void restoreGlobals(GenerateState s) =>
       state = CanvasPrompts.of(state).applyTo(s);
 
@@ -598,8 +598,8 @@ class GenerateNotifier extends Notifier<GenerateState> {
   /// 这两种情况下他手上的配置里都没有这一条,下载完再塞回去就是个幽灵改动:
   /// 明明点了移除,过几分钟它自己又回来了。装好的本体在库里,要用去挂载即可。
   ///
-  /// 下载途中切去了另一个底模的模型 / 画布,占位条就收在 [GenerateState.loraMem]
-  /// 里,在那儿转正,切回来时已经是装好的样子。
+  /// 占位条在哪张画布、挂着还是收在 [GenerateState.loraMem] 里都找得到,
+  /// 每一处都转正:下载途中切了画布或底模,切回来时已经是装好的样子。
   bool promotePendingLora(String placeholder, ActiveLora real) {
     List<ActiveLora>? promote(List<ActiveLora> list) {
       final idx = list.indexWhere((l) => l.name == placeholder);
@@ -642,22 +642,10 @@ class GenerateNotifier extends Notifier<GenerateState> {
     });
   }
 
-  /// 先在挂着的列表里改,找不到再去收起来的那几份([GenerateState.loraMem])里改。
+  /// 在每张画布挂着的和收起来的那几份([GenerateState.loraMem])里都改一遍。
   /// [change] 返回 null = 这份里没有要改的。
-  bool _updateLoraLists(List<ActiveLora>? Function(List<ActiveLora>) change) {
-    final active = change(state.loras);
-    if (active != null) {
-      state = state.copyWith(loras: active);
-      return true;
-    }
-    for (final e in state.loraMem.entries) {
-      final stashed = change(e.value);
-      if (stashed == null) continue;
-      state = state.copyWith(loraMem: {...state.loraMem, e.key: stashed});
-      return true;
-    }
-    return false;
-  }
+  bool _updateLoraLists(List<ActiveLora>? Function(List<ActiveLora>) change) =>
+      ref.read(canvasWorkspaceProvider.notifier).changeLoras(change);
 
   void removeLora(String name) {
     final victim = [
@@ -715,6 +703,22 @@ class GenerateNotifier extends Notifier<GenerateState> {
     final workspace = ref.read(canvasWorkspaceProvider);
     if (canvasId != null && workspace.find(canvasId) == null) return;
     final background = canvasId != null && canvasId != workspace.activeId;
+    if (background) {
+      ref.read(canvasWorkspaceProvider.notifier).updatePrompts(canvasId, (p) {
+        final params = p.sampling?.writeInto(state.params) ?? state.params;
+        return p.copyWith(
+          img2img: Img2ImgConfig(
+            image: image,
+            strength: p.img2img?.strength ?? 0.7,
+            noise: p.img2img?.noise ?? 0.0,
+          ),
+          sampling: CanvasSampling.of(
+            params.copyWith(width: width, height: height),
+          ),
+        );
+      });
+      return;
+    }
     final cur = state.img2img;
     state = state.copyWith(
       img2img: Img2ImgConfig(
@@ -722,18 +726,8 @@ class GenerateNotifier extends Notifier<GenerateState> {
         strength: cur?.strength ?? 0.7,
         noise: cur?.noise ?? 0.0,
       ),
-      params: background
-          ? state.params
-          : state.params.copyWith(width: width, height: height),
+      params: state.params.copyWith(width: width, height: height),
     );
-    if (background) {
-      ref
-          .read(canvasWorkspaceProvider.notifier)
-          .updateSampling(
-            canvasId,
-            (p) => p.copyWith(width: width, height: height),
-          );
-    }
     openPanel(Panel.i2i);
   }
 
@@ -757,7 +751,27 @@ class GenerateNotifier extends Notifier<GenerateState> {
   /// 服务端收到的图和声明的尺寸对不上。
   ///
   /// 与 img2img 互斥:带遮罩的图生图就是重绘,留着另一份底图只会让发送层二选一。
-  void setInpaint(InpaintJob job, {required int width, required int height}) {
+  void setInpaint(
+    InpaintJob job, {
+    required int width,
+    required int height,
+    String? canvasId,
+  }) {
+    final workspace = ref.read(canvasWorkspaceProvider);
+    if (canvasId != null && workspace.find(canvasId) == null) return;
+    if (canvasId != null && canvasId != workspace.activeId) {
+      ref.read(canvasWorkspaceProvider.notifier).updatePrompts(canvasId, (p) {
+        final params = p.sampling?.writeInto(state.params) ?? state.params;
+        return p.copyWith(
+          inpaint: job,
+          img2img: null,
+          sampling: CanvasSampling.of(
+            params.copyWith(width: width, height: height),
+          ),
+        );
+      });
+      return;
+    }
     state = state.copyWith(
       inpaint: job,
       img2img: null,

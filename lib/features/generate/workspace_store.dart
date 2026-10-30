@@ -2,6 +2,7 @@ import '../../core/util/log.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import '../../core/store/atomic_file.dart';
 import '../../core/store/blob_store.dart';
@@ -13,8 +14,9 @@ import 'state_codec.dart';
 /// Vibe/角色参考(图片走 blob 仓)、图生图、参数、面板开合——重启原样回来。
 /// 写入防抖 800ms 吸收滑条/输入抖动;前后台切换由 AppStores.flushNow 即刻落盘。
 ///
-/// 格式(v3):`state` 仍是整份创作状态(全局设置 + 当前画布的词),旧版本只认它,
-/// 装回旧包至少保住当前那套;各画布的提示词组另挂在 `canvases` 里,不带图片。
+/// 格式(v3):`state` 仍是整份创作状态(全局设置 + 当前画布的内容),旧版本只认它,
+/// 装回旧包至少保住当前那套;各画布的内容另挂在 `canvases` 里,图片同样走 blob 仓,
+/// 顶层 `refs` 是所有画布引用的并集。
 /// 读得懂两种老格式:v1 只有 `state`(迁成「默认画布」);v2 是每张画布各存一整份
 /// 状态、没有顶层 `state`(全局设置取当时那张当前画布的)。
 class WorkspaceStore {
@@ -33,6 +35,7 @@ class WorkspaceStore {
   /// 启动读出的整份创作状态;null = 首启/无存档。
   GenerateState? initial;
   GenerateState? _latest;
+  CanvasWorkspace? _latestCanvases;
 
   /// 启动读出的画布集合;null = 首启/无存档(由调用方按 [initial] 建一张)。
   CanvasWorkspace? initialCanvases;
@@ -76,11 +79,14 @@ class WorkspaceStore {
       var presetFilled = false;
       bool lacksPreset(Object? m) => m is Map && m['promptPresetId'] is! String;
       if (lacksPreset(j['state'])) presetFilled = true;
+      // 同一张图在几张画布里各读一次也只留一份字节
+      final images = <String, Future<Uint8List?>>{};
       var full = j['state'] is Map<String, dynamic>
           ? await decodeGenerateState(
               j['state'] as Map<String, dynamic>,
               _blobs,
               presetFallback: legacyPreset,
+              images: images,
             )
           : null;
       final savedActive = j['activeCanvasId'] is String
@@ -107,8 +113,9 @@ class WorkspaceStore {
               if (lacksPreset(raw['prompts'])) presetFilled = true;
               prompts = await _decodePrompts(
                 raw['prompts'] as Map<String, dynamic>,
-                globals: full?.params,
+                globals: full,
                 presetFallback: legacyPreset,
+                images: images,
               );
             } else if (raw['state'] is Map<String, dynamic>) {
               if (lacksPreset(raw['state'])) presetFilled = true;
@@ -116,6 +123,7 @@ class WorkspaceStore {
                 raw['state'] as Map<String, dynamic>,
                 _blobs,
                 presetFallback: legacyPreset,
+                images: images,
               );
               v2First ??= s;
               if (id == savedActive) v2Active = s;
@@ -187,14 +195,14 @@ class WorkspaceStore {
       }
 
       // 防抖窗口内被杀时 idSeq 可能落后于状态里的实际 id,取两者最大;
-      // 角色 id 要把所有画布都算上,不能只看当前那张。
+      // 所有画布都要算上,不能只看当前那张。
       for (final id in [
-        for (final v in full.vibes) v.id,
-        for (final r in full.charRefs) r.id,
-        for (final r in full.kreaStyleRefs) r.id,
         for (final canvas in initialCanvases!.canvases) ...[
           for (final c in canvas.prompts.characters) c.id,
           for (final s in canvas.prompts.sections) s.id,
+          for (final v in canvas.prompts.vibes) v.id,
+          for (final r in canvas.prompts.charRefs) r.id,
+          for (final r in canvas.prompts.kreaStyleRefs) r.id,
         ],
       ]) {
         final m = _idNumRe.firstMatch(id);
@@ -241,7 +249,8 @@ class WorkspaceStore {
     _revision++;
     _latest = s;
     _pending = s;
-    _pendingCanvases = canvases ?? CanvasWorkspace.single(CanvasPrompts.of(s));
+    _latestCanvases = canvases ?? CanvasWorkspace.single(CanvasPrompts.of(s));
+    _pendingCanvases = _latestCanvases;
     _pendingSeq = idSeq;
     _timer?.cancel();
     _timer = Timer(const Duration(milliseconds: 800), flush);
@@ -260,21 +269,20 @@ class WorkspaceStore {
     final write = _chain.then((_) async {
       try {
         final enc = await encodeGenerateState(s, _blobs);
-        final canvases = <Map<String, dynamic>>[
-          for (final c in w.canvases)
-            {
-              'id': c.id,
-              'name': c.name,
-              'prompts': await _encodePrompts(c.prompts),
-            },
-        ];
+        final refs = {...enc.refs};
+        final canvases = <Map<String, dynamic>>[];
+        for (final c in w.canvases) {
+          final p = await _encodePrompts(c.prompts);
+          refs.addAll(p.refs);
+          canvases.add({'id': c.id, 'name': c.name, 'prompts': p.json});
+        }
         // 原子写:落盘时机就是退后台,不能留半截 JSON(见 atomic_file.dart)
         await writeStringAtomic(
           _file,
           jsonEncode({
             'v': 3,
             'idSeq': seq,
-            'refs': enc.refs.toList(),
+            'refs': refs.toList(),
             'state': enc.json,
             'activeCanvasId': w.activeId,
             'nextCanvasId': w.nextId,
@@ -298,9 +306,8 @@ class WorkspaceStore {
 
   Future<void> get idle => _lastWrite;
 
-  /// 一张画布的提示词组只存跟画布走的那几项。角色编解码借整份状态那一套
-  /// (含老存档的站位迁移),免得两种角色格式各走各的;提示词组不带图片,
-  /// 所以也不产生 blob 引用。
+  /// 一张画布只存跟画布走的那几项。编解码借整份状态那一套(含老存档的站位
+  /// 迁移,图片走 blob 仓),免得两种格式各走各的。
   static const _promptKeys = [
     'prompt',
     'negativePrompt',
@@ -310,9 +317,18 @@ class WorkspaceStore {
     'sections',
     'characters',
     'promptPresetId',
+    'vibes',
+    'charRefs',
+    'kreaStyleRefs',
+    'kreaStyleRefWeight',
+    'loras',
+    'loraMem',
+    'img2img',
+    'inpaint',
   ];
 
-  /// 模型、尺寸、种子和采样参数借整份状态 params 里的同名键(含分档记忆)。
+  /// 模型、尺寸、种子、采样参数和重绘放大借整份状态 params 里的同名键
+  /// (含分档记忆)。
   static const _samplingKeys = [
     'model',
     'naiEffort',
@@ -334,58 +350,83 @@ class WorkspaceStore {
     'kreaSampler',
     'kreaScheduler',
     'modalMem',
+    'hires',
   ];
 
-  Future<Map<String, dynamic>> _encodePrompts(CanvasPrompts p) async {
-    final base = GenerateState.initial();
-    // 出图参数原样写进去,存的就是这张画布自己那份
-    final s = p
-        .applyTo(base)
-        .copyWith(
-          params: p.sampling?.writeInto(
-            base.params.copyWith(useCoords: p.useCoords),
-          ),
-        );
-    final enc = await encodeGenerateState(s, _blobs);
+  Future<EncodedState> _encodePrompts(CanvasPrompts p) async {
+    final enc = await encodeGenerateState(
+      p.applyTo(GenerateState.initial()),
+      _blobs,
+    );
     final params = enc.json['params'] as Map<String, dynamic>;
-    return {
+    return EncodedState({
       for (final k in _promptKeys)
         if (enc.json.containsKey(k)) k: enc.json[k],
       'useCoords': p.useCoords,
+      'normalizeVibe': p.normalizeVibe,
       if (p.sampling != null)
         'sampling': {
           for (final k in _samplingKeys)
             if (params.containsKey(k)) k: params[k],
         },
-    };
+    }, enc.refs);
   }
 
-  /// [globals] 是同一份存档顶层的整份参数:尺寸和种子比模型、采样晚收进画布,
-  /// 那之前存下的画布没这几个键,接着用当时全局那份。
+  /// [globals] 是同一份存档顶层的整份状态。比画布晚收进来的几项,那之前存下的
+  /// 画布没有对应的键,一律接着用当时全局那份:尺寸和种子、重绘放大,以及参考图、
+  /// LoRA、底图与重绘(这几项看 `vibes` 键;LoRA 换到这张画布的模型那个底模)。
   Future<CanvasPrompts> _decodePrompts(
     Map<String, dynamic> j, {
-    GenParams? globals,
+    GenerateState? globals,
     String? presetFallback,
+    Map<String, Future<Uint8List?>>? images,
   }) async {
     final sampling = j['sampling'];
-    final s = await decodeGenerateState(
+    final g = globals?.params;
+    var s = await decodeGenerateState(
       {
         for (final k in _promptKeys)
           if (j.containsKey(k)) k: j[k],
         'params': {
-          if (globals != null) ...{
-            'width': globals.width,
-            'height': globals.height,
-            'seed': globals.seed,
+          if (g != null) ...{
+            'width': g.width,
+            'height': g.height,
+            'seed': g.seed,
           },
           if (sampling is Map<String, dynamic>) ...sampling,
           // 带上这个键,解码就不会把它当老存档去迁移站位
           'useCoords': j['useCoords'] == true,
+          if (j['normalizeVibe'] is bool) 'normalizeVibe': j['normalizeVibe'],
         },
       },
       _blobs,
       presetFallback: presetFallback,
+      images: images,
     );
+    if (globals != null) {
+      if (sampling is Map<String, dynamic> && sampling['hires'] is! Map) {
+        s = s.copyWith(params: s.params.copyWith(hires: globals.params.hires));
+      }
+      if (!j.containsKey('vibes')) {
+        // 没记模型的画布收尾时补成全局那个,LoRA 原样接着用
+        final from = sampling is Map<String, dynamic>
+            ? globals.withLoraBaseOf(s.params.model)
+            : globals;
+        s = s.copyWith(
+          vibes: from.vibes,
+          charRefs: from.charRefs,
+          kreaStyleRefs: from.kreaStyleRefs,
+          kreaStyleRefWeight: from.kreaStyleRefWeight,
+          loras: from.loras,
+          loraMem: from.loraMem,
+          img2img: from.img2img,
+          inpaint: from.inpaint,
+          params: s.params.copyWith(
+            normalizeVibe: globals.params.normalizeVibe,
+          ),
+        );
+      }
+    }
     final prompts = CanvasPrompts.of(s);
     // 没这块的是老存档:先空着,载入收尾时补成当时的全局参数
     return sampling is Map<String, dynamic>
@@ -410,6 +451,19 @@ class WorkspaceStore {
       final current = _latest ?? initial;
       if (current != null) {
         live.addAll(await generateStateBlobRefs(current, _blobs));
+      }
+      // 尚未落盘或写失败的后台画布也在使用这些图片。清理历史引用时不能只看
+      // 当前画布,否则切走后仍待保存的底图／参考图可能先被清掉。
+      final canvases = _latestCanvases ?? initialCanvases;
+      if (canvases != null) {
+        for (final canvas in canvases.canvases) {
+          live.addAll(
+            await generateStateBlobRefs(
+              canvas.prompts.applyTo(GenerateState.initial()),
+              _blobs,
+            ),
+          );
+        }
       }
     } catch (_) {
       if (strict) rethrow;

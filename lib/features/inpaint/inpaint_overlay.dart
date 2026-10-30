@@ -1283,7 +1283,11 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
 
   /// 扩图发送:白底扩后画布 + 自动 mask(原图区黑/新增区白),
   /// paste 置空 → 结果即完整新图直接入库(尺寸=params 扩后尺寸)。
-  Future<void> _fireExpand(ui.Image img, GenerateState input) async {
+  Future<void> _fireExpand(
+    ui.Image img,
+    GenerateState input,
+    String canvasId,
+  ) async {
     final margins = _margins;
     final grid = _grid?.copy();
     final strength = _strength;
@@ -1326,6 +1330,7 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
         ),
         width: tw,
         height: th,
+        canvasId: canvasId,
       );
     } finally {
       if (mounted) setState(() => _firing = false);
@@ -1336,14 +1341,20 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
   /// (对齐官网)。流式预览也跟着回到图库画布那一份,不再自己画一套。
   ///
   /// 存完直接跳创作页:主生成按钮在那儿,留在图库等于让人自己去找。
-  void _saveInto(InpaintJob job, {required int width, required int height}) {
+  void _saveInto(
+    InpaintJob job, {
+    required int width,
+    required int height,
+    required String canvasId,
+  }) {
     // 存入会顶掉图生图底图、改分辨率:提示条上给「撤销」,整份放回存入之前
-    final before = ref.read(generateProvider);
-    final canvasId = ref.read(canvasWorkspaceProvider).activeId;
+    final source = ref.read(canvasWorkspaceProvider).find(canvasId);
+    if (source == null) return;
+    final before = source.prompts.applyTo(ref.read(generateProvider));
     final canvases = ref.read(canvasWorkspaceProvider.notifier);
     ref
         .read(generateProvider.notifier)
-        .setInpaint(job, width: width, height: height);
+        .setInpaint(job, width: width, height: height, canvasId: canvasId);
     Haptics.medium();
     // 遮罩会改写生成分辨率(局部发裁切区、扩图发垫大后的画布),和图生图选底图
     // 一个道理 —— 变了就说一声,免得回到创作页看见分辨率莫名其妙换了。
@@ -1608,6 +1619,7 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
     // 参数现读创作页,模型自然也跟着走:面板开着的时候完全可以切去换成
     // Anima / Krea(那两条通道都没有 infill)。进面板时 result_canvas 已拦过
     // 一道,这里补发车前的第二道 —— 否则会一路走到生成器里才报不支持。
+    final canvasId = ref.read(canvasWorkspaceProvider).activeId;
     final input = _liveInput;
     if (isModalModel(input.params.model)) {
       hintSnack(
@@ -1623,7 +1635,7 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
         hintSnack(context, '先拖动边缘扩展画布', icon: Icons.open_in_full);
         return;
       }
-      await _fireExpand(img, input);
+      await _fireExpand(img, input, canvasId);
       return;
     }
     final send = _cropMode ? _crop : null;
@@ -1646,7 +1658,12 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
           sourceId: widget.session.sourceId,
         );
         if (!mounted) return;
-        _saveInto(prepared.job, width: prepared.width, height: prepared.height);
+        _saveInto(
+          prepared.job,
+          width: prepared.width,
+          height: prepared.height,
+          canvasId: canvasId,
+        );
       } catch (e) {
         if (mounted) {
           hintSnack(context, '无法保存框选: $e', icon: Icons.error_outline);
@@ -1717,6 +1734,7 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
         ),
         width: sw,
         height: sh,
+        canvasId: canvasId,
       );
     } finally {
       if (mounted) setState(() => _firing = false);

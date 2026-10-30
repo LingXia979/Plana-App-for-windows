@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/theme/app_theme.dart';
+import '../generate/canvas_state.dart';
 import '../generate/generate_state.dart';
 import '../generate/widgets/common.dart'
     show ParamSlider, confirmDialog, hintSnack;
@@ -124,6 +125,7 @@ class _VibeDetailSheetState extends ConsumerState<VibeDetailSheet> {
   }
 
   Future<void> _addToGenerate(VibeEntry e) async {
+    final canvasId = ref.read(canvasWorkspaceProvider).activeId;
     final gen = ref.read(generateProvider);
     final dup = gen.vibes.any(
       (v) =>
@@ -144,7 +146,9 @@ class _VibeDetailSheetState extends ConsumerState<VibeDetailSheet> {
               )] ??
               '',
         );
-    if (!mounted) return;
+    if (!mounted || ref.read(canvasWorkspaceProvider).activeId != canvasId) {
+      return;
+    }
     if (data == null) {
       hintSnack(context, '无法读取该 Vibe 文件', icon: Icons.error_outline);
       return;

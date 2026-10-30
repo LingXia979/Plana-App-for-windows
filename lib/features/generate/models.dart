@@ -1335,13 +1335,13 @@ class GenerateState {
   final int anlas;
   final Set<Panel> openPanels;
 
-  /// 挂载的 LoRA(anima / krea 共用一份;NAI 模型生成时由模块剥离层清掉)。
+  /// 挂载的 LoRA(anima / krea 共用一份列表;NAI 模型生成时由模块剥离层清掉)。
   /// 两边的库互不通用,换底模时收进 [loraMem]、换上另一边上次挂的
   /// (见 [withLoraBaseOf])。
   final List<ActiveLora> loras;
 
-  /// 不在用的那个底模上次挂的 LoRA(`anima` / `krea` → 列表)。模型跟画布走之后,
-  /// 在 Anima 画布和 Krea 画布之间来回切,各自挂的不能被清掉。
+  /// 不在用的那个底模上次挂的 LoRA(`anima` / `krea` → 列表)。同一张画布
+  /// 进出 Krea 来回切,挂过的不能被清掉。
   final Map<String, List<ActiveLora>> loraMem;
 
   /// Krea 风格参考图(krea 专属;其它父类生成时由剥离层清掉)。

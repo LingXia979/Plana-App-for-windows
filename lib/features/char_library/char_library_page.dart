@@ -11,6 +11,7 @@ import '../desktop/library_samples.dart';
 import '../../core/ui/selection_bar.dart';
 import '../../core/ui/image_drop.dart';
 import '../../core/util/image_pick.dart';
+import '../generate/canvas_state.dart';
 import '../generate/generate_state.dart';
 import '../generate/models.dart';
 import '../generate/widgets/common.dart';
@@ -29,6 +30,8 @@ class CharLibraryPage extends ConsumerStatefulWidget {
 
 class _CharLibraryPageState extends ConsumerState<CharLibraryPage> {
   /// 进入页面时的角色参考快照(「取消」放弃本次全部增删还原它)。
+  late final String _canvasId;
+
   late final List<CharRefItem> _snapshot;
   // 加入角色参考会因互斥停用 Vibe,快照一并保存,「取消」时连同还原。
   late final List<VibeItem> _vibesSnapshot;
@@ -39,6 +42,7 @@ class _CharLibraryPageState extends ConsumerState<CharLibraryPage> {
   @override
   void initState() {
     super.initState();
+    _canvasId = ref.read(canvasWorkspaceProvider).activeId;
     _snapshot = List.of(ref.read(generateProvider).charRefs);
     _vibesSnapshot = List.of(ref.read(generateProvider).vibes);
   }
@@ -55,6 +59,7 @@ class _CharLibraryPageState extends ConsumerState<CharLibraryPage> {
   }
 
   Future<void> _toggle(CharRefEntry e) async {
+    if (ref.read(canvasWorkspaceProvider).activeId != _canvasId) return;
     final activeId = _activeItemId(e);
     if (activeId != null) {
       ref.read(generateProvider.notifier).removeCharRef(activeId);
@@ -62,7 +67,9 @@ class _CharLibraryPageState extends ConsumerState<CharLibraryPage> {
       return;
     }
     final bytes = await _lib.loadImageBytes(e);
-    if (!mounted) return;
+    if (!mounted || ref.read(canvasWorkspaceProvider).activeId != _canvasId) {
+      return;
+    }
     if (bytes == null) {
       hintSnack(context, '无法读取该参考图', icon: Icons.error_outline);
       return;
@@ -114,9 +121,12 @@ class _CharLibraryPageState extends ConsumerState<CharLibraryPage> {
   /// 返回键的动作:还原进入页面时的快照(放弃本次全部勾选增删,含被互斥停用的
   /// Vibe),回生成页。底栏那个键是「取消选择」——只清空,不退页,两回事。
   void _cancel() {
-    ref.read(generateProvider.notifier)
-      ..restoreCharRefs(_snapshot)
-      ..restoreVibes(_vibesSnapshot);
+    ref
+        .read(canvasWorkspaceProvider.notifier)
+        .updatePrompts(
+          _canvasId,
+          (p) => p.copyWith(charRefs: _snapshot, vibes: _vibesSnapshot),
+        );
     Navigator.of(context).pop();
   }
 

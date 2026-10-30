@@ -10,6 +10,7 @@ import '../../../core/util/image_ops.dart';
 import '../../../core/util/image_pick.dart';
 import '../../inpaint/inpaint_overlay.dart';
 import '../../shell/shell_state.dart';
+import '../canvas_state.dart';
 import '../generate_state.dart';
 import '../models.dart';
 import 'common.dart';
@@ -19,18 +20,24 @@ import 'section_card.dart';
 /// 写入状态并展开图生图面板;分辨率有变时提示一声。
 /// 图生图卡「选择底图」与操作栏「底图」按钮共用。
 Future<void> pickImg2ImgImage(BuildContext context, WidgetRef ref) async {
+  final canvasId = ref.read(canvasWorkspaceProvider).activeId;
   final file = await pickImageFile(context);
   if (file == null || !context.mounted) return;
-  await setImg2ImgFromImage(context, ref, file.bytes);
+  await setImg2ImgFromImage(context, ref, file.bytes, canvasId: canvasId);
 }
 
 Future<void> setImg2ImgFromImage(
   BuildContext context,
   WidgetRef ref,
-  Uint8List bytes,
-) async {
+  Uint8List bytes, {
+  String? canvasId,
+}) async {
+  final target = canvasId ?? ref.read(canvasWorkspaceProvider).activeId;
   final (rw, rh) = await decodeImageSize(bytes); // 解码原始尺寸
-  if (!context.mounted) return;
+  if (!context.mounted ||
+      ref.read(canvasWorkspaceProvider).activeId != target) {
+    return;
+  }
   final res = img2imgResolution(rw, rh); // 64 对齐 / 像素封顶
   final before = ref.read(generateProvider).params;
   ref
@@ -215,6 +222,9 @@ class _Img2ImgCardState extends ConsumerState<Img2ImgCard> {
     );
     return ref.watch(desktopModeProvider)
         ? ImageDropRegion(
+            key: ValueKey(
+              ref.watch(canvasWorkspaceProvider.select((w) => w.activeId)),
+            ),
             label: '用作图生图底图',
             onDrop: (images, _) =>
                 setImg2ImgFromImage(context, ref, images.single.bytes),

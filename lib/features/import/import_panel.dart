@@ -1097,13 +1097,19 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     final before = _before();
     final bytes = widget.bytes;
     final hash = await compute(_sha256Hex, bytes);
-    if (!mounted) return;
+    if (!mounted ||
+        ref.read(canvasWorkspaceProvider).activeId != before.canvasId) {
+      return;
+    }
     try {
       await ref
           .read(vibeLibraryProvider.notifier)
           .importImageBytes(bytes, widget.displayName, knownHash: hash);
     } catch (_) {}
-    if (!mounted) return;
+    if (!mounted ||
+        ref.read(canvasWorkspaceProvider).activeId != before.canvasId) {
+      return;
+    }
     final hadCharRefs = before.state.enabledCharRefs > 0;
     ref
         .read(generateProvider.notifier)
@@ -1119,13 +1125,19 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     final before = _before();
     final bytes = widget.bytes;
     final hash = await compute(_sha256Hex, bytes);
-    if (!mounted) return;
+    if (!mounted ||
+        ref.read(canvasWorkspaceProvider).activeId != before.canvasId) {
+      return;
+    }
     try {
       await ref
           .read(charLibraryProvider.notifier)
           .importImageBytes(bytes, widget.displayName, knownHash: hash);
     } catch (_) {}
-    if (!mounted) return;
+    if (!mounted ||
+        ref.read(canvasWorkspaceProvider).activeId != before.canvasId) {
+      return;
+    }
     final hadVibes = before.state.enabledVibes > 0;
     ref
         .read(generateProvider.notifier)

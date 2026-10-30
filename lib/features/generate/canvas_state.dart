@@ -14,7 +14,7 @@ final canvasWorkspaceProvider =
       CanvasWorkspaceNotifier.new,
     );
 
-/// 画布集合。当前画布那组提示词与出图参数活在 generateProvider 里(编辑都走它),
+/// 画布集合。当前画布那组内容活在 generateProvider 里(编辑都走它),
 /// 每次变动经 [record] 抄一份回这里;其余画布只在这里存着它们那一组。
 class CanvasWorkspaceNotifier extends Notifier<CanvasWorkspace> {
   @override
@@ -95,11 +95,26 @@ class CanvasWorkspaceNotifier extends Notifier<CanvasWorkspace> {
   }
 
   /// 撤销一次整体写入创作页(图库导入、用作底图 / 参考图、存入重绘):全局设置
-  /// 整份放回 [before],词和出图参数还给写入时那张画布 —— 撤销条挂着的几秒里
+  /// 整份放回 [before],画布内容还给写入时那张画布 —— 撤销条挂着的几秒里
   /// 切了画布,也不会还错地方;那张画布已经删了就只回全局设置。
   void undoWrite(GenerateState before, String canvasId) {
     ref.read(generateProvider.notifier).restoreGlobals(before);
     updatePrompts(canvasId, (_) => CanvasPrompts.of(before));
+  }
+
+  /// 在每张画布挂着和收起来的 LoRA 上做 [change](见 [CanvasPrompts.changeLoras]),
+  /// 返回有没有改到。LoRA 下载要几分钟,装好时发起的那张可能已经不是当前画布。
+  bool changeLoras(List<ActiveLora>? Function(List<ActiveLora>) change) {
+    var hit = false;
+    for (final c in [...state.canvases]) {
+      updatePrompts(c.id, (p) {
+        final next = p.changeLoras(change);
+        if (next == null) return p;
+        hit = true;
+        return next;
+      });
+    }
+    return hit;
   }
 
   void _prepareSwitch() {
@@ -117,7 +132,9 @@ class CanvasWorkspaceNotifier extends Notifier<CanvasWorkspace> {
     _save();
   }
 
-  /// 新建并切过去。空白画布只沿用当前的提示词预设、出图参数和分区骨架(词清空);
+  /// 新建并切过去。空白画布只沿用当前的提示词预设、出图参数(含重绘放大)、
+  /// 分区骨架、Vibe 强度归一开关和风格参考强度;词、角色、参考图、LoRA、底图与
+  /// 重绘都清空。
   /// 复制则带上整组。
   String create({bool duplicate = false}) {
     _prepareSwitch();
@@ -129,6 +146,8 @@ class CanvasWorkspaceNotifier extends Notifier<CanvasWorkspace> {
             promptPresetId: current.promptPresetId,
             sections: sectionSkeleton(current.sections),
             sampling: current.sampling,
+            normalizeVibe: current.normalizeVibe,
+            kreaStyleRefWeight: current.kreaStyleRefWeight,
           );
     final name = duplicate ? _copyName(state.active.name) : _blankName();
     state = state.copyWith(
