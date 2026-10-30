@@ -250,6 +250,23 @@ class AlbumCoverImage extends ConsumerWidget {
   final BoxFit fallbackFit;
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    if (isFixedGallery(albumId)) {
+      return Container(
+        decoration: BoxDecoration(
+          color: context.scheme.surfaceContainerHigh,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Center(
+          child: Icon(
+            albumId == favoritesId
+                ? Icons.favorite_border
+                : Icons.delete_outline,
+            size: 48,
+            color: context.scheme.primary,
+          ),
+        ),
+      );
+    }
     final summary = ref.watch(
       albumSummariesProvider.select((summaries) => summaries[albumId]),
     );

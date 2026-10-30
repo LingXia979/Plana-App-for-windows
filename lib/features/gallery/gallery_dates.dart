@@ -28,3 +28,12 @@ String galleryTimeBadge(int createdAtMs) {
   String two(int v) => v.toString().padLeft(2, '0');
   return '${two(d.hour)}:${two(d.minute)}';
 }
+
+/// 使用本地日期的 UTC 对应日相减，夏令时切换仍按自然日计数。
+int galleryDaysSince(int timestamp, DateTime now) {
+  if (timestamp <= 0) return 0;
+  final date = DateTime.fromMillisecondsSinceEpoch(timestamp);
+  final today = DateTime.utc(now.year, now.month, now.day);
+  final then = DateTime.utc(date.year, date.month, date.day);
+  return today.difference(then).inDays.clamp(0, 1000000);
+}

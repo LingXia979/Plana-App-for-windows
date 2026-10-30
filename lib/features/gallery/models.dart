@@ -32,6 +32,32 @@ extension ResultBadgeX on ResultBadge {
   };
 }
 
+/// 回收站按本地自然日保留 30 天。
+const kTrashKeepDays = 30;
+
+/// 原文件和图库归属不变；相邻 ID 用于恢复独立副本的实际排列顺序。
+class TrashedImage {
+  const TrashedImage(
+    this.image,
+    this.deletedAt, {
+    this.position = 0,
+    this.beforeId,
+    this.afterId,
+  });
+  final ResultImage image;
+  final int deletedAt;
+  final int position;
+  final String? beforeId, afterId;
+
+  TrashedImage withImage(ResultImage value) => TrashedImage(
+    value,
+    deletedAt,
+    position: position,
+    beforeId: beforeId,
+    afterId: afterId,
+  );
+}
+
 /// 一张生成结果。bytes/input 只是**内存缓存**——重启水合或 RAM 减负后
 /// 为 null,像素与快照按 id 从 GalleryStore 懒读;hasInput 记录盘上
 /// 是否有参数快照(操作门禁用,与 input 是否驻留内存无关)。

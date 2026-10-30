@@ -10,6 +10,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../desktop/desktop_library_state.dart';
 import '../../generate/generation_controller.dart';
 import '../albums/album_state.dart';
+import '../albums/album_models.dart';
 import '../desktop_image_save.dart';
 import '../gallery_export.dart';
 import '../gallery_state.dart';
@@ -69,6 +70,13 @@ class _GalleryExportDialogState extends ConsumerState<_GalleryExportDialog> {
   }
 
   List<ResultImage> _scopeImages() {
+    if (widget.albumId == favoritesId) {
+      return ref
+          .read(galleryProvider)
+          .results
+          .where((image) => image.favorite)
+          .toList();
+    }
     final albums = ref.read(albumsProvider);
     if (!albums.exists(widget.albumId)) throw StateError('图库已被删除');
     return ref
@@ -201,6 +209,10 @@ class _GalleryExportDialogState extends ConsumerState<_GalleryExportDialog> {
     GalleryExportReport report,
   ) async {
     if (plan.options.cleanup == GalleryExportCleanup.none) return '';
+    if (isFixedGallery(plan.albumId) &&
+        plan.options.cleanup != GalleryExportCleanup.selected) {
+      throw StateError('固定入口仅支持清理所选图片');
+    }
     if (report.canceled || _cancelRequested) return '已停止，未清理图库';
     final wholeLibrary = plan.options.cleanup != GalleryExportCleanup.selected;
     if (wholeLibrary && report.failedIds.isNotEmpty) {
@@ -476,11 +488,18 @@ class _GalleryExportDialogState extends ConsumerState<_GalleryExportDialog> {
                             children: [
                               for (final (mode, label) in [
                                 (GalleryExportCleanup.selected, '删除所选图片'),
-                                (GalleryExportCleanup.keepSamples, '每组保留一张样图'),
-                                (
-                                  GalleryExportCleanup.deleteAlbum,
-                                  widget.albumId == null ? '清空全部作品' : '清空并删除图库',
-                                ),
+                                if (!isFixedGallery(widget.albumId))
+                                  (
+                                    GalleryExportCleanup.keepSamples,
+                                    '每组保留一张样图',
+                                  ),
+                                if (!isFixedGallery(widget.albumId))
+                                  (
+                                    GalleryExportCleanup.deleteAlbum,
+                                    widget.albumId == null
+                                        ? '清空全部作品'
+                                        : '清空并删除图库',
+                                  ),
                               ])
                                 SizedBox(
                                   width: constraints.maxWidth >= 630

@@ -65,6 +65,7 @@ class GalleryStore {
 
   /// 启动读出的图库(字节/快照皆空壳,懒读);首启为空。
   List<ResultImage> initialResults = const [];
+  List<TrashedImage> initialTrash = const [];
   String? initialSelectedId;
   int seq = 0;
   final _clearedInpaintIds = <String>{};
@@ -91,41 +92,34 @@ class GalleryStore {
       }
       seq = (j['seq'] as num?)?.toInt() ?? 0;
       initialSelectedId = j['selectedId'] as String?;
-      if (j['items'] is List) {
-        final out = <ResultImage>[];
-        for (final e in j['items'] as List) {
-          if (e is! Map || e['id'] is! String) continue;
-          final id = e['id'] as String;
-          if (e['inpaintHistoryCleared'] == true) _clearedInpaintIds.add(id);
-          ResultBadge badge = ResultBadge.none;
-          for (final b in ResultBadge.values) {
-            if (b.name == e['badge']) badge = b;
-          }
-          out.add(
-            ResultImage(
-              id: id,
-              width: (e['w'] as num?)?.toInt() ?? 0,
-              height: (e['h'] as num?)?.toInt() ?? 0,
-              seed: (e['seed'] as num?)?.toInt() ?? 0,
-              badge: badge,
-              createdAt: (e['t'] as num?)?.toInt() ?? 0,
-              // 老索引没这键 → -1(不是批次产物)
-              batchIndex: (e['bi'] as num?)?.toInt() ?? -1,
-              inpaintFrom: e['inpaintFrom'] as String?,
-              inpaintHistoryCleared: e['inpaintHistoryCleared'] == true,
-              favorite: e['favorite'] == true,
-              hasInput: e['hasInput'] == true,
+      final seen = <String>{};
+      final trash = <TrashedImage>[];
+      if (j['trash'] is List) {
+        for (final entry in j['trash'] as List) {
+          final image = _parseItem(entry);
+          if (image == null || !seen.add(image.id)) continue;
+          final e = entry as Map;
+          final stamp = _number(e['dt']);
+          trash.add(
+            TrashedImage(
+              image,
+              stamp > 0 ? stamp : DateTime.now().millisecondsSinceEpoch,
+              position: _number(e['position']),
+              beforeId: _validId(e['before']),
+              afterId: _validId(e['after']),
             ),
           );
-          // 索引防抖窗口内被杀时 seq 可能落后于条目 id,取最大防撞车
-          final m = _seqRe.firstMatch(id);
-          if (m != null) {
-            final n = int.parse(m.group(1)!) + 1;
-            if (n > seq) seq = n;
-          }
         }
-        initialResults = List.unmodifiable(await _backfillCreatedAt(out));
       }
+      initialTrash = List.unmodifiable(trash);
+      final items = <ResultImage>[];
+      if (j['items'] is List) {
+        for (final entry in j['items'] as List) {
+          final image = _parseItem(entry);
+          if (image != null && seen.add(image.id)) items.add(image);
+        }
+      }
+      initialResults = List.unmodifiable(await _backfillCreatedAt(items));
       await _includeUnindexedImages();
     } catch (e) {
       logd('[gallery-store] 索引载入失败,改从目录重建: $e');
@@ -133,9 +127,59 @@ class GalleryStore {
     }
   }
 
+  static int _number(Object? value, [int fallback = 0]) =>
+      value is num && value.isFinite ? value.toInt() : fallback;
+
+  static String? _validId(Object? value) =>
+      value is String && RegExp(r'^[a-zA-Z0-9_-]+$').hasMatch(value)
+      ? value
+      : null;
+
+  ResultImage? _parseItem(Object? raw) {
+    if (raw is! Map) return null;
+    final id = _validId(raw['id']);
+    if (id == null) return null;
+    final match = _seqRe.firstMatch(id);
+    final next = match == null ? 0 : int.parse(match[1]!) + 1;
+    if (next > seq) seq = next;
+    if (raw['inpaintHistoryCleared'] == true) _clearedInpaintIds.add(id);
+    return ResultImage(
+      id: id,
+      width: _number(raw['w']),
+      height: _number(raw['h']),
+      seed: _number(raw['seed']),
+      badge:
+          ResultBadge.values.where((b) => b.name == raw['badge']).firstOrNull ??
+          ResultBadge.none,
+      createdAt: _number(raw['t']),
+      batchIndex: _number(raw['bi'], -1),
+      inpaintFrom: _validId(raw['inpaintFrom']),
+      inpaintHistoryCleared: raw['inpaintHistoryCleared'] == true,
+      favorite: raw['favorite'] == true,
+      hasInput: raw['hasInput'] == true,
+    );
+  }
+
+  static Map<String, Object?> _itemJson(ResultImage r) => {
+    'id': r.id,
+    'w': r.width,
+    'h': r.height,
+    'seed': r.seed,
+    'badge': r.badge.name,
+    't': r.createdAt,
+    if (r.batchIndex >= 0) 'bi': r.batchIndex,
+    if (r.inpaintFrom != null) 'inpaintFrom': r.inpaintFrom,
+    if (r.inpaintHistoryCleared) 'inpaintHistoryCleared': true,
+    if (r.favorite) 'favorite': true,
+    'hasInput': r.hasInput,
+  };
+
   /// 原图完成写入而索引未提交时，补回新增图片并推进发号器。
   Future<void> _includeUnindexedImages() async {
-    final known = initialResults.map((r) => r.id).toSet();
+    final known = {
+      for (final r in initialResults) r.id,
+      for (final t in initialTrash) t.image.id,
+    };
     final extra = <ResultImage>[];
     await for (final entry in _imagesDir.list()) {
       if (entry is! File || !entry.path.endsWith('.png')) continue;
@@ -244,6 +288,7 @@ class GalleryStore {
       logd('[gallery-store] 目录重建失败: $e');
     }
     initialResults = List.unmodifiable(out);
+    initialTrash = const [];
     initialSelectedId = out.isEmpty ? null : out.last.id;
     // 关键一行:发号器只进不退,否则新图会覆盖盘上老图
     if (maxSeq > seq) seq = maxSeq;
@@ -276,6 +321,16 @@ class GalleryStore {
   // ---- 写入(串行队列,互不重叠) ----
 
   Future<void> _chain = Future.value();
+  Future<void> _stateChanges = Future.value();
+
+  /// Exit waits for user-visible trash transitions before flushing the index.
+  Future<void> get pendingChanges => _stateChanges;
+  void trackChange<T>(Future<T> work) {
+    _stateChanges = Future.wait<void>([
+      _stateChanges,
+      work.then<void>((_) {}, onError: (Object _) {}),
+    ]).then((_) {});
+  }
 
   /// 写入队列排空(存储管理在清空后等它,再做 GC/重扫)。
   Future<void> get idle => _chain;
@@ -320,16 +375,25 @@ class GalleryStore {
   // 索引防抖:新增/点选共用,窗口内合并成一次全量重写
   Timer? _idxTimer;
   List<ResultImage>? _idxItems;
+  List<TrashedImage> _idxTrash = const [];
+  int _idxRevision = 0;
   String? _idxSelected;
   int _idxSeq = 0;
   Future<void> _indexWrite = Future.value();
 
   void scheduleIndex({
     required List<ResultImage> results,
+    List<TrashedImage>? trash,
     required String? selectedId,
     required int seq,
   }) {
     initialResults = List.unmodifiable(results.map(_normalizedResult));
+    initialTrash = List.unmodifiable([
+      for (final t in trash ?? initialTrash)
+        t.withImage(_normalizedResult(t.image)),
+    ]);
+    _idxTrash = initialTrash;
+    _idxRevision++;
     initialSelectedId = selectedId;
     this.seq = seq;
     _idxItems = initialResults;
@@ -347,10 +411,26 @@ class GalleryStore {
     _idxTimer?.cancel();
     final selected = _idxSelected;
     final seq = _idxSeq;
-    return _indexWrite = _enqueue(() async {
-      // 索引是最不能半截的一个文件:坏了会让整库看起来是空的(见 S1C-01)
-      await _writeIndex(items, selected, seq);
+    final trash = _idxTrash;
+    final revision = _idxRevision;
+    final work = _enqueue(() async {
+      try {
+        await _writeIndex(items, selected, seq, trash: trash);
+      } catch (_) {
+        // Retain a failed snapshot only if a newer edit has not superseded it.
+        if (_idxRevision == revision && _idxItems == null) {
+          _idxItems = items;
+          _idxTrash = trash;
+          _idxSelected = selected;
+          _idxSeq = seq;
+        }
+        rethrow;
+      }
     });
+    _indexWrite = work;
+    // Timer-triggered flushes are observed here; explicit callers still fail.
+    unawaited(work.then<void>((_) {}, onError: (Object _) {}));
+    return work;
   }
 
   ResultImage _normalizedResult(ResultImage result) =>
@@ -361,29 +441,23 @@ class GalleryStore {
   Future<void> _writeIndex(
     List<ResultImage> items,
     String? selected,
-    int seq,
-  ) => writeStringAtomic(
+    int seq, {
+    List<TrashedImage>? trash,
+  }) => writeStringAtomic(
     _indexFile,
     jsonEncode({
       'v': 1,
       'seq': seq,
       'selectedId': ?selected,
-      'items': [
-        for (final r in items.map(_normalizedResult))
+      'items': [for (final r in items.map(_normalizedResult)) _itemJson(r)],
+      'trash': [
+        for (final t in trash ?? initialTrash)
           {
-            'id': r.id,
-            'w': r.width,
-            'h': r.height,
-            'seed': r.seed,
-            'badge': r.badge.name,
-            't': r.createdAt,
-            // 批次内位置。只有批次产物才写,单张不占位 ——
-            // 这张索引每次出图都要整份重写,能省一个键是一个。
-            if (r.batchIndex >= 0) 'bi': r.batchIndex,
-            if (r.inpaintFrom != null) 'inpaintFrom': r.inpaintFrom,
-            if (r.inpaintHistoryCleared) 'inpaintHistoryCleared': true,
-            if (r.favorite) 'favorite': true,
-            'hasInput': r.hasInput,
+            ..._itemJson(_normalizedResult(t.image)),
+            'dt': t.deletedAt,
+            'position': t.position,
+            'before': ?t.beforeId,
+            'after': ?t.afterId,
           },
       ],
     }),
@@ -477,9 +551,12 @@ class GalleryStore {
   /// 串行队列保证在途的 persistResult 先完成再删。
   Future<void> clearAllFiles({required int seq}) {
     initialResults = const [];
+    initialTrash = const [];
     initialSelectedId = null;
     this.seq = seq;
     _idxItems = null;
+    _idxTrash = const [];
+    _idxRevision++;
     _idxTimer?.cancel();
     return _indexWrite = _enqueue(() async {
       for (final d in [_imagesDir, _thumbsDir, _inputsDir]) {
@@ -539,7 +616,7 @@ class GalleryStore {
   }
 
   Future<InpaintHistoryInventory> inspectInpaintHistory() => _enqueue(() async {
-    final results = List<ResultImage>.of(initialResults);
+    final results = [...initialResults, for (final t in initialTrash) t.image];
     final inputs = await _historyInputs();
     return InpaintHistoryInventory(
       {
@@ -556,7 +633,7 @@ class GalleryStore {
   /// Serialized with result writes. The explicit marker is committed first:
   /// interrupted cleanup can leave extra bytes, but cannot resurrect "旧的".
   Future<InpaintHistoryRemoval> clearInpaintHistory() => _enqueue(() async {
-    final results = List<ResultImage>.of(initialResults);
+    final results = [...initialResults, for (final t in initialTrash) t.image];
     final inputs = await _historyInputs();
     final ids = {
       for (final input in inputs)
@@ -573,6 +650,10 @@ class GalleryStore {
       rethrow;
     }
     initialResults = List.unmodifiable(initialResults.map(_normalizedResult));
+    initialTrash = List.unmodifiable([
+      for (final t in initialTrash) t.withImage(_normalizedResult(t.image)),
+    ]);
+    _idxTrash = initialTrash;
     if (_idxItems != null) {
       _idxItems = List.unmodifiable(_idxItems!.map(_normalizedResult));
     }

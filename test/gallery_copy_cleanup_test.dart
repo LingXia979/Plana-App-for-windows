@@ -174,7 +174,7 @@ void main() {
       expect(await outputs(), hasLength(2));
       expect(await File(report.savedPaths[original.id]!).exists(), isTrue);
       // Deleting one copy must not remove the other copy either.
-      await gallery.deleteResults([copies.copiedIds.first]);
+      await gallery.deleteResultsVerified([copies.copiedIds.first]);
       expect(c.read(galleryProvider).results.single.id, copies.copiedIds.last);
       expect(await outputs(), hasLength(1));
     },

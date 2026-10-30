@@ -63,7 +63,7 @@ void main() {
           '$path.bak',
         ).writeAsBytes(path.endsWith('.png') ? bytes : [123, 125]);
       }
-      expect(await gallery.deleteResults([image.id]), {image.id});
+      expect(await gallery.deleteResultsVerified([image.id]), {image.id});
       await stores.flushForExit();
       final reopened = await AppStores.open(rootOverride: root);
       expect(reopened.gallery.initialResults, isEmpty);
@@ -90,11 +90,11 @@ void main() {
       );
       final original = File('${root.path}/gallery/images/${image.id}.png');
       final blocked = await Directory('${original.path}.tmp').create();
-      expect(await gallery.deleteResults([image.id]), isEmpty);
+      expect(await gallery.deleteResultsVerified([image.id]), isEmpty);
       expect(await original.exists(), isTrue);
       expect(container.read(galleryProvider).results.single.id, image.id);
       await blocked.delete();
-      expect(await gallery.deleteResults([image.id]), {image.id});
+      expect(await gallery.deleteResultsVerified([image.id]), {image.id});
     },
   );
 }

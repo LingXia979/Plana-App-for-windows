@@ -14,6 +14,7 @@ import '../generate/generation_controller.dart'
 import 'albums/album_models.dart';
 import 'albums/album_state.dart';
 import 'gallery_search.dart';
+import 'gallery_dates.dart';
 import 'models.dart';
 
 final galleryProvider = NotifierProvider<GalleryNotifier, GalleryState>(
@@ -82,10 +83,15 @@ class GalleryZoomedNotifier extends Notifier<bool> {
 }
 
 class GalleryState {
-  const GalleryState({required this.results, required this.selectedId});
+  const GalleryState({
+    required this.results,
+    required this.selectedId,
+    this.trash = const [],
+  });
 
   final List<ResultImage> results;
   final String? selectedId;
+  final List<TrashedImage> trash;
 
   bool get isEmpty => results.isEmpty;
 
@@ -101,8 +107,10 @@ class GalleryState {
     List<ResultImage>? results,
     String? selectedId,
     bool clearSelection = false,
+    List<TrashedImage>? trash,
   }) => GalleryState(
     results: results ?? this.results,
+    trash: trash ?? this.trash,
     selectedId: clearSelection ? null : selectedId ?? this.selectedId,
   );
 }
@@ -113,6 +121,14 @@ class GalleryNotifier extends Notifier<GalleryState> {
   int _clearRevision = 0;
   int get selectionRevision => _selectionRevision;
   final _writes = <String, Future<void>>{};
+  Future<void> _changes = Future.value();
+
+  Future<T> _serializeChange<T>(Future<T> Function() action) {
+    final work = _changes.then((_) => action());
+    _changes = work.then<void>((_) {}, onError: (Object _) {});
+    ref.read(appStoresProvider).gallery.trackChange(work);
+    return work;
+  }
 
   /// 最近这么多张保留内存字节;更旧的卸掉(盘上有,再看懒读),
   /// 挂机循环几百张不再无限吃 RAM。
@@ -127,9 +143,13 @@ class GalleryNotifier extends Notifier<GalleryState> {
     ref.listen(storageSettingsProvider, (_, next) {
       if (next.hasValue) unawaited(enforceCap());
     });
+    Future.microtask(() {
+      if (ref.mounted) unawaited(purgeExpiredTrash());
+    });
     return GalleryState(
       results: store.initialResults,
       selectedId: store.initialSelectedId,
+      trash: store.initialTrash,
     );
   }
 
@@ -138,7 +158,7 @@ class GalleryNotifier extends Notifier<GalleryState> {
     final cap = ref.read(storageSettingsProvider).value?.galleryCap ?? 0;
     if (cap <= 0 || state.results.length <= cap) return;
     final drop = state.results.sublist(cap);
-    await deleteResults([for (final r in drop) r.id]);
+    await deleteResultsVerified([for (final r in drop) r.id]);
   }
 
   void _persistIndex() {
@@ -147,6 +167,7 @@ class GalleryNotifier extends Notifier<GalleryState> {
         .gallery
         .scheduleIndex(
           results: state.results,
+          trash: state.trash,
           selectedId: state.selectedId,
           seq: _seq,
         );
@@ -161,11 +182,16 @@ class GalleryNotifier extends Notifier<GalleryState> {
   }
 
   void toggleFavorite(String id) {
+    final image = state.results.where((r) => r.id == id).firstOrNull;
+    if (image != null) setFavorite(id, !image.favorite);
+  }
+
+  void setFavorite(String id, bool favorite) {
     if (!state.results.any((r) => r.id == id)) return;
     state = state.copyWith(
       results: [
         for (final r in state.results)
-          r.id == id ? r.withFavorite(!r.favorite) : r,
+          r.id == id ? r.withFavorite(favorite) : r,
       ],
     );
     _persistIndex();
@@ -440,24 +466,166 @@ class GalleryNotifier extends Notifier<GalleryState> {
     }
   }
 
-  /// 删除单张或多张图片:状态移除 + 盘上文件一并删。
-  /// 删除当前图片时，沿当前图库顺序选下一张；没有下一张则选上一张。
-  Future<Set<String>> deleteResults(List<String> ids) async {
+  /// 普通删除保留文件和归属。索引写失败时保留内存更改供重试。
+  Future<Set<String>> deleteResults(List<String> ids, {DateTime? now}) async {
+    // Reserve the user's selection intent before awaiting pending saves.
+    if (ref.mounted && ids.contains(state.selectedId)) _selectionRevision++;
     try {
-      final deleted = await deleteResultsVerified(ids);
-      if (ref.mounted &&
-          ids
-              .toSet()
-              .difference(deleted)
-              .any((id) => state.results.any((r) => r.id == id))) {
-        ref.read(genNoticeProvider.notifier).show('部分图片或作品文件未能删除，已保留记录，请稍后重试');
-      }
-      return deleted;
+      return await _serializeChange(() async {
+        if (!ref.mounted) return <String>{};
+        final want = ids.toSet();
+        final pending = [
+          for (final id in want)
+            if (_writes[id] != null) _writes[id]!,
+        ];
+        await Future.wait(pending);
+        if (!ref.mounted) return <String>{};
+        final store = ref.read(appStoresProvider).gallery;
+        await store.idle;
+        if (!ref.mounted) return <String>{};
+        final images = state.results.where((r) => want.contains(r.id)).toList();
+        // A failed initial save must be retried before discarding cached bytes.
+        for (final image in images) {
+          if (image.bytes != null &&
+              !await store.imageFileForPreview(image.id).exists()) {
+            await store.persistResult(image);
+          }
+        }
+        if (!ref.mounted) return <String>{};
+        final moved = state.results
+            .where((r) => want.contains(r.id))
+            .map((r) => r.id)
+            .toSet();
+        _removeResults(
+          moved.toList(),
+          toTrash: true,
+          deletedAt: now?.millisecondsSinceEpoch,
+        );
+        await store.flushIndex();
+        return moved;
+      });
     } catch (_) {
       if (ref.mounted) {
-        ref.read(genNoticeProvider.notifier).show('删除失败，已保留图片，请稍后重试');
+        ref.read(genNoticeProvider.notifier).show('回收站更改尚未保存，图片仍保留，请检查磁盘后重试');
       }
       return {};
+    }
+  }
+
+  /// Reconstruct relative order through surviving neighbours, including other
+  /// trashed entries. Copies may have old creation dates but a newer position.
+  List<ResultImage> _restoredOrder(Set<String> restore) {
+    final out = List<ResultImage>.of(state.results);
+    final trashById = {for (final t in state.trash) t.image.id: t};
+    // Undo deletion batches newest first. A later batch's neighbours already
+    // exclude earlier deletions; reversing that sequence restores each anchor.
+    final entries = state.trash;
+    for (final t in entries) {
+      if (out.any((r) => r.id == t.image.id)) continue;
+      int anchor(String? id, bool next) {
+        final seen = <String>{};
+        while (id != null && seen.add(id)) {
+          final at = out.indexWhere((r) => r.id == id);
+          if (at >= 0) return at;
+          final other = trashById[id];
+          id = next ? other?.afterId : other?.beforeId;
+        }
+        return -1;
+      }
+
+      var at = anchor(t.afterId, true);
+      if (at < 0) {
+        final before = anchor(t.beforeId, false);
+        if (before >= 0) at = before + 1;
+      }
+      if (at < 0) {
+        at = out.indexWhere(
+          (r) =>
+              r.createdAt < t.image.createdAt ||
+              (r.createdAt == t.image.createdAt &&
+                  (int.tryParse(r.id.replaceFirst('gen', '')) ?? -1) <
+                      (int.tryParse(t.image.id.replaceFirst('gen', '')) ?? -1)),
+        );
+      }
+      out.insert(at < 0 ? out.length : at, t.image);
+    }
+    return [
+      for (final r in out)
+        if (!trashById.containsKey(r.id) || restore.contains(r.id)) r,
+    ];
+  }
+
+  Future<int> restoreTrash(Iterable<String> ids) => _serializeChange(() async {
+    if (!ref.mounted) return 0;
+    final want = ids.toSet();
+    final back = state.trash.where((t) => want.contains(t.image.id)).toList();
+    if (back.isEmpty) return 0;
+    final store = ref.read(appStoresProvider).gallery;
+    for (final t in back) {
+      if (!await store.imageFileForPreview(t.image.id).exists()) {
+        throw StateError('原图不存在，无法恢复；可以重试彻底删除以完成清理');
+      }
+    }
+    if (!ref.mounted) return 0;
+    final results = _restoredOrder(want);
+    state = state.copyWith(
+      results: results,
+      trash: [
+        for (final t in state.trash)
+          if (!want.contains(t.image.id)) t,
+      ],
+    );
+    _persistIndex();
+    await store.flushIndex();
+    return back.length;
+  });
+
+  Future<Set<String>> purgeTrash(Iterable<String> ids, {DateTime? expiredAt}) =>
+      _serializeChange(() async {
+        if (!ref.mounted) return <String>{};
+        final want = ids.toSet();
+        final images = [
+          for (final t in state.trash)
+            if (want.contains(t.image.id) &&
+                (expiredAt == null ||
+                    galleryDaysSince(t.deletedAt, expiredAt) >= kTrashKeepDays))
+              t.image,
+        ];
+        if (images.isEmpty) return <String>{};
+        if (ref.read(appStoresProvider).albums.readOnly) {
+          throw StateError('图库数据需要恢复，暂时不能彻底删除');
+        }
+        final deleted = await _deleteFiles(images);
+        if (!ref.mounted) return deleted;
+        // Keep retryable trash records if membership persistence fails.
+        await ref.read(albumsProvider.notifier).removeImages(deleted);
+        if (!ref.mounted) return deleted;
+        state = state.copyWith(
+          trash: [
+            for (final t in state.trash)
+              if (!deleted.contains(t.image.id)) t,
+          ],
+        );
+        ref.read(gallerySearchProvider.notifier).removeAll(deleted.toList());
+        _persistIndex();
+        await ref.read(appStoresProvider).gallery.flushIndex();
+        return deleted;
+      });
+
+  Future<void> purgeExpiredTrash({DateTime? now}) async {
+    if (!ref.mounted) return;
+    final when = now ?? DateTime.now();
+    final ids = [
+      for (final t in state.trash)
+        if (galleryDaysSince(t.deletedAt, when) >= kTrashKeepDays) t.image.id,
+    ];
+    if (ids.isEmpty) return;
+    try {
+      await purgeTrash(ids, expiredAt: when);
+    } catch (_) {
+      if (ref.mounted) {
+        ref.read(genNoticeProvider.notifier).show('过期图片清理尚未完成，请稍后重试');
+      }
     }
   }
 
@@ -466,11 +634,21 @@ class GalleryNotifier extends Notifier<GalleryState> {
   Future<Set<String>> deleteResultsVerified(
     List<String> ids, {
     bool Function(String id)? canDelete,
-  }) async {
+  }) => _serializeChange(() async {
+    if (!ref.mounted) return <String>{};
     final drop = ids.toSet();
     final images = state.results.where((r) => drop.contains(r.id)).toList();
     if (images.isEmpty) return {};
     if (drop.contains(state.selectedId)) _selectionRevision++;
+    final deleted = await _deleteFiles(images, canDelete: canDelete);
+    if (ref.mounted) _removeResults(deleted.toList());
+    return deleted;
+  });
+
+  Future<Set<String>> _deleteFiles(
+    List<ResultImage> images, {
+    bool Function(String id)? canDelete,
+  }) async {
     final stores = ref.read(appStoresProvider);
     await stores.gallery.idle;
     final managedDeleted = await stores.desktopOutput.deleteResults(
@@ -481,11 +659,14 @@ class GalleryNotifier extends Notifier<GalleryState> {
       managedDeleted.toList(),
       canDelete: canDelete,
     );
-    if (ref.mounted) _removeResults(deleted.toList());
     return deleted;
   }
 
-  void _removeResults(List<String> ids) {
+  void _removeResults(
+    List<String> ids, {
+    bool toTrash = false,
+    int? deletedAt,
+  }) {
     if (ids.isEmpty) return;
     final drop = ids.toSet();
     final keep = [
@@ -524,9 +705,32 @@ class GalleryNotifier extends Notifier<GalleryState> {
       // 删除产生的新选择也优先于仍在异步入库的结果。
       _selectionRevision++;
     }
-    state = GalleryState(results: keep, selectedId: sel);
-    ref.read(gallerySearchProvider.notifier).removeAll(ids);
-    _removeMemberships(ids);
+    final stamp = deletedAt ?? DateTime.now().millisecondsSinceEpoch;
+    final trash = [
+      if (toTrash)
+        for (var i = 0; i < state.results.length; i++)
+          if (drop.contains(state.results[i].id))
+            TrashedImage(
+              state.results[i].stripped(),
+              stamp,
+              position: i,
+              beforeId: i == 0 ? null : state.results[i - 1].id,
+              afterId: i + 1 == state.results.length
+                  ? null
+                  : state.results[i + 1].id,
+            ),
+      ...state.trash,
+    ];
+    state = GalleryState(results: keep, selectedId: sel, trash: trash);
+    if (!toTrash) {
+      ref.read(gallerySearchProvider.notifier).removeAll(ids);
+      _removeMemberships(ids);
+    } else {
+      final preview = ref.read(galleryResultPreviewProvider);
+      if (preview != null && drop.contains(preview.imageId)) {
+        ref.read(galleryResultPreviewProvider.notifier).clear();
+      }
+    }
     _persistIndex();
   }
 
@@ -539,6 +743,12 @@ class GalleryNotifier extends Notifier<GalleryState> {
     ).clear(canClear: canClear);
     if (!ref.mounted) return result;
     state = state.copyWith(
+      trash: [
+        for (final t in state.trash)
+          result.clearedIds.contains(t.image.id)
+              ? t.withImage(t.image.withoutInpaintHistory())
+              : t,
+      ],
       results: [
         for (final image in state.results)
           result.clearedIds.contains(image.id)
@@ -559,7 +769,9 @@ class GalleryNotifier extends Notifier<GalleryState> {
     final albums = ref.read(albumsProvider.notifier);
     _selectionRevision++;
     await deleteResultsVerified(state.results.map((r) => r.id).toList());
-    if (!ref.mounted || state.results.isNotEmpty) {
+    if (!ref.mounted) return;
+    await purgeTrash(state.trash.map((t) => t.image.id).toList());
+    if (!ref.mounted || state.results.isNotEmpty || state.trash.isNotEmpty) {
       throw StateError('部分图片或作品文件未能删除，请稍后重试');
     }
     ref.read(gallerySearchProvider.notifier).clear();

@@ -114,6 +114,7 @@ Future<bool> confirmGalleryBatchDelete(BuildContext context, int count) async {
         context: context,
         builder: (dialogContext) => AlertDialog(
           title: Text('删除 $count 张作品?'),
+          content: const Text('移入回收站后保留 30 天，可恢复或撤销。'),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(dialogContext).pop(false),

@@ -138,7 +138,10 @@ class AppStores {
     await workspace.load();
     await gallery.load();
     await albums.load(
-      liveImages: gallery.initialResults.map((r) => r.id).toSet(),
+      liveImages: {
+        for (final r in gallery.initialResults) r.id,
+        for (final t in gallery.initialTrash) t.image.id,
+      },
     );
     await ledger.load();
     await assistant.load();
@@ -196,9 +199,11 @@ class AppStores {
 
   /// 普通退出和更新退出都等待真正落盘，不能只触发队列后立即结束进程。
   Future<void> flushForExit() async {
+    await gallery.pendingChanges;
     flushNow();
     await Future.wait([
       workspace.idle,
+      gallery.flushIndex(),
       gallery.idle,
       ledger.idle,
       assistant.idle,

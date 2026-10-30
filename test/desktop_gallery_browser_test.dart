@@ -412,14 +412,17 @@ void main() {
         ],
       );
       await mount(tester);
-      expect(find.text('0 张作品'), findsNWidgets(6));
+      expect(
+        find.text('0 张作品'),
+        findsNWidgets(8),
+      ); // Six albums and two fixed entries.
       expect(find.text('128 张作品'), findsOneWidget);
       expect(data.membershipChecks, 0);
       expect(data.membershipLookups, images.length);
 
       await tester.enterText(key('desktop-gallery-search'), 'Empty');
       await tester.pumpAndSettle();
-      expect(find.text('0 张作品'), findsNWidgets(6));
+      expect(find.text('0 张作品'), findsNWidgets(8));
       expect(data.membershipChecks, 0);
       expect(
         data.membershipLookups,

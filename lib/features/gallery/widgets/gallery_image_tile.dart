@@ -28,10 +28,12 @@ class GalleryImageTile extends StatelessWidget {
     this.mouseDragSelect = false,
     this.longPressDuration = kLongPressTimeout,
     this.fit = BoxFit.cover,
+    this.showTime = true,
   });
 
   final ResultImage result;
   final BoxFit fit;
+  final bool showTime;
   final bool selected;
   final bool picked;
   final bool selecting;
@@ -143,7 +145,9 @@ class GalleryImageTile extends StatelessWidget {
                                     ),
                                   ),
                                 ),
-                              if (galleryTimeBadge(result.createdAt)
+                              if (showTime
+                                      ? galleryTimeBadge(result.createdAt)
+                                      : ''
                                   case final String t when t.isNotEmpty)
                                 Positioned(
                                   left: 5,

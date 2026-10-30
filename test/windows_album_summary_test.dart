@@ -8,6 +8,7 @@ import 'package:image/image.dart' as img;
 import 'package:plana_app/core/platform/desktop.dart';
 import 'package:plana_app/core/store/app_stores.dart';
 import 'package:plana_app/features/gallery/albums/album_state.dart';
+import 'package:plana_app/features/gallery/albums/album_models.dart';
 import 'package:plana_app/features/gallery/gallery_state.dart';
 
 void main() {
@@ -189,7 +190,7 @@ void main() {
       }
       await albums.clearAll();
       final cleared = container.read(albumSummariesProvider);
-      expect(cleared.keys, [null]);
+      expect(cleared.keys, [null, favoritesId, trashId]);
       expect(cleared[null]!.count, 3);
       expect(cleared[null]!.cover, isNull);
     },

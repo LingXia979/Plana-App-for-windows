@@ -42,7 +42,7 @@ class DesktopLibraryNotifier extends Notifier<DesktopLibrarySelection> {
     _scheduleMidnight();
     ref.onDispose(() => _midnight?.cancel());
     return DesktopLibrarySelection(
-      choice: choice,
+      choice: isFixedGallery(choice) ? '' : choice,
       day: desktopDayKey(DateTime.now()),
     );
   }
@@ -66,9 +66,10 @@ class DesktopLibraryNotifier extends Notifier<DesktopLibrarySelection> {
   }
 
   void choose(String? albumId, {bool automatic = false}) {
+    if (isFixedGallery(albumId)) throw StateError('收藏与回收站不能作为生成保存目标');
     final choice = automatic ? 'auto' : albumId ?? '';
     state = DesktopLibrarySelection(
-      choice: choice,
+      choice: isFixedGallery(choice) ? '' : choice,
       day: desktopDayKey(DateTime.now()),
     );
     unawaited(

@@ -312,7 +312,7 @@ void main() {
     expect([for (final r in stores2.gallery.initialResults) r.id], [b.id]);
   });
 
-  test('批量删除:状态移除、文件同删、选中移到相邻图片', () async {
+  test('批量删除:移入回收站保留文件、选中移到相邻图片', () async {
     final root = Directory.systemTemp.createTempSync('plana_delete');
     addTearDown(() async {
       for (var i = 0; i < 10; i++) {
@@ -343,7 +343,7 @@ void main() {
     await stores.gallery.idle;
     expect(
       File('${root.path}/gallery/images/${ids[3]}.png').existsSync(),
-      isFalse,
+      isTrue,
     );
     expect(
       File('${root.path}/gallery/images/${ids[2]}.png').existsSync(),
@@ -365,6 +365,10 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 200));
     final stores2 = await AppStores.open(rootOverride: root);
     expect(stores2.gallery.initialResults, isEmpty);
+    expect(
+      stores2.gallery.initialTrash.map((t) => t.image.id).toSet(),
+      ids.toSet(),
+    );
   });
 
   test('图库上限:超出裁最旧,文件同删', () async {

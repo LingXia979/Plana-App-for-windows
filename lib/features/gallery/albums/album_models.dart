@@ -1,6 +1,12 @@
 import 'package:flutter/foundation.dart' show setEquals;
 
 const allPhotosName = '全部作品';
+// Virtual scopes cannot collide with persisted user album IDs.
+const favoritesId = '@favorites';
+const favoritesName = '收藏';
+const trashId = '@trash';
+const trashName = '回收站';
+bool isFixedGallery(String? id) => id == favoritesId || id == trashId;
 bool validGalleryId(String id) => RegExp(r'^[a-zA-Z0-9_-]+$').hasMatch(id);
 
 /// null 是明确的“仅全部作品”；参数本身为 null 才表示读取当前设置。
@@ -91,7 +97,11 @@ class AlbumsData {
   GalleryAlbum? album(String? id) =>
       albums.where((a) => a.id == id).firstOrNull;
   bool exists(String? id) => id == null || _albumIds.contains(id);
-  String name(String? id) => album(id)?.name ?? allPhotosName;
+  String name(String? id) => id == favoritesId
+      ? favoritesName
+      : id == trashId
+      ? trashName
+      : album(id)?.name ?? allPhotosName;
   bool contains(String? albumId, String imageId) =>
       albumId == null ||
       (exists(albumId) && (memberships[imageId]?.contains(albumId) ?? false));

@@ -22,6 +22,8 @@ import '../../generate/generation_controller.dart';
 import '../../desktop/desktop_library_state.dart';
 import '../gallery_date_filter.dart';
 import '../albums/album_state.dart';
+import '../albums/album_models.dart';
+import 'gallery_trash_actions.dart';
 import '../albums/album_ui.dart';
 import '../albums/album_organize_sheet.dart';
 import '../albums/gallery_transfer_dialog.dart';
@@ -867,7 +869,7 @@ class GalleryGridContentState extends ConsumerState<GalleryGridContent>
       final change = await showAlbumOrganize(
         context,
         Set.of(_picked),
-        sourceAlbum: _scope,
+        sourceAlbum: isFixedGallery(_scope) ? null : _scope,
       );
       if (change == null || !mounted) return;
       _picked.clear();
@@ -901,7 +903,7 @@ class GalleryGridContentState extends ConsumerState<GalleryGridContent>
         context,
         Set.of(only ?? _picked),
         copy: copy,
-        sourceAlbum: _scope,
+        sourceAlbum: isFixedGallery(_scope) ? null : _scope,
       );
       if (change != null && mounted && only == null) _picked.clear();
     } finally {
@@ -1116,8 +1118,7 @@ class GalleryGridContentState extends ConsumerState<GalleryGridContent>
               selecting: _selecting,
               mouseDragSelect: widget.desktop || widget.browser != null,
               onFavorite: widget.desktop
-                  ? () =>
-                        ref.read(galleryProvider.notifier).toggleFavorite(r.id)
+                  ? () => toggleGalleryFavorite(context, r.id)
                   : null,
               onTap: () {
                 if (_selecting) {
@@ -1607,6 +1608,7 @@ class GalleryGridContentState extends ConsumerState<GalleryGridContent>
       );
       if (mounted &&
           report != null &&
+          !isFixedGallery(albumId) &&
           !ref.read(albumsProvider).exists(albumId)) {
         widget.browser?.onBack();
       }
@@ -1743,6 +1745,8 @@ class GalleryGridContentState extends ConsumerState<GalleryGridContent>
         await _transferPicked(copy: false, only: {id});
       case 'copy':
         await _transferPicked(copy: true, only: {id});
+      case 'favorite':
+        await toggleGalleryFavorite(context, id);
       case 'delete':
         await _deleteOne(id);
     }
@@ -1844,19 +1848,7 @@ class GalleryGridContentState extends ConsumerState<GalleryGridContent>
   /// 再点删除,本身已是三步;弹窗只是给这条路再加一次点击。
   /// 批量删除那条仍然确认:一次十几张,误触代价不在一个量级。
   Future<void> _deleteOne(String id) async {
-    final deleted = await ref.read(galleryProvider.notifier).deleteResults([
-      id,
-    ]);
-    if (!mounted) return;
-    if (!widget.embedded && ref.read(galleryProvider).results.isEmpty) {
-      _close(); // 删空了,弹层没得看
-      return;
-    }
-    hintSnack(
-      context,
-      deleted.contains(id) ? '已删除' : '未能删除，请稍后重试',
-      icon: Icons.delete_outline,
-    );
+    await moveGalleryImagesToTrash(context, [id]);
   }
 
   Future<void> _deletePicked() async {
@@ -1865,17 +1857,8 @@ class GalleryGridContentState extends ConsumerState<GalleryGridContent>
     if (!await confirmGalleryBatchDelete(context, ids.length) || !mounted) {
       return;
     }
-    final deleted = await ref.read(galleryProvider.notifier).deleteResults(ids);
-    if (!mounted) return;
-    _exitSelect();
-    if (!widget.embedded && ref.read(galleryProvider).results.isEmpty) {
-      _close(); // 删空了,弹层没得看
-    }
-    hintSnack(
-      context,
-      '已删除 ${deleted.length} 张${deleted.length < ids.length ? '，其余图片已保留' : ''}',
-      icon: Icons.delete_outline,
-    );
+    await moveGalleryImagesToTrash(context, ids);
+    if (mounted) _exitSelect();
   }
 
   @override
@@ -1902,7 +1885,9 @@ class GalleryGridContentState extends ConsumerState<GalleryGridContent>
         if (mounted && _ctrl.hasClients) _ctrl.jumpTo(0);
       });
     }
-    final results = browser == null || scope == null
+    final results = scope == favoritesId
+        ? state.results.where((r) => r.favorite).toList()
+        : browser == null || scope == null
         ? state.results
         : state.results.where((r) => albums.contains(scope, r.id)).toList();
     final search = ref.watch(gallerySearchProvider);
@@ -2683,7 +2668,7 @@ class _LiftedThumb extends ConsumerWidget {
   static const _menuW = 200.0;
   static const _itemH = 46.0;
   static const _dividerH = 9.0;
-  double get _menuH => _itemH * (desktop ? 5 : 4) + _dividerH + 16;
+  double get _menuH => _itemH * (desktop ? 7 : 5) + _dividerH + 16;
 
   /// 抬起的图占「可用框」(去掉边距与菜单之后那块)的面积比例。
   static const _fill = .42;
@@ -2825,6 +2810,12 @@ class _LiftedThumb extends ConsumerWidget {
           const SizedBox(height: 8),
           _item(context, Icons.input, '导入', 'import'),
           _item(context, Icons.download, '保存', 'save'),
+          _item(
+            context,
+            result.favorite ? Icons.favorite : Icons.favorite_border,
+            result.favorite ? '取消收藏' : '收藏',
+            'favorite',
+          ),
           // 「复制到剪贴板」和下面那颗「复制」(复制进别的图库)是两回事,
           // 名字得分开写 —— 挨着排已经够近了,再同名就只能靠试。
           if (desktop)

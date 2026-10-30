@@ -6,6 +6,8 @@ import '../../core/theme/app_theme.dart';
 import '../gallery/albums/album_cover_dialog.dart';
 import '../gallery/albums/album_deletion.dart';
 import '../gallery/albums/album_state.dart';
+import '../gallery/albums/album_models.dart';
+import '../gallery/widgets/gallery_trash_actions.dart';
 import '../gallery/albums/album_ui.dart' show albumError, showAlbumName;
 import '../gallery/gallery_state.dart';
 import '../generate/generation_controller.dart';
@@ -24,7 +26,11 @@ class DesktopAlbumMenuController {
     String? albumId,
     Offset position,
   ) async {
-    if (_busy) return;
+    if (_busy || albumId == favoritesId) return;
+    if (albumId == trashId) {
+      await showGalleryTrashMenu(context, position);
+      return;
+    }
     _busy = true;
     final container = ProviderScope.containerOf(context, listen: false);
     try {

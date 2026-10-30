@@ -5,6 +5,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/theme/app_theme.dart';
 import '../gallery/albums/album_state.dart';
+import '../gallery/albums/album_models.dart';
+import '../gallery/widgets/gallery_trash_content.dart';
 import '../gallery/albums/album_ui.dart' show AlbumCoverImage, showAlbumName;
 import '../gallery/gallery_date_filter.dart';
 import '../gallery/gallery_search.dart';
@@ -55,7 +57,8 @@ class _DesktopGalleryBrowserState extends ConsumerState<DesktopGalleryBrowser>
 
   void _open(String? albumId) {
     // 切库影响浏览和后续生成；已提交任务继续跟随并保存到原目标。
-    if (ref.read(desktopLibraryProvider).albumId != albumId) {
+    if (!isFixedGallery(albumId) &&
+        ref.read(desktopLibraryProvider).albumId != albumId) {
       ref.read(desktopLibraryProvider.notifier).choose(albumId);
       if (ref.read(generationProvider).selected == null) {
         ref.read(galleryResultPreviewProvider.notifier).clear();
@@ -117,27 +120,35 @@ class _DesktopGalleryBrowserState extends ConsumerState<DesktopGalleryBrowser>
           borderRadius: BorderRadius.circular(16),
           child: Padding(
             padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 4),
-            child: GalleryGridContent(
-              key: ValueKey(
-                'desktop-gallery-content-${location.albumId ?? 'all'}',
-              ),
-              desktop: true,
-              embedded: true,
-              browser: GalleryGridBrowser(
-                albumId: location.albumId,
-                title: title,
-                onBack: () => ref
-                    .read(desktopGalleryLocationProvider.notifier)
-                    .open(null, overview: true),
-                onOpenImage: (images, index) => showDesktopImageViewer(
-                  context,
-                  images: images,
-                  index: index,
-                  libraryName: title,
-                  sourceAlbum: location.albumId,
-                ),
-              ),
-            ),
+            child: location.albumId == trashId
+                ? GalleryTrashContent(
+                    onBack: () => ref
+                        .read(desktopGalleryLocationProvider.notifier)
+                        .open(null, overview: true),
+                  )
+                : GalleryGridContent(
+                    key: ValueKey(
+                      'desktop-gallery-content-${location.albumId ?? 'all'}',
+                    ),
+                    desktop: true,
+                    embedded: true,
+                    browser: GalleryGridBrowser(
+                      albumId: location.albumId,
+                      title: title,
+                      onBack: () => ref
+                          .read(desktopGalleryLocationProvider.notifier)
+                          .open(null, overview: true),
+                      onOpenImage: (images, index) => showDesktopImageViewer(
+                        context,
+                        images: images,
+                        index: index,
+                        libraryName: title,
+                        sourceAlbum: isFixedGallery(location.albumId)
+                            ? null
+                            : location.albumId,
+                      ),
+                    ),
+                  ),
           ),
         ),
       );
@@ -158,10 +169,13 @@ class _DesktopGalleryBrowserState extends ConsumerState<DesktopGalleryBrowser>
     }
     final entries = [
       (id: null, name: '全部作品', createdAt: all.firstOrNull?.createdAt ?? 0),
+      (id: favoritesId, name: favoritesName, createdAt: 0),
       for (final album in albums.albums)
         (id: album.id, name: album.name, createdAt: album.createdAt),
+      (id: trashId, name: trashName, createdAt: 0),
     ];
     final libraries = entries.where((entry) {
+      if (isFixedGallery(entry.id)) return true;
       final timeMatch =
           _date.kind == GalleryDateKind.all ||
           dateHits.contains(entry.id) ||
@@ -341,7 +355,11 @@ class _GalleryTile extends StatelessWidget {
             Row(
               children: [
                 Icon(
-                  Icons.folder_outlined,
+                  albumId == favoritesId
+                      ? Icons.favorite_border
+                      : albumId == trashId
+                      ? Icons.delete_outline
+                      : Icons.folder_outlined,
                   size: 16,
                   color: context.scheme.primary,
                 ),
