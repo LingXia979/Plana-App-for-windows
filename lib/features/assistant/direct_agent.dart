@@ -735,11 +735,13 @@ Stream<AgentDelta> directModelStream(
     stream: stream,
   );
   final req = http.Request('POST', uri)
-    ..headers.addAll({
-      'Content-Type': 'application/json',
-      'Accept': 'text/event-stream',
-      ...headers,
-    })
+    ..headers.addAll(
+      e.withHeaders({
+        'Content-Type': 'application/json',
+        'Accept': 'text/event-stream',
+        ...headers,
+      }),
+    )
     ..bodyBytes = utf8.encode(jsonEncode(body));
 
   final http.StreamedResponse resp;
@@ -753,7 +755,9 @@ Stream<AgentDelta> directModelStream(
 
   if (resp.statusCode < 200 || resp.statusCode >= 300) {
     final raw = await resp.stream.bytesToString().timeout(timeout);
-    throw BackendException(_errorOf(_tryJson(raw), resp.statusCode));
+    throw BackendException(
+      e.redactSecrets(_errorOf(_tryJson(raw), resp.statusCode)),
+    );
   }
   final Stream<String> lines;
   if (stream &&
@@ -791,7 +795,7 @@ Stream<AgentDelta> directModelStream(
     final frame = _tryJson(data);
     // Claude 的报错是流中间的一帧,不是 HTTP 状态码
     if (frame is Map && frame['type'] == 'error') {
-      throw BackendException(_errorOf(frame, resp.statusCode));
+      throw BackendException(e.redactSecrets(_errorOf(frame, resp.statusCode)));
     }
     final d = directDelta(e.format, frame);
     if (d.text.isEmpty && d.reasoning.isEmpty) continue;

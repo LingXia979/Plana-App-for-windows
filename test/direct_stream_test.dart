@@ -251,6 +251,24 @@ void main() {
       expect(r.raw, '好的');
     });
 
+    test('自定义请求头随请求发出,同名覆盖默认头', () async {
+      late Map<String, String> sent;
+      final c = _streamingClient(
+        _sse(['{"choices":[{"delta":{"content":"好的"}}]}']),
+        onRequest: (req, _) => sent = req.headers,
+      );
+      await _run(
+        c,
+        _ep(
+          AgentApiFormat.openai,
+        ).copyWith(headers: {'X-Title': 'Plana', 'authorization': 'Token t'}),
+      );
+
+      expect(sent['X-Title'], 'Plana');
+      expect(sent['Authorization'], 'Token t');
+      expect(sent['Content-Type'], 'application/json');
+    });
+
     test('中转不认流式:整段收完照样出结果', () async {
       final c = _streamingClient(
         jsonEncode({

@@ -2366,6 +2366,54 @@ void main() {
       );
     });
 
+    test('请求头:按行解析,坏行报行号,存得下也读得回来', () {
+      final ok = parseHeaderLines(
+        'HTTP-Referer: https://plana.test\n\n  X-Title : Plana \nx-title: P2',
+      );
+      expect(ok.bad, isNull);
+      expect(ok.headers, {
+        'HTTP-Referer': 'https://plana.test',
+        'x-title': 'P2',
+      });
+      expect(parseHeaderLines('A: 1\nno colon').bad, 2);
+      expect(parseHeaderLines('Bad Name: 1').bad, 1);
+      expect(parseHeaderLines('X-Title: 中文').bad, 1);
+      expect(
+        parseHeaderLines(formatHeaderLines(ok.headers)).headers,
+        ok.headers,
+      );
+
+      const e = CustomEndpoint(
+        id: 'x',
+        name: '',
+        format: AgentApiFormat.openai,
+        baseUrl: '',
+        apiKey: 'k',
+        model: 'm',
+      );
+      expect(e.toJson().containsKey('headers'), isFalse);
+      final withH = e.copyWith(headers: {'X-A': '1'});
+      expect(CustomEndpoint.fromJson(withH.toJson())!.headers, {'X-A': '1'});
+    });
+
+    test('请求头盖在默认头上,同名不分大小写', () {
+      const e = CustomEndpoint(
+        id: 'x',
+        name: '',
+        format: AgentApiFormat.openai,
+        baseUrl: '',
+        apiKey: 'k',
+        model: 'm',
+        headers: {'authorization': 'Token t', 'X-A': '1'},
+      );
+      expect(e.withHeaders({'Authorization': 'Bearer k', 'Accept': 'x'}), {
+        'Accept': 'x',
+        'authorization': 'Token t',
+        'X-A': '1',
+      });
+      expect(e.copyWith(headers: const {}).withHeaders({'A': '1'}), {'A': '1'});
+    });
+
     test('缺 key 或缺模型都算没填全', () {
       const base = CustomEndpoint(
         id: 'x',

@@ -52,11 +52,41 @@ import 'direct_agent.dart';
 import 'preset_rules.dart';
 import 'session_store.dart';
 
+/// 正在跑时发的那几句:排着,上一轮跑完依次发出去。不落盘。
+///
+/// 发出去时那条用户消息沿用这里的 [id],对话里的气泡原地转正。
+class QueuedAsk {
+  const QueuedAsk({
+    required this.id,
+    required this.text,
+    required this.at,
+    this.images = const [],
+    this.withCanvas = false,
+    required this.sourceCanvasId,
+    required this.sourceState,
+    required this.mode,
+  });
+
+  final String id;
+  final String text;
+
+  /// 排进来的时刻(UNIX 毫秒)。
+  final int at;
+  final List<Uint8List> images;
+
+  /// 排队时冻结来源与内容，等待期间切画布不会改变引用或自动导入目标。
+  final bool withCanvas;
+  final String sourceCanvasId;
+  final GenerateState sourceState;
+  final AssistantMode mode;
+}
+
 class AssistantState {
   const AssistantState({
     this.msgs = const [],
     this.sessions = const [],
     this.running = false,
+    this.queue = const [],
     this.liveTools = const [],
     this.stage = '',
     this.liveText = '',
@@ -80,6 +110,10 @@ class AssistantState {
   final List<ArchivedSession> sessions;
 
   final bool running;
+
+  /// 排着等发的几句(先进先出)。停下或出错后不自动接着发,等用户再按一次发送。
+  /// 队首那句在用户消息真追进 [msgs] 的同一刻才出队。
+  final List<QueuedAsk> queue;
 
   /// 正在跑的那一轮已经查了哪些资料。跑完并进 [AssistantMsg.tools],这里清空。
   final List<ToolTrace> liveTools;
@@ -110,6 +144,7 @@ class AssistantState {
     List<AssistantMsg>? msgs,
     List<ArchivedSession>? sessions,
     bool? running,
+    List<QueuedAsk>? queue,
     List<ToolTrace>? liveTools,
     String? stage,
     String? liveText,
@@ -121,6 +156,7 @@ class AssistantState {
     msgs: msgs ?? this.msgs,
     sessions: sessions ?? this.sessions,
     running: running ?? this.running,
+    queue: queue ?? this.queue,
     liveTools: liveTools ?? this.liveTools,
     stage: stage ?? this.stage,
     liveText: liveText ?? this.liveText,
@@ -264,6 +300,10 @@ class AssistantNotifier extends Notifier<AssistantState> {
   /// 发号作废:取消 / 又发了一次时,回来的旧事件对不上号,整轮丢弃。
   int _seq = 0;
 
+  String? _preparingQueueId;
+
+  bool get _busy => state.running || _preparing;
+
   int _idSeq = 0;
 
   AssistantStore get _store => ref.read(appStoresProvider).assistant;
@@ -308,6 +348,85 @@ class AssistantNotifier extends Notifier<AssistantState> {
   void _set(AssistantState next, {bool persist = true}) {
     state = next;
     if (persist) _store.schedule(next.msgs, next.sessions);
+  }
+
+  // ---- 排队 ----
+
+  /// 发一句。正在跑或前面还排着别的,就排到队尾,按顺序一句句发。
+  Future<void> submit(
+    String text, {
+    Uint8List? image,
+    List<Uint8List> images = const [],
+    bool withCanvas = false,
+    void Function()? onAccepted,
+  }) {
+    final attachments = [?image, ...images];
+    if (text.trim().isEmpty && attachments.isEmpty) return Future.value();
+    // 空闲时沿用即时发送的接纳点：校验/存图失败仍保留输入框。
+    if (!_busy && state.queue.isEmpty) {
+      return send(
+        text,
+        images: attachments,
+        withCanvas: withCanvas,
+        onAccepted: onAccepted,
+      );
+    }
+    if (attachments.length > kAssistantMaxAttachments ||
+        attachments.any((bytes) => bytes.isEmpty)) {
+      return Future.error(
+        StateError('图片附件无效或超过 $kAssistantMaxAttachments 张，未加入队列。'),
+      );
+    }
+    ref.read(editorSessionsProvider).flushPending();
+    final ask = QueuedAsk(
+      id: _newId(),
+      text: text,
+      at: _now,
+      images: List.unmodifiable([
+        for (final bytes in attachments)
+          Uint8List.fromList(bytes).asUnmodifiableView(),
+      ]),
+      withCanvas: withCanvas,
+      sourceCanvasId: ref.read(canvasWorkspaceProvider).activeId,
+      sourceState: ref.read(generateProvider),
+      mode: state.mode,
+    );
+    _set(state.copyWith(queue: [...state.queue, ask]), persist: false);
+    onAccepted?.call();
+    return _drain();
+  }
+
+  /// 停下 / 出错之后接着发排着的。
+  Future<void> resumeQueue() => _drain();
+
+  void unqueue(String id) {
+    _set(
+      state.copyWith(
+        queue: [
+          for (final q in state.queue)
+            if (q.id != id) q,
+        ],
+      ),
+      persist: false,
+    );
+    // 正在准备的队首也能取消。旧授权/存图完成后由序号检查拦住。
+    if (_preparingQueueId == id) {
+      _seq++;
+      _preparing = false;
+      _preparingQueueId = null;
+      unawaited(_drain());
+    }
+  }
+
+  Future<void> _drain() {
+    if (!ref.mounted || _busy || state.queue.isEmpty) return Future.value();
+    final next = state.queue.first;
+    return _send(
+      next.text,
+      images: next.images,
+      withCanvas: next.withCanvas,
+      queued: next,
+    );
   }
 
   // ---- 发一轮 ----
@@ -491,6 +610,7 @@ class AssistantNotifier extends Notifier<AssistantState> {
     List<Uint8List> images = const [],
     bool withCanvas = false,
     AssistantMsg? replacing,
+    QueuedAsk? queued,
     void Function()? onAccepted,
   }) async {
     if (state.running || _preparing) return;
@@ -502,10 +622,19 @@ class AssistantNotifier extends Notifier<AssistantState> {
         : original.indexOf(replacing);
     if (replaceAt < 0) return;
     ref.read(editorSessionsProvider).flushPending();
-    final sourceCanvasId = ref.read(canvasWorkspaceProvider).activeId;
-    final sourceState = ref.read(generateProvider);
+    final sourceCanvasId =
+        queued?.sourceCanvasId ?? ref.read(canvasWorkspaceProvider).activeId;
+    final GenerateState sourceState =
+        queued?.sourceState ?? ref.read(generateProvider);
     _preparing = true;
-    int? startedSeq;
+    _preparingQueueId = queued?.id;
+    final seq = ++_seq;
+    bool valid() =>
+        ref.mounted &&
+        seq == _seq &&
+        identical(state.msgs, original) &&
+        !state.running &&
+        (queued == null || state.queue.any((q) => q.id == queued.id));
     try {
       if (images.length > kAssistantMaxAttachments) {
         throw StateError('一条消息最多添加 $kAssistantMaxAttachments 张图片');
@@ -525,7 +654,7 @@ class AssistantNotifier extends Notifier<AssistantState> {
 
       final base = ref.read(backendBaseProvider).value ?? '';
       final sid = (await ref.read(botSessionProvider.future))?.sessionId ?? '';
-      if (!ref.mounted || !identical(state.msgs, original) || state.running) {
+      if (!valid()) {
         return;
       }
       // 选了自定义接口就在本机跑 agent 循环,否则打 Plana 后端那条 SSE。
@@ -535,7 +664,7 @@ class AssistantNotifier extends Notifier<AssistantState> {
         try {
           await ref.read(agentModelsProvider.future);
         } catch (_) {}
-        if (!ref.mounted || !identical(state.msgs, original) || state.running) {
+        if (!valid()) {
           return;
         }
         if (ref.read(assistantModelKeyProvider).isEmpty) {
@@ -556,7 +685,7 @@ class AssistantNotifier extends Notifier<AssistantState> {
       // 而实际什么都没发出去。
       final g = composeSections(sourceState);
       final canvas = withCanvas && canvasHasContent(g);
-      final picked = state.mode;
+      final picked = queued?.mode ?? state.mode;
       final noDraw = assistantSettingsOf(ref).noDraw;
 
       var hashes = const <String>[];
@@ -567,18 +696,16 @@ class AssistantNotifier extends Notifier<AssistantState> {
         }
         hashes = replacing?.imageHashes ?? await _store.putImages(images);
       }
-      if (!ref.mounted || !identical(state.msgs, original) || state.running) {
+      if (!valid()) {
         return;
       }
 
-      final seq = ++_seq;
-      startedSeq = seq;
       _set(
         state.copyWith(
           msgs: [
             ...preceding,
             AssistantMsg(
-              id: _newId(),
+              id: queued?.id ?? _newId(),
               role: MsgRole.user,
               text: trimmed,
               at: _now,
@@ -586,6 +713,10 @@ class AssistantNotifier extends Notifier<AssistantState> {
               withCanvas: canvas,
               mode: picked,
             ),
+          ],
+          queue: [
+            for (final q in state.queue)
+              if (q.id != queued?.id) q,
           ],
           running: true,
           liveTools: const [],
@@ -597,6 +728,7 @@ class AssistantNotifier extends Notifier<AssistantState> {
         ),
       );
       _preparing = false;
+      _preparingQueueId = null;
       onAccepted?.call();
       // 记录跟着这条提问一起开:下面还要等灵感库、规则这些,这期间按了停止也得收尾。
       // 设置快照等那些取齐了再补上。
@@ -841,14 +973,17 @@ class AssistantNotifier extends Notifier<AssistantState> {
       );
     } catch (error) {
       // 校验/附件准备失败时原会话尚未被替换；开始后的失败保留提问供重试。
-      if (ref.mounted && (startedSeq == null || startedSeq == _seq)) {
+      if (ref.mounted && seq == _seq) {
         _pushError(
           error is BackendException ? error.message : '$error',
           _kindOf(error),
         );
       }
     } finally {
-      if (startedSeq == null) _preparing = false;
+      if (seq == _seq) {
+        _preparing = false;
+        _preparingQueueId = null;
+      }
     }
   }
 
@@ -1018,6 +1153,7 @@ class AssistantNotifier extends Notifier<AssistantState> {
     );
     // 纯文本那种只给复制:不自动导入、不自动出图
     if (draw != null && !noDraw) _autoAfterDraw(id, sourceCanvasId);
+    unawaited(_drain());
   }
 
   /// 「总是读写创作页」/「出词后自动生成」这两个开关的落点。
@@ -1087,9 +1223,11 @@ class AssistantNotifier extends Notifier<AssistantState> {
 
   /// 停:掐掉这一轮。服务端那次 LLM 已经在跑,掐不掉,但用户不用再干等。
   void stop() {
-    if (!state.running) return;
+    if (!_busy) return;
     _finishTrace('手动停止');
     _seq++;
+    _preparing = false;
+    _preparingQueueId = null;
     _sub?.cancel();
     _sub = null;
     _set(
@@ -1322,11 +1460,20 @@ class AssistantNotifier extends Notifier<AssistantState> {
   /// 「新对话」:当前这段存进历史,清空。返回是否真的归档了(空对话不入库)。
   /// 模式回到「无」 —— 模式跟着对话走,新对话从「无」开始。
   bool archiveCurrent() {
+    stop();
     _clearTraces();
     final cur = state.msgs;
     if (!cur.any((m) => m.role == MsgRole.user)) {
-      if (cur.isNotEmpty || state.mode != AssistantMode.normal) {
-        _set(state.copyWith(msgs: const [], mode: AssistantMode.normal));
+      if (cur.isNotEmpty ||
+          state.queue.isNotEmpty ||
+          state.mode != AssistantMode.normal) {
+        _set(
+          state.copyWith(
+            msgs: const [],
+            mode: AssistantMode.normal,
+            queue: const [],
+          ),
+        );
       }
       return false;
     }
@@ -1335,6 +1482,7 @@ class AssistantNotifier extends Notifier<AssistantState> {
       state.copyWith(
         msgs: const [],
         mode: AssistantMode.normal,
+        queue: const [],
         sessions: [
           s,
           ...state.sessions,
@@ -1350,6 +1498,7 @@ class AssistantNotifier extends Notifier<AssistantState> {
     final i = state.sessions.indexWhere((s) => s.id == id);
     if (i < 0) return;
     final target = state.sessions[i];
+    stop();
     _clearTraces();
     final rest = [...state.sessions]..removeAt(i);
     final cur = state.msgs;
@@ -1361,6 +1510,7 @@ class AssistantNotifier extends Notifier<AssistantState> {
         msgs: target.msgs,
         sessions: rest,
         mode: conversationMode(target.msgs),
+        queue: const [],
       ),
     );
   }

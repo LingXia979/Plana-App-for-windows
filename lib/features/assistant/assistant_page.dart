@@ -110,9 +110,7 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
           !_input.value.composing.isCollapsed) {
         return KeyEventResult.handled;
       }
-      if (event is KeyDownEvent &&
-          !_sending &&
-          !ref.read(assistantProvider).running) {
+      if (event is KeyDownEvent && !_sending) {
         if (HardwareKeyboard.instance.isShiftPressed) {
           final value = _input.value;
           final selection = value.selection;
@@ -149,11 +147,16 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
   /// [canvas] 给开场白用:那几句自带「要不要引用创作页」的答案,不必先让用户
   /// 去按一下按钮。其余情况一律看用户勾没勾。
   Future<void> _send({String? preset, bool? canvas}) async {
-    if (_sending || ref.read(assistantProvider).running) return;
+    if (_sending) return;
     final text = preset ?? _input.text;
-    if (text.trim().isEmpty && _pending.isEmpty) return;
+    if (text.trim().isEmpty && _pending.isEmpty) {
+      _toBottom();
+      await ref.read(assistantProvider.notifier).resumeQueue();
+      return;
+    }
     final images = List<PickedImage>.of(_pending);
     final withCanvas = canvas ?? _withCanvas;
+    var accepted = false;
     setState(() => _sending = true);
     _toBottom();
     try {
@@ -164,16 +167,18 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
       }
       await ref
           .read(assistantProvider.notifier)
-          .send(
+          .submit(
             text,
             images: [for (final image in images) image.bytes],
             withCanvas: withCanvas,
             onAccepted: () {
               if (!mounted) return;
+              accepted = true;
               _input.clear();
               setState(() {
                 _pending.removeWhere(images.contains);
                 _withCanvas = false;
+                _sending = false;
               });
               if (!ref.read(desktopModeProvider)) {
                 FocusScope.of(context).unfocus();
@@ -181,13 +186,15 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
             },
           );
       if (mounted) _toBottom();
+    } catch (_) {
+      if (mounted) hintSnack(context, '未能加入发送队列，输入和图片已保留，请重试');
     } finally {
-      if (mounted) setState(() => _sending = false);
+      if (!accepted && mounted) setState(() => _sending = false);
     }
   }
 
   Future<void> _pick() async {
-    if (_choosingFiles || _sending || ref.read(assistantProvider).running) {
+    if (_choosingFiles || _sending) {
       return;
     }
     setState(() => _choosingFiles = true);
@@ -212,7 +219,7 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
   }
 
   Future<void> _pickHistory() async {
-    if (_choosingHistory || _sending || ref.read(assistantProvider).running) {
+    if (_choosingHistory || _sending) {
       return;
     }
     setState(() => _choosingHistory = true);
@@ -340,7 +347,7 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
                 ? const _ModelGate(key: ValueKey('model-gate'))
                 : !usable
                 ? const _Gate(key: ValueKey('gate'))
-                : st.isEmpty && !st.running
+                : st.isEmpty && !st.running && st.queue.isEmpty
                 ? KeyedSubtree(
                     key: const ValueKey('empty'),
                     child: _empty(scheme),
@@ -364,11 +371,7 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
       multiple: true,
       pasteDefault: !widget.embedded,
       enabled:
-          ref.watch(desktopModeProvider) &&
-          usable &&
-          supported &&
-          !st.running &&
-          !_sending,
+          ref.watch(desktopModeProvider) && usable && supported && !_sending,
       onDrop: (images, _) async => _addImages(images),
       child: CallbackShortcuts(
         bindings: {
@@ -376,7 +379,7 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
             if (!ref.read(desktopModeProvider) &&
                 usable &&
                 supported &&
-                !st.running) {
+                !_sending) {
               _send();
             }
           },
@@ -640,6 +643,9 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
       }
     }
     final running = st.running;
+    final queue = st.queue;
+    final nq = queue.length;
+    final live = running ? 1 : 0;
     final now = DateTime.now().millisecondsSinceEpoch;
     final fontSize =
         ref.watch(assistantSettingsProvider.select((s) => s.value?.fontSize)) ??
@@ -648,18 +654,45 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
       controller: _scroll,
       reverse: true,
       padding: const EdgeInsets.fromLTRB(14, 4, 14, 8),
-      itemCount: st.msgs.length + (running ? 1 : 0),
+      itemCount: nq + live + st.msgs.length,
       // 按 key 找回每条的位置。新消息插在最下面(下标 0),不给 key 的话旧元素会按下标
       // 错配到新消息上 —— 状态串门,进场动画也分不清谁是新来的。
       findChildIndexCallback: (key) {
         if (key is! ValueKey<String>) return null;
-        if (key.value == _kLiveKey) return running ? 0 : null;
+        if (key.value == _kLiveKey) return running ? nq : null;
+        final qi = queue.indexWhere((q) => q.id == key.value);
+        if (qi >= 0) return nq - 1 - qi;
         final at = st.msgs.indexWhere((m) => m.id == key.value);
-        return at < 0 ? null : st.msgs.length - 1 - at + (running ? 1 : 0);
+        return at < 0 ? null : st.msgs.length - 1 - at + nq + live;
       },
       itemBuilder: (context, i) {
-        // 倒序:i=0 是最下面那条。跑起来时正在跑的那一轮占着最下面。
-        if (running && i == 0) {
+        // 倒序:i=0 是最下面那条。排着的几句在最下面,队首挨着正在跑的那一轮;
+        // 发出去时那条消息沿用队里的 id,气泡原地转正
+        if (i < nq) {
+          final q = queue[nq - 1 - i];
+          return _Enter(
+            key: ValueKey(q.id),
+            animate: now - q.at < 1500,
+            grow: true,
+            child: _MsgTile(
+              msg: AssistantMsg(
+                id: q.id,
+                role: MsgRole.user,
+                text: q.text.trim(),
+                at: q.at,
+                withCanvas: q.withCanvas,
+              ),
+              queued: true,
+              queuedImages: q.images,
+              fontSize: fontSize,
+              onLongPress: () => _queuedMenu(q),
+              onMenu: ref.watch(desktopModeProvider)
+                  ? (position) => _queuedMenu(q, position: position)
+                  : null,
+            ),
+          );
+        }
+        if (running && i == nq) {
           return _Enter(
             key: const ValueKey(_kLiveKey),
             animate: true,
@@ -667,7 +700,7 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
             child: _LiveTurn(state: st, fontSize: fontSize),
           );
         }
-        final at = st.msgs.length - 1 - (running ? i - 1 : i);
+        final at = st.msgs.length - 1 - (i - nq - live);
         final m = st.msgs[at];
         // 报错上直接给「重试」:只给最后一条、而且紧跟在提问后面的那种。
         // 发之前就被拦下的(比如没选模型接口)前面不是提问,重试只会把上一轮的话再发一遍。
@@ -802,6 +835,93 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
     }
   }
 
+  Future<void> _queuedMenu(QueuedAsk q, {Offset? position}) async {
+    final desktop = ref.read(desktopModeProvider);
+    if (!desktop) Haptics.medium();
+    final choices = [
+      ('copy', '复制内容', Icons.copy_outlined, true),
+      ('edit', '编辑该信息', Icons.edit_outlined, true),
+      ('cancel', '取消发送', Icons.close, true),
+    ];
+    final overlay =
+        Overlay.of(context).context.findRenderObject()! as RenderBox;
+    final point = position == null
+        ? overlay.size.center(Offset.zero)
+        : overlay.globalToLocal(position);
+    final action = desktop
+        ? await showMenu<String>(
+            context: context,
+            position: RelativeRect.fromSize(
+              Rect.fromLTWH(point.dx, point.dy, 0, 0),
+              overlay.size,
+            ),
+            items: [
+              for (final choice in choices)
+                PopupMenuItem(
+                  value: choice.$1,
+                  enabled: choice.$4,
+                  child: Row(
+                    children: [
+                      Icon(choice.$3, size: 20),
+                      const SizedBox(width: 12),
+                      Text(choice.$2),
+                    ],
+                  ),
+                ),
+            ],
+          )
+        : await showModalBottomSheet<String>(
+            context: context,
+            builder: (context) => SafeArea(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (final choice in choices)
+                    ListTile(
+                      leading: Icon(choice.$3),
+                      title: Text(choice.$2),
+                      enabled: choice.$4,
+                      onTap: choice.$4
+                          ? () => Navigator.pop(context, choice.$1)
+                          : null,
+                    ),
+                ],
+              ),
+            ),
+          );
+    if (!mounted || action == null) return;
+    if (!desktop && action != 'edit') dropFocusSoon();
+    final n = ref.read(assistantProvider.notifier);
+    final still = ref.read(assistantProvider).queue.any((e) => e.id == q.id);
+    switch (action) {
+      case 'copy':
+        await copyText(context, q.text);
+      case 'cancel' when still:
+        n.unqueue(q.id);
+      case 'edit' when still:
+        if (_sending ||
+            _pending.length + q.images.length > kAssistantMaxAttachments) {
+          hintSnack(context, '请先处理输入框中的附件，排队消息已保留');
+          return;
+        }
+        n.unqueue(q.id);
+        final draft = _input.text;
+        final text = draft.trim().isEmpty ? q.text : '${q.text}\n$draft';
+        _input.value = TextEditingValue(
+          text: text,
+          selection: TextSelection.collapsed(offset: text.length),
+        );
+        setState(() {
+          _pending.insertAll(0, [
+            for (var i = 0; i < q.images.length; i++)
+              PickedImage('图片 ${i + 1}', q.images[i]),
+          ]);
+          if (q.withCanvas) _withCanvas = true;
+        });
+        _inputFocus.requestFocus();
+    }
+  }
+
   /// 从某一句提问重来。和 [_send] 一样先回到底部:重来的那一轮出在最下面,
   /// 而长按菜单多半是停在上面某条消息上点的。
   Future<void> _retryFrom(String askId, {String? text}) async {
@@ -833,7 +953,7 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
   /// 单独占一行而不是塞进输入框左边那排图标里:芯片带文字,开没开一眼能读出来;
   /// 图标只能靠颜色表示状态,而这排里的东西按错了是要花钱或者改画布的。
   /// 横向可滚,以后再加选项直接往后排,不会把输入框挤窄。
-  Widget _optionRow(bool running, bool hasCanvas) {
+  Widget _optionRow(bool hasCanvas) {
     // 能开哪几个模式跟着这个模型在用的预设走。还没取到时先不拦 —— 发的时候会再核一遍
     final family = rulesFamilyOf(
       agentImageModel(
@@ -875,36 +995,34 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
               // 两态都不报「23 个 tag · 2 个角色」—— 那串数字读一遍才知道说的是
               // 什么,而这枚芯片要回答的只有「这条带不带」;想确认内容切过去看。
               label: Text(_withCanvas ? '创作页' : '引用创作页'),
-              onDeleted: _withCanvas && !running
+              onDeleted: _withCanvas
                   ? () => setState(() => _withCanvas = false)
                   : null,
               // 画布空着时**不置灰**:灰按钮按下去没反应,用户只会以为坏了。
               // 照常可点,点了说一句为什么。
-              onPressed: running
-                  ? null
-                  : () {
-                      if (_withCanvas) {
-                        setState(() => _withCanvas = false);
-                        return;
-                      }
-                      if (!hasCanvas) {
-                        hintSnack(
-                          context,
-                          '创作页还没写提示词,没东西可引用',
-                          icon: Icons.draw_outlined,
-                        );
-                        return;
-                      }
-                      setState(() => _withCanvas = true);
-                    },
+              onPressed: () {
+                if (_withCanvas) {
+                  setState(() => _withCanvas = false);
+                  return;
+                }
+                if (!hasCanvas) {
+                  hintSnack(
+                    context,
+                    '创作页还没写提示词,没东西可引用',
+                    icon: Icons.draw_outlined,
+                  );
+                  return;
+                }
+                setState(() => _withCanvas = true);
+              },
             ),
             const SizedBox(width: 8),
-            _modeChip(running, family, shown: shown, usable: usable),
+            _modeChip(family, shown: shown, usable: usable),
             // 思考等级只对自定义接口有意义:后端渠道的推理档位由服务端按渠道
             // 定死,app 没有可下发的字段。摆一颗按了不生效的芯片比不摆更糟。
             if (ref.watch(assistantEndpointProvider) != null) ...[
               const SizedBox(width: 8),
-              _thinkChip(running),
+              _thinkChip(),
             ],
           ],
         ),
@@ -921,7 +1039,6 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
   /// 预设没写的模式照常列在弹层里,选了说一句为什么,和画布空着时的「引用创作页」
   /// 一个道理。
   Widget _modeChip(
-    bool running,
     RulesFamily family, {
     required AssistantMode shown,
     required bool Function(AssistantMode) usable,
@@ -941,9 +1058,7 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
         ),
         // 开着就只写模式名;关着写「模式」,「模式 无」读着别扭
         label: Text(on ? assistantModeLabel(shown) : '模式'),
-        onSelected: running
-            ? null
-            : (_) => _pickMode(anchor, family, shown, usable),
+        onSelected: (_) => _pickMode(anchor, family, shown, usable),
       ),
     );
   }
@@ -979,7 +1094,7 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
 
   /// 思考等级。点开是一张带滑杆的弹层([showThinkSheet])—— 六档是一条有序的轴,
   /// 循环点击要按五下才回得来,菜单又会让它看起来像六个并列选项。
-  Widget _thinkChip(bool running) {
+  Widget _thinkChip() {
     final level =
         ref.watch(assistantSettingsProvider).value?.thinkLevel ??
         ThinkLevel.auto;
@@ -994,7 +1109,7 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
         size: 16,
       ),
       label: Text('思考 ${thinkLevelLabel(level)}'),
-      onSelected: running ? null : (_) => showThinkSheet(context),
+      onSelected: (_) => showThinkSheet(context),
     );
   }
 
@@ -1004,15 +1119,16 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
     bool desktopMain = false,
     bool enabled = true,
   }) {
-    final running = st.running || _sending;
+    final running = _sending;
     final desktop = ref.watch(desktopModeProvider);
     final sidebar = desktop && widget.embedded;
     final settings =
         ref.watch(assistantSettingsProvider).value ?? const AssistantSettings();
+    final hasDraft = _input.text.trim().isNotEmpty || _pending.isNotEmpty;
     final canSend =
         enabled &&
-        !running &&
-        (_input.text.trim().isNotEmpty || _pending.isNotEmpty);
+        !_sending &&
+        (hasDraft || (!st.running && st.queue.isNotEmpty));
     final g = ref.watch(generateProvider);
     final hasCanvas = canvasHasContent(g);
     // 画布清空了(比如去创作页按了重置)就把勾一起撤掉,不留一个带不出东西的勾。
@@ -1054,11 +1170,7 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
       onChanged: (_) => setState(() {}),
       decoration: InputDecoration(
         isDense: true,
-        hintText: st.running
-            ? '正在想…'
-            : _sending
-            ? '正在准备图片…'
-            : '想画什么、想改哪里…',
+        hintText: _sending ? '正在准备图片…' : '想画什么、想改哪里…',
         filled: !desktopMain,
         fillColor: running
             ? scheme.surfaceContainer
@@ -1075,11 +1187,11 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
         disabledBorder: desktopMain ? InputBorder.none : null,
       ),
     );
-    // 跑起来之后发送键换成停止，一轮只发送一条消息。
+    // 空输入显示停止；有草稿时可继续发送到队列。
     final send = SizedBox(
       width: 44,
       height: 44,
-      child: st.running
+      child: st.running && !hasDraft
           ? IconButton.filledTonal(
               tooltip: '停止',
               onPressed: ref.read(assistantProvider.notifier).stop,
@@ -1150,7 +1262,7 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
                 ],
               ),
             ),
-          if (enabled) _optionRow(running, hasCanvas),
+          if (enabled) _optionRow(hasCanvas),
           if (desktopMain)
             Material(
               key: const ValueKey('assistant-composer'),
@@ -1449,9 +1561,13 @@ class _MsgTile extends ConsumerWidget {
     this.onRetry,
     this.onMenu,
     this.handoffSecs,
+    this.queued = false,
+    this.queuedImages = const [],
   });
 
   final AssistantMsg msg;
+  final bool queued;
+  final List<Uint8List> queuedImages;
 
   /// 上一份提议 —— 结果条拿它当差异基线。
   final DrawProposal? prev;
@@ -1489,7 +1605,11 @@ class _MsgTile extends ConsumerWidget {
                 ? null
                 : (details) => onMenu!(details.globalPosition),
             child: switch (msg.role) {
-              MsgRole.user => _user(context, ref, scheme),
+              MsgRole.user => AnimatedOpacity(
+                opacity: queued ? .55 : 1,
+                duration: Motion.medium,
+                child: _user(context, ref, scheme),
+              ),
               MsgRole.ai => _ai(context, scheme),
               MsgRole.error => _error(context, scheme),
             },
@@ -1518,6 +1638,41 @@ class _MsgTile extends ConsumerWidget {
       Column(
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
+          if (queuedImages.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Wrap(
+                alignment: WrapAlignment.end,
+                spacing: 6,
+                runSpacing: 6,
+                children: [
+                  for (var i = 0; i < queuedImages.length; i++)
+                    GestureDetector(
+                      key: ValueKey('assistant-queued-image-${msg.id}-$i'),
+                      onLongPress: onLongPress,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(12),
+                        child: Image.memory(
+                          queuedImages[i],
+                          width: 96,
+                          height: 96,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, _, _) => const SizedBox(
+                            width: 96,
+                            height: 96,
+                            child: Icon(Icons.broken_image_outlined),
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          if (queued)
+            Padding(
+              padding: const EdgeInsets.only(top: 4, bottom: 4),
+              child: Text('排队中', style: context.texts.labelSmall),
+            ),
           if (msg.imageHashes.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(bottom: 6),

@@ -73,6 +73,7 @@ void main() {
         baseUrl: '',
         apiKey: 'secret',
         model: 'model',
+        headers: {'X-Token': 'custom-secret'},
       );
       await expectLater(
         container.read(customEndpointsProvider.notifier).put(endpoint),
@@ -82,6 +83,10 @@ void main() {
       storage.failWrite = false;
       await container.read(customEndpointsProvider.notifier).put(endpoint);
       expect(container.read(customEndpointsProvider).value, [endpoint]);
+      final restored = CustomEndpoint.fromJson(
+        (jsonDecode(storage.stored!) as List).single,
+      )!;
+      expect(restored.headers, {'X-Token': 'custom-secret'});
       storage.failWrite = true;
       await expectLater(
         container.read(customEndpointsProvider.notifier).remove(endpoint.id),

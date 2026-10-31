@@ -39,7 +39,7 @@ Future<List<String>> fetchModelList(
     final http.Response resp;
     try {
       resp = await c
-          .get(uri, headers: headers)
+          .get(uri, headers: e.withHeaders(headers))
           .timeout(const Duration(seconds: 20));
     } catch (_) {
       throw EndpointException('连不上 ${uri.host},检查地址与网络');

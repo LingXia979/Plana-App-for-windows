@@ -369,7 +369,7 @@ void main() {
   );
 
   testWidgets(
-    'invalid batch, attachment limit, cancellation and busy drops keep the draft',
+    'invalid batch, limit and cancellation preserve draft; busy drops add queued attachments',
     (tester) async {
       await mount(tester);
       await native(tester, 'drop', const Offset(1100, 200), [first.path]);
@@ -396,7 +396,7 @@ void main() {
       );
       await tester.pump();
       await native(tester, 'drop', const Offset(1100, 200), [second.path]);
-      expect(find.text('已添加 1 张图片'), findsOneWidget);
+      expect(find.text('已添加 2 张图片'), findsOneWidget);
       expect(fallbackImports, 0);
       recorder().seed(
         container.read(assistantProvider).copyWith(running: false),

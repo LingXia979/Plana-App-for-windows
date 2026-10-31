@@ -63,6 +63,7 @@ class CustomEndpoint {
     required this.apiKey,
     required this.model,
     this.apiPath = '',
+    this.headers = const {},
   });
 
   final String id;
@@ -82,6 +83,36 @@ class CustomEndpoint {
 
   /// 对话接口路径。空 = 用 [agentApiDefaultPath]。`{model}` 会被替换成模型名。
   final String apiPath;
+
+  /// 自定义请求头,对话和拉模型列表都带。
+  final Map<String, String> headers;
+
+  /// [builtIn] 叠上 [headers]。头名不分大小写,同名的以 [headers] 为准。
+  Map<String, String> withHeaders(Map<String, String> builtIn) {
+    if (headers.isEmpty) return builtIn;
+    final merged = Map<String, String>.of(builtIn);
+    for (final entry in headers.entries) {
+      merged.removeWhere(
+        (key, _) => key.toLowerCase() == entry.key.toLowerCase(),
+      );
+      merged[entry.key] = entry.value;
+    }
+    return merged;
+  }
+
+  /// 中转报错可能回显鉴权信息；显示及保存错误之前移除本次请求的密钥值。
+  String redactSecrets(String message) {
+    final secrets =
+        {
+            apiKey.trim(),
+            ...headers.values.map((v) => v.trim()),
+          }.where((v) => v.isNotEmpty).toList()
+          ..sort((a, b) => b.length.compareTo(a.length));
+    for (final secret in secrets) {
+      message = message.replaceAll(secret, '[已隐藏]');
+    }
+    return message;
+  }
 
   String get displayName => name.trim().isNotEmpty ? name.trim() : model;
 
@@ -129,6 +160,7 @@ class CustomEndpoint {
     String? apiKey,
     String? model,
     String? apiPath,
+    Map<String, String>? headers,
   }) => CustomEndpoint(
     id: id,
     name: name ?? this.name,
@@ -137,6 +169,7 @@ class CustomEndpoint {
     apiKey: apiKey ?? this.apiKey,
     model: model ?? this.model,
     apiPath: apiPath ?? this.apiPath,
+    headers: headers ?? this.headers,
   );
 
   Map<String, dynamic> toJson() => {
@@ -147,6 +180,7 @@ class CustomEndpoint {
     'apiKey': apiKey,
     'model': model,
     if (apiPath.isNotEmpty) 'apiPath': apiPath,
+    if (headers.isNotEmpty) 'headers': headers,
   };
 
   static CustomEndpoint? fromJson(Object? e) {
@@ -163,9 +197,43 @@ class CustomEndpoint {
       apiKey: e['apiKey']?.toString() ?? '',
       model: e['model']?.toString() ?? '',
       apiPath: e['apiPath']?.toString() ?? '',
+      headers: switch (e['headers']) {
+        final Map h => {
+          for (final x in h.entries)
+            if ('${x.key}'.isNotEmpty) '${x.key}': x.value?.toString() ?? '',
+        },
+        _ => const {},
+      },
     );
   }
 }
+
+final _headerName = RegExp(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$");
+final _headerValue = RegExp(r'^[\x20-\x7E\t]*$');
+
+/// 「名称: 值」一行一条 → 请求头。空行跳过,同名(不分大小写)后写的为准。
+/// [bad] 是第一条不合格的行号(从 1 起),全合格为 null。
+({Map<String, String> headers, int? bad}) parseHeaderLines(String text) {
+  final out = <String, String>{};
+  final lines = text.split('\n');
+  for (var i = 0; i < lines.length; i++) {
+    final line = lines[i].trim();
+    if (line.isEmpty) continue;
+    final at = line.indexOf(':');
+    final name = at < 0 ? '' : line.substring(0, at).trim();
+    final value = at < 0 ? '' : line.substring(at + 1).trim();
+    if (!_headerName.hasMatch(name) || !_headerValue.hasMatch(value)) {
+      return (headers: out, bad: i + 1);
+    }
+    out.removeWhere((k, _) => k.toLowerCase() == name.toLowerCase());
+    out[name] = value;
+  }
+  return (headers: out, bad: null);
+}
+
+/// [parseHeaderLines] 的反向。
+String formatHeaderLines(Map<String, String> headers) =>
+    [for (final h in headers.entries) '${h.key}: ${h.value}'].join('\n');
 
 final customEndpointsProvider =
     AsyncNotifierProvider<CustomEndpointsNotifier, List<CustomEndpoint>>(
