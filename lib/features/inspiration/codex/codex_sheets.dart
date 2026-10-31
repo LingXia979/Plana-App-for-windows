@@ -17,12 +17,13 @@ import '../../generate/generate_state.dart';
 import '../../generate/models.dart'
     show GenProvider, GenerateState, providerOfModel;
 import '../../generate/widgets/common.dart'
-    show confirmDialog, hintSnack, sharedAxisRoute;
+    show RoundIconBtn, confirmDialog, hintSnack, sharedAxisRoute;
 import '../../import/import_panel.dart' show ImportImagePanel;
 import '../../shell/shell_state.dart';
 import '../tag_models.dart'
     show TagCategory, TagEntry, appendTagPositivesFolded;
 import '../widgets/prompt_chips.dart';
+import 'codex_block.dart';
 import 'codex_card.dart';
 import 'codex_char_split.dart';
 import 'codex_favorites.dart';
@@ -260,15 +261,11 @@ class _DetailSheetState extends ConsumerState<_DetailSheet>
 
   /// 牌堆进度:0=停稳,>0=往右拖(要上一条),<0=往左拖(要下一条)。
   /// 用 controller 而不是 setState —— 拖动每帧只重画牌堆,不重建整张弹层。
-  late final AnimationController _drag = AnimationController.unbounded(
-    vsync: this,
-  );
+  late final AnimationController _drag;
   double _dragDx = 0;
 
   /// 多图词条的翻图进度:0=停稳,>0=往后翻一张,<0=往前。与牌堆同一套写法。
-  late final AnimationController _pageDrag = AnimationController.unbounded(
-    vsync: this,
-  );
+  late final AnimationController _pageDrag;
   int _imgPage = 0;
   _DragMode _dragMode = _DragMode.undecided;
 
@@ -294,6 +291,10 @@ class _DetailSheetState extends ConsumerState<_DetailSheet>
   @override
   void initState() {
     super.initState();
+    // Desktop details can close without ever dragging. Create tickers while the
+    // element is active, rather than lazily initializing them during dispose.
+    _drag = AnimationController.unbounded(vsync: this);
+    _pageDrag = AnimationController.unbounded(vsync: this);
     _ensureAhead();
   }
 
@@ -2336,30 +2337,40 @@ class _UnfavDot extends StatelessWidget {
 
 Future<List<String>?> showCodexCategorySheet(
   BuildContext context,
+  String codexId,
   List<CodexNode> tree,
   List<String> current,
-  int total,
+  List<CodexEntry> entries,
 ) => _sheet<List<String>>(
   context,
-  _CategorySheet(tree: tree, current: current, total: total),
+  _CategorySheet(
+    codexId: codexId,
+    tree: tree,
+    current: current,
+    entries: entries,
+  ),
 );
 
-class _CategorySheet extends StatefulWidget {
+class _CategorySheet extends ConsumerStatefulWidget {
   const _CategorySheet({
+    required this.codexId,
     required this.tree,
     required this.current,
-    required this.total,
+    required this.entries,
   });
 
+  final String codexId;
   final List<CodexNode> tree;
   final List<String> current;
-  final int total;
+
+  /// 整部法典的词条:屏蔽后各分类剩多少条从这里数。
+  final List<CodexEntry> entries;
 
   @override
-  State<_CategorySheet> createState() => _CategorySheetState();
+  ConsumerState<_CategorySheet> createState() => _CategorySheetState();
 }
 
-class _CategorySheetState extends State<_CategorySheet> {
+class _CategorySheetState extends ConsumerState<_CategorySheet> {
   /// 浏览游标(已下钻到的路径,非选中项)。打开时定位到当前选中项的父层,
   /// 好直接在同层改选。
   late List<String> _cursor = widget.current.length > 1
@@ -2368,6 +2379,30 @@ class _CategorySheetState extends State<_CategorySheet> {
 
   /// 层级切换方向:下钻=true(新层从右侧滑入)、返回=false(从左侧滑入)。
   bool _forward = true;
+
+  /// 各分类被屏蔽掉的条数,键见 [_pathKey](空串 = 整部)。屏蔽状态变了才重数。
+  CodexBlock? _countedFor;
+  Map<String, int> _hidden = const {};
+
+  static String _pathKey(List<String> path) => path.join('\u0000');
+
+  Map<String, int> _hiddenCounts(CodexBlock b) {
+    if (identical(b, _countedFor)) return _hidden;
+    _countedFor = b;
+    final m = <String, int>{};
+    if (b.active) {
+      for (final e in widget.entries) {
+        if (!b.hides(e.path)) continue;
+        var k = '';
+        m[k] = (m[k] ?? 0) + 1;
+        for (final p in e.path) {
+          k = k.isEmpty ? p : '$k\u0000$p';
+          m[k] = (m[k] ?? 0) + 1;
+        }
+      }
+    }
+    return _hidden = m;
+  }
 
   /// 按名字在树里逐级下钻到某路径的节点(找不到返回 null)。
   CodexNode? _nodeAt(List<String> path) {
@@ -2401,6 +2436,8 @@ class _CategorySheetState extends State<_CategorySheet> {
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
+    final block = ref.watch(codexBlockProvider(widget.codexId));
+    final hidden = _hiddenCounts(block);
     // 定高弹层:各父类的二级分类数量不同,自适应高度会让弹层「一会高一会低」;
     // 定高后切分支只在内部滚动,弹层本身不再跳,层级切换用滑动+淡入表现进/退。
     final h = MediaQuery.sizeOf(context).height * 0.6;
@@ -2409,7 +2446,7 @@ class _CategorySheetState extends State<_CategorySheet> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _breadcrumb(scheme),
+          _breadcrumb(scheme, block),
           Expanded(
             // 层级切换走 Material 共享轴(横向):下钻新层从右侧滑入、旧层向左退出;
             // 返回(reverse)反向。与 app 内页面转场同一套动效语言。
@@ -2426,7 +2463,7 @@ class _CategorySheetState extends State<_CategorySheet> {
                   ),
               child: KeyedSubtree(
                 key: ValueKey('${_cursor.length}/${_cursor.join('/')}'),
-                child: _levelList(scheme),
+                child: _levelList(scheme, block, hidden),
               ),
             ),
           ),
@@ -2436,11 +2473,19 @@ class _CategorySheetState extends State<_CategorySheet> {
   }
 
   /// 当前层:整层选择(全部)+ 各子分类。定高内部滚动,不撑动弹层。
-  Widget _levelList(ColorScheme scheme) {
+  /// 已屏蔽的分类压暗、点不动,条数照写它原有多少条。
+  Widget _levelList(
+    ColorScheme scheme,
+    CodexBlock block,
+    Map<String, int> hidden,
+  ) {
     final atRoot = _cursor.isEmpty;
+    int left(List<String> path, int count) =>
+        count - (hidden[_pathKey(path)] ?? 0);
     final branchCount = atRoot
-        ? widget.total
-        : (_nodeAt(_cursor)?.count ?? widget.total);
+        ? widget.entries.length
+        : (_nodeAt(_cursor)?.count ?? widget.entries.length);
+    final anyDrill = _level.any((n) => n.children.isNotEmpty);
     return ListView(
       // primary:false —— 过场时新旧两个 ListView 并存,别去抢同一个滚动位置
       primary: false,
@@ -2452,36 +2497,103 @@ class _CategorySheetState extends State<_CategorySheet> {
         _tile(
           scheme,
           label: atRoot ? '全部' : '全部「${_cursor.last}」',
-          count: branchCount,
+          count: left(_cursor, branchCount),
           selected: atRoot ? false : _isCurrent(_cursor),
           leadingAll: true,
           onTap: () => Navigator.pop(context, atRoot ? <String>[] : _cursor),
         ),
         const SizedBox(height: 8),
         for (final n in _level) ...[
-          _tile(
-            scheme,
-            label: n.name,
-            count: n.count,
-            selected: _isCurrent([..._cursor, n.name]),
-            // 有子级 → 点进去(下钻);叶子 → 直接选中
-            drillable: n.children.isNotEmpty,
-            onTap: n.children.isNotEmpty
-                ? () => setState(() {
-                    _forward = true;
-                    _cursor = [..._cursor, n.name];
-                  })
-                : () => Navigator.pop(context, [..._cursor, n.name]),
-          ),
+          _nodeTile(scheme, n, block, left, chevronSlot: anyDrill),
           const SizedBox(height: 8),
         ],
       ],
     );
   }
 
+  Widget _nodeTile(
+    ColorScheme scheme,
+    CodexNode n,
+    CodexBlock block,
+    int Function(List<String> path, int count) left, {
+    required bool chevronSlot,
+  }) {
+    final path = [..._cursor, n.name];
+    final off = block.hides(path);
+    return _tile(
+      scheme,
+      label: n.name,
+      count: off ? n.count : left(path, n.count),
+      selected: !off && _isCurrent(path),
+      dimmed: off,
+      // 有子级 → 点进去(下钻);叶子 → 直接选中
+      drillable: n.children.isNotEmpty,
+      onTap: off
+          ? null
+          : n.children.isNotEmpty
+          ? () => setState(() {
+              _forward = true;
+              _cursor = path;
+            })
+          : () => Navigator.pop(context, path),
+      chevronSlot: chevronSlot,
+      trailing: _blockButton(scheme, block, path),
+    );
+  }
+
+  /// 分类卡右侧的屏蔽钮:睁眼 = 显示,闭眼 = 已屏蔽。
+  Widget _blockButton(ColorScheme scheme, CodexBlock block, List<String> path) {
+    final on = block.contains(path);
+    return RoundIconBtn(
+      on ? Icons.visibility_off_outlined : Icons.visibility_outlined,
+      size: MediaQuery.sizeOf(context).width < 350 ? 32 : 36,
+      color: on ? scheme.primary : scheme.onSurfaceVariant,
+      background: scheme.surfaceContainerHighest,
+      tooltip: on ? '解除屏蔽' : '屏蔽',
+      onTap: () {
+        Haptics.selection();
+        ref.read(codexBlocksProvider.notifier).toggle(widget.codexId, path);
+      },
+    );
+  }
+
+  /// 根层右上角「全部解除」:有屏蔽项才出现,点一下清空。
+  Widget _unblockAll(ColorScheme scheme) => Material(
+    color: scheme.surfaceContainerHigh,
+    borderRadius: BorderRadius.circular(20),
+    clipBehavior: Clip.antiAlias,
+    child: InkWell(
+      onTap: () {
+        Haptics.selection();
+        ref.read(codexBlocksProvider.notifier).clear(widget.codexId);
+      },
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.visibility_outlined,
+              size: 15,
+              color: scheme.onSurfaceVariant,
+            ),
+            const SizedBox(width: 6),
+            Text(
+              '全部解除',
+              style: context.texts.labelMedium!.copyWith(
+                fontWeight: FontWeight.w600,
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+
   /// 面包屑:返回 + 可点的层级路径(点任一级跳回该层)。定高 + 定宽返回位,
   /// 让根/非根切换时文字起点与整条高度都不抖。
-  Widget _breadcrumb(ColorScheme scheme) {
+  Widget _breadcrumb(ColorScheme scheme, CodexBlock block) {
     final atRoot = _cursor.isEmpty;
     Widget seg(String label, VoidCallback? onTap) => InkWell(
       borderRadius: BorderRadius.circular(8),
@@ -2501,7 +2613,7 @@ class _CategorySheetState extends State<_CategorySheet> {
     return SizedBox(
       height: 48,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(6, 4, 12, 4),
+        padding: const EdgeInsets.fromLTRB(6, 4, 14, 4),
         child: Row(
           children: [
             // 根层不占返回位,「分类」直接靠左;下钻后才出现返回键
@@ -2554,6 +2666,7 @@ class _CategorySheetState extends State<_CategorySheet> {
                 ),
               ),
             ),
+            if (atRoot && block.active) _unblockAll(scheme),
           ],
         ),
       ),
@@ -2561,17 +2674,27 @@ class _CategorySheetState extends State<_CategorySheet> {
   }
 
   /// 一张分类卡:填充底 + 圆角 + 大点击区(靠外部 8px 间距分隔,不再贴边)。
+  /// 名称后紧跟条数;右侧 [trailing](屏蔽钮)再右箭头。带 [trailing] 时收窄
+  /// 上下内边距,卡高与不带的一致。[chevronSlot]:同层有可下钻的,叶子也留出
+  /// 箭头位,一列屏蔽钮对齐。
   Widget _tile(
     ColorScheme scheme, {
     required String label,
     required int count,
     required bool selected,
-    required VoidCallback onTap,
+    required VoidCallback? onTap,
     bool drillable = false,
     bool leadingAll = false,
+    bool dimmed = false,
+    bool chevronSlot = false,
+    Widget? trailing,
   }) {
-    final fg = selected ? scheme.onPrimaryContainer : scheme.onSurface;
-    final sub = selected ? scheme.onPrimaryContainer : scheme.onSurfaceVariant;
+    final fg = selected
+        ? scheme.onPrimaryContainer
+        : (dimmed ? scheme.outline : scheme.onSurface);
+    final sub = selected
+        ? scheme.onPrimaryContainer
+        : (dimmed ? scheme.outline : scheme.onSurfaceVariant);
     return Material(
       color: selected ? scheme.primaryContainer : scheme.surfaceContainerHigh,
       borderRadius: BorderRadius.circular(14),
@@ -2579,7 +2702,9 @@ class _CategorySheetState extends State<_CategorySheet> {
       child: InkWell(
         onTap: onTap,
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 14, 14, 14),
+          padding: trailing == null
+              ? const EdgeInsets.fromLTRB(16, 14, 14, 14)
+              : const EdgeInsets.fromLTRB(16, 8, 10, 8),
           child: Row(
             children: [
               if (leadingAll) ...[
@@ -2592,28 +2717,38 @@ class _CategorySheetState extends State<_CategorySheet> {
                 const SizedBox(width: 10),
               ],
               Expanded(
-                child: Text(
-                  label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: context.texts.bodyLarge!.copyWith(
-                    fontWeight: FontWeight.w600,
-                    color: fg,
-                  ),
+                child: Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: context.texts.bodyLarge!.copyWith(
+                          fontWeight: FontWeight.w600,
+                          color: fg,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      '$count',
+                      style: context.texts.labelMedium!.copyWith(
+                        color: sub,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
                 ),
               ),
-              const SizedBox(width: 10),
-              Text(
-                '$count',
-                style: context.texts.labelMedium!.copyWith(
-                  color: sub,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              if (drillable) ...[
-                const SizedBox(width: 4),
-                Icon(Icons.chevron_right, size: 20, color: sub),
-              ],
+              if (trailing != null) ...[const SizedBox(width: 8), trailing],
+              if (drillable)
+                Padding(
+                  padding: const EdgeInsets.only(left: 4),
+                  child: Icon(Icons.chevron_right, size: 20, color: sub),
+                )
+              else if (chevronSlot)
+                const SizedBox(width: 24),
             ],
           ),
         ),

@@ -12,6 +12,7 @@ import '../../../core/ui/pinch_columns.dart';
 import '../../../core/ui/scroll_memory.dart';
 import '../../generate/widgets/common.dart' show hintSnack;
 import 'codex_card.dart';
+import 'codex_block.dart';
 import 'codex_favorites.dart';
 import 'codex_image_loading.dart';
 import 'codex_masonry.dart';
@@ -109,11 +110,12 @@ class _CodexViewState extends ConsumerState<CodexView>
   String _resolveSelectedId(List<CodexMeta> index) =>
       resolveSelectedCodex(index, ref.watch(selectedCodexProvider)).id;
 
-  List<CodexEntry> _filtered(CodexData d) {
+  List<CodexEntry> _filtered(CodexData d, CodexBlock block) {
     final q = _search.trim().toLowerCase();
     return [
       for (final e in d.entries)
         if (_underCat(e) &&
+            !block.hides(e.path) &&
             (q.isEmpty ||
                 e.title.toLowerCase().contains(q) ||
                 e.tags.toLowerCase().contains(q) ||
@@ -237,12 +239,17 @@ class _CodexViewState extends ConsumerState<CodexView>
         ref.listen(codexTagZhProvider(meta.id), (_, _) {});
         final media =
             ref.watch(codexMediaProvider).value ?? CodexMedia.fallback;
-        final entries = _filtered(d);
+        ref.listen(codexBlockProvider(meta.id), (_, b) {
+          if (b.hides(_catPath)) setState(() => _catPath = const []);
+        });
+        final block = ref.watch(codexBlockProvider(meta.id));
+        if (block.hides(_catPath)) _catPath = const [];
+        final entries = _filtered(d, block);
         if (widget.desktop) return _desktopBody(d, meta, media, entries);
         return Column(
           children: [
             _searchRow(),
-            _filterBar(d, meta, media, entries),
+            _filterBar(d, meta, media, entries, block),
             Expanded(
               child: entries.isEmpty
                   ? _msg(_search.isNotEmpty ? '没有匹配的词条' : '暂无词条')
@@ -267,6 +274,7 @@ class _CodexViewState extends ConsumerState<CodexView>
   ) {
     final scheme = context.scheme;
     final favorites = ref.watch(codexFavKeysProvider);
+    final block = ref.watch(codexBlockProvider(meta.id));
     return LayoutBuilder(
       builder: (context, box) {
         final sidebar = box.maxWidth >= 940 && data.effectiveTree.isNotEmpty;
@@ -298,6 +306,7 @@ class _CodexViewState extends ConsumerState<CodexView>
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
             search,
+            _catButton(data, meta, block),
             OutlinedButton.icon(
               key: const ValueKey('desktop-codex-favorites'),
               onPressed: () => showCodexFavoritesSheet(context),
@@ -346,14 +355,6 @@ class _CodexViewState extends ConsumerState<CodexView>
                       ],
                     ),
             ),
-            if (!sidebar && data.effectiveTree.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(24, 0, 24, 12),
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: _catButton(data),
-                ),
-              ),
             Expanded(
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -380,11 +381,18 @@ class _CodexViewState extends ConsumerState<CodexView>
                           ),
                           _desktopCategoryTile(
                             '全部分类',
-                            data.entries.length,
+                            data.entries
+                                .where((e) => !block.hides(e.path))
+                                .length,
                             const [],
                           ),
                           for (final node in data.effectiveTree)
-                            ..._desktopCategoryNodes(node, const []),
+                            ..._desktopCategoryNodes(
+                              node,
+                              const [],
+                              data,
+                              block,
+                            ),
                         ],
                       ),
                     ),
@@ -475,18 +483,26 @@ class _CodexViewState extends ConsumerState<CodexView>
     );
   }
 
-  List<Widget> _desktopCategoryNodes(CodexNode node, List<String> parent) {
+  List<Widget> _desktopCategoryNodes(
+    CodexNode node,
+    List<String> parent,
+    CodexData data,
+    CodexBlock block,
+  ) {
     final path = [...parent, node.name];
     return [
       _desktopCategoryTile(
         node.name,
-        node.count,
+        data.entries
+            .where((e) => codexPathUnder(e.path, path) && !block.hides(e.path))
+            .length,
         path,
+        blocked: block.hides(path),
         branch: node.children.isNotEmpty,
       ),
       if (codexPathUnder(_catPath, path))
         for (final child in node.children)
-          ..._desktopCategoryNodes(child, path),
+          ..._desktopCategoryNodes(child, path, data, block),
     ];
   }
 
@@ -495,6 +511,7 @@ class _CodexViewState extends ConsumerState<CodexView>
     int count,
     List<String> path, {
     bool branch = false,
+    bool blocked = false,
   }) {
     final selected =
         path.length == _catPath.length && codexPathUnder(_catPath, path);
@@ -527,7 +544,8 @@ class _CodexViewState extends ConsumerState<CodexView>
                 ),
             ],
           ),
-          onTap: () => _selectCategory(path),
+          enabled: !blocked,
+          onTap: blocked ? null : () => _selectCategory(path),
         ),
       ),
     );
@@ -564,6 +582,7 @@ class _CodexViewState extends ConsumerState<CodexView>
     CodexMeta meta,
     CodexMedia media,
     List<CodexEntry> entries,
+    CodexBlock block,
   ) {
     final tree = d.effectiveTree;
     return Padding(
@@ -572,7 +591,10 @@ class _CodexViewState extends ConsumerState<CodexView>
         children: [
           Expanded(
             child: tree.isNotEmpty
-                ? Align(alignment: Alignment.centerLeft, child: _catButton(d))
+                ? Align(
+                    alignment: Alignment.centerLeft,
+                    child: _catButton(d, meta, block),
+                  )
                 : const SizedBox.shrink(),
           ),
           _favButton(),
@@ -627,11 +649,13 @@ class _CodexViewState extends ConsumerState<CodexView>
   }
 
   /// 分类胶囊:点开层级树选;已选时显示末级名 + 清除叉,主色实底标记。
-  Widget _catButton(CodexData d) {
+  /// 有屏蔽生效时名字后带闭眼 + 屏蔽数。
+  Widget _catButton(CodexData d, CodexMeta meta, CodexBlock block) {
     final scheme = context.scheme;
     final on = _catPath.isNotEmpty;
     final label = on ? _catPath.last : '全部分类';
     return Material(
+      key: const ValueKey('codex-category-picker'),
       color: on ? scheme.primary : scheme.surfaceContainerHigh,
       borderRadius: BorderRadius.circular(20),
       child: InkWell(
@@ -639,9 +663,10 @@ class _CodexViewState extends ConsumerState<CodexView>
         onTap: () async {
           final picked = await showCodexCategorySheet(
             context,
+            meta.id,
             d.effectiveTree,
             _catPath,
-            d.entries.length,
+            d.entries,
           );
           if (picked != null && mounted) setState(() => _catPath = picked);
         },
@@ -667,6 +692,23 @@ class _CodexViewState extends ConsumerState<CodexView>
                   ),
                 ),
               ),
+              if (block.active) ...[
+                const SizedBox(width: 6),
+                Icon(
+                  Icons.visibility_off_outlined,
+                  size: 14,
+                  color: on ? scheme.onPrimary : scheme.primary,
+                ),
+                const SizedBox(width: 3),
+                Text(
+                  '${block.paths.length}',
+                  style: mono(
+                    context,
+                    size: 11,
+                    color: on ? scheme.onPrimary : scheme.primary,
+                  ),
+                ),
+              ],
               const SizedBox(width: 4),
               if (on)
                 InkWell(

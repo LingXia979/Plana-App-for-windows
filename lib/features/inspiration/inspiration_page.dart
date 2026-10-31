@@ -28,6 +28,8 @@ import 'artist_models.dart';
 import 'public_tags.dart';
 import 'tag_editor_page.dart';
 import 'tag_library.dart';
+import 'widgets/category_sheets.dart';
+import 'widgets/tag_card.dart' show TagTextPreview;
 import 'tag_models.dart';
 import 'widgets/desktop_tag_filter_bar.dart';
 import 'widgets/scope_seg_tabs.dart';
@@ -465,6 +467,13 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     super.build(context);
     final scheme = context.scheme;
     final lib = ref.watch(tagLibraryProvider).value ?? const TagLibraryState();
+    if (!_codex && !lib.visibleTabKeys.contains(tagCategoryDef(_cat).webId)) {
+      _cat = TagCategory.character;
+      _tab.index = 0;
+      _selected.clear();
+      _searchController.clear();
+      _search = '';
+    }
     final def = _def;
     _authorNames = ref.watch(tagAuthorNamesProvider).value ?? const {};
     if (ref.watch(desktopModeProvider) && !widget.embedded) {
@@ -691,8 +700,11 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
                                   ),
                                   FilledButton.icon(
                                     key: const ValueKey('inspiration-new'),
-                                    onPressed: () =>
-                                        showTagEditor(context, cat: _cat),
+                                    onPressed: () => showTagEditor(
+                                      context,
+                                      cat: _cat,
+                                      categories: _categories(lib),
+                                    ),
                                     icon: const Icon(Icons.add, size: 18),
                                     label: Text(
                                       '新建${_cat == TagCategory.other ? '提示词' : _def.label}',
@@ -824,71 +836,41 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     );
   }
 
-  Widget _desktopCategories(ColorScheme scheme) => LayoutBuilder(
-    builder: (context, constraints) {
-      final library = DecoratedBox(
-        decoration: BoxDecoration(
-          color: scheme.surfaceContainer,
-          borderRadius: BorderRadius.circular(14),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.all(4),
-          child: Wrap(
-            spacing: 4,
-            runSpacing: 4,
-            children: [
-              for (final category in TagCategory.values)
-                _desktopCategory(
-                  category,
-                  category == TagCategory.other
-                      ? '提示词'
-                      : tagCategoryDef(category).label,
-                  !_codex && category == _cat,
-                ),
-            ],
-          ),
-        ),
-      );
-      final codex = Tooltip(
-        message: '在线法典图鉴',
-        child: _desktopCategory(_kCodexSel, '法典', _codex),
-      );
-      final textScale = MediaQuery.textScalerOf(context).scale(15) / 15;
-      if (constraints.maxWidth < 620 * textScale) {
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            library,
-            const SizedBox(height: 10),
-            Divider(
-              key: const ValueKey('inspiration-codex-divider'),
-              height: 1,
-              color: scheme.outlineVariant,
-            ),
-            const SizedBox(height: 10),
-            codex,
-          ],
-        );
-      }
-      return Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          library,
-          const SizedBox(width: 14),
-          SizedBox(
-            height: 32,
-            child: VerticalDivider(
-              key: const ValueKey('inspiration-codex-divider'),
-              width: 1,
-              color: scheme.outlineVariant,
-            ),
-          ),
-          const SizedBox(width: 14),
-          codex,
-        ],
-      );
-    },
+  List<TagCategory> _categories(TagLibraryState lib) => [
+    for (final key in lib.visibleTabKeys) ?tagCategoryByWebId(key),
+  ];
+
+  String _categoryLabel(TagCategory c) {
+    final label = tagCategoryDef(c).label;
+    return c == TagCategory.other && label == '其他' ? '提示词' : label;
+  }
+
+  Widget _categoryManager() => IconButton(
+    tooltip: '管理类别',
+    icon: const Icon(Icons.dashboard_customize_outlined, size: 20),
+    onPressed: () => showCategoryManagerSheet(context),
   );
+
+  Widget _desktopCategories(ColorScheme scheme) {
+    final lib = ref.watch(tagLibraryProvider).value ?? const TagLibraryState();
+    return Wrap(
+      spacing: 4,
+      runSpacing: 6,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        for (final key in lib.visibleTabKeys)
+          if (key == kCodexTabKey)
+            _desktopCategory(_kCodexSel, codexTabLabel(), _codex)
+          else if (tagCategoryByWebId(key) case final category?)
+            _desktopCategory(
+              category,
+              _categoryLabel(category),
+              !_codex && category == _cat,
+            ),
+        _categoryManager(),
+      ],
+    );
+  }
 
   Widget _desktopCategory(Object category, String label, bool selected) {
     final scheme = context.scheme;
@@ -956,37 +938,39 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
         padding: const EdgeInsets.fromLTRB(12, 10, 8, 0),
         child: Column(
           children: [
-            Row(
-              children: [
-                for (final category in TagCategory.values)
-                  Expanded(
-                    child: Padding(
-                      padding: const EdgeInsets.only(right: 5),
-                      child: TextButton(
-                        key: ValueKey('desktop-inspiration-${category.name}'),
-                        onPressed: () => _switchCategory(category),
-                        style: TextButton.styleFrom(
-                          padding: EdgeInsets.zero,
-                          backgroundColor: _cat == category
-                              ? scheme.primary
-                              : scheme.surfaceContainer,
-                          foregroundColor: _cat == category
-                              ? scheme.onPrimary
-                              : scheme.onSurface,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(9),
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  for (final category in _categories(lib))
+                    SizedBox(
+                      width: 90,
+                      child: Padding(
+                        padding: const EdgeInsets.only(right: 5),
+                        child: TextButton(
+                          key: ValueKey('desktop-inspiration-${category.name}'),
+                          onPressed: () => _switchCategory(category),
+                          style: TextButton.styleFrom(
+                            padding: EdgeInsets.zero,
+                            backgroundColor: _cat == category
+                                ? scheme.primary
+                                : scheme.surfaceContainer,
+                            foregroundColor: _cat == category
+                                ? scheme.onPrimary
+                                : scheme.onSurface,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(9),
+                            ),
                           ),
-                        ),
-                        child: Text(
-                          category == TagCategory.other
-                              ? '提示词'
-                              : tagCategoryDef(category).label,
-                          style: const TextStyle(fontSize: 12),
+                          child: Text(
+                            _categoryLabel(category),
+                            style: const TextStyle(fontSize: 12),
+                          ),
                         ),
                       ),
                     ),
-                  ),
-              ],
+                ],
+              ),
             ),
             Row(
               children: [
@@ -998,6 +982,7 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
                   ),
                 ),
                 const Spacer(),
+                _categoryManager(),
                 if (_def.hasPublic) _sortButton(scheme),
                 IconButton(
                   tooltip: '数据备份',
@@ -1007,7 +992,11 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
                 IconButton(
                   tooltip: '新建',
                   icon: const Icon(Icons.add, size: 18),
-                  onPressed: () => showTagEditor(context, cat: _cat),
+                  onPressed: () => showTagEditor(
+                    context,
+                    cat: _cat,
+                    categories: _categories(lib),
+                  ),
                 ),
               ],
             ),
@@ -1032,7 +1021,8 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
           IconButton(
             tooltip: '新建',
             icon: const Icon(Icons.add),
-            onPressed: () => showTagEditor(context, cat: _cat),
+            onPressed: () =>
+                showTagEditor(context, cat: _cat, categories: _categories(lib)),
           ),
         ],
       ),
@@ -1110,9 +1100,11 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
       tooltip: '切换分类',
       offset: const Offset(0, 50),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-      onSelected: _onPickCat,
+      onSelected: (v) => v == 'manage-categories'
+          ? showCategoryManagerSheet(context)
+          : _onPickCat(v),
       itemBuilder: (_) => [
-        for (final d in kTagCategoryDefs)
+        for (final d in _categories(lib).map(tagCategoryDef))
           PopupMenuItem(
             value: d.key,
             child: _catMenuRow(
@@ -1125,8 +1117,15 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
         const PopupMenuDivider(),
         PopupMenuItem(
           value: _kCodexSel,
-          child: _catMenuRow(scheme, Icons.menu_book_outlined, '法典', _codex),
+          child: _catMenuRow(
+            scheme,
+            Icons.menu_book_outlined,
+            codexTabLabel(),
+            _codex,
+          ),
         ),
+        const PopupMenuDivider(),
+        const PopupMenuItem(value: 'manage-categories', child: Text('管理类别')),
       ],
       child: Container(
         height: 44,
@@ -1696,7 +1695,7 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
       ((width - _desktopEdge * 2 + _desktopGap) / 230).floor().clamp(1, 10);
 
   /// 卡片 = 预览图比例:cover 下整图完整铺满、不裁切。
-  double get _cardAspect => _def.previewAspect;
+  double get _cardAspect => _def.hasPreview ? _def.previewAspect : 1.5;
 
   Widget _grid(List<_Group> groups, ScrollController ctrl, bool isPublic) {
     final pubPreview = publicPreviewsOf(
@@ -1736,7 +1735,9 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
                             crossAxisCount: cols,
                             mainAxisSpacing: gap,
                             crossAxisSpacing: gap,
-                            mainAxisExtent: library ? _desktopCardHeight : null,
+                            mainAxisExtent: library
+                                ? (_def.hasPreview ? _desktopCardHeight : 250)
+                                : null,
                             childAspectRatio: _cardAspect,
                           )
                         : zoomGridDelegate(
@@ -2502,13 +2503,16 @@ class _TagCard extends StatelessWidget {
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    _CardPreview(
-                      url: previewUrl,
-                      name: entry.name,
-                      decodeWidth: decodeWidth,
-                      fit: BoxFit.contain,
-                      mosaic: mosaic,
-                    ),
+                    if (!tagCategoryDef(entry.category).hasPreview)
+                      TagTextPreview(text: entry.positive)
+                    else
+                      _CardPreview(
+                        url: previewUrl,
+                        name: entry.name,
+                        decodeWidth: decodeWidth,
+                        fit: BoxFit.contain,
+                        mosaic: mosaic,
+                      ),
                     if (mosaic) _mosaicHint(context),
                     if (modelGroups.isNotEmpty)
                       Positioned(
@@ -2691,12 +2695,15 @@ class _TagCard extends StatelessWidget {
           child: Stack(
             fit: StackFit.expand,
             children: [
-              _CardPreview(
-                url: previewUrl,
-                name: entry.name,
-                decodeWidth: decodeWidth,
-                mosaic: mosaic,
-              ),
+              if (!tagCategoryDef(entry.category).hasPreview)
+                TagTextPreview(text: entry.positive)
+              else
+                _CardPreview(
+                  url: previewUrl,
+                  name: entry.name,
+                  decodeWidth: decodeWidth,
+                  mosaic: mosaic,
+                ),
               if (mosaic) _mosaicHint(context),
               Positioned(
                 left: 0,

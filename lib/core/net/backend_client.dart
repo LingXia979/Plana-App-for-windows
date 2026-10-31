@@ -2006,9 +2006,15 @@ class BackendClient {
 
   /// 拉取个人 Tag 云备份(登录:Bearer 头)。web 端备份可能内嵌 base64
   /// 预览,体积达数十 MB,超时放宽到 60s。
-  /// → (四类条目原始 JSON, 更新时间秒, 各类计数)。从未备份过时四类为空数组。
+  /// → (四类条目原始 JSON, 自定义类别块, 更新时间秒, 各类计数)。从未备份过时
+  /// 四类为空数组;没存过自定义类别时 custom 为 null。
   Future<
-    ({Map<String, dynamic> categories, int updatedAt, Map<String, int> counts})
+    ({
+      Map<String, dynamic> categories,
+      Map<String, dynamic>? custom,
+      int updatedAt,
+      Map<String, int> counts,
+    })
   >
   getTagBackup(String sessionId) async {
     final j = await _getJson(
@@ -2021,6 +2027,9 @@ class BackendClient {
       categories: j['categories'] is Map<String, dynamic>
           ? j['categories'] as Map<String, dynamic>
           : const <String, dynamic>{},
+      custom: j['custom'] is Map<String, dynamic>
+          ? j['custom'] as Map<String, dynamic>
+          : null,
       updatedAt: (j['updated_at'] as num?)?.toInt() ?? 0,
       counts: {
         if (rawCounts is Map)
@@ -2050,14 +2059,16 @@ class BackendClient {
     } catch (_) {}
   }
 
-  /// 上传个人 Tag 云备份(整体覆盖;⚠️ 该端点鉴权走 body 里的 session_id)。
+  /// 上传个人 Tag 云备份(四类与自定义类别整体覆盖;⚠️ 该端点鉴权走 body 里的
+  /// session_id)。
   Future<void> uploadTagBackup({
     required String sessionId,
     required Map<String, List<Map<String, dynamic>>> categories,
+    required Map<String, dynamic> custom,
   }) async {
     await _postJson(
       '/user-tag-backup',
-      {'session_id': sessionId, 'categories': categories},
+      {'session_id': sessionId, 'categories': categories, 'custom': custom},
       sessionId,
       const Duration(seconds: 30),
     );

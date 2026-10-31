@@ -9,7 +9,7 @@ TagEntry _e(String id, TagCategory c, List<String> tags) =>
 void main() {
   test('池顺序在前,池外标签字母序在后,不重复', () {
     final lib = TagLibraryState(
-      pools: const {
+      pools: {
         TagCategory.artist: ['厚涂', '水彩', '厚涂'],
       },
       entries: [

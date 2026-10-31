@@ -47,6 +47,7 @@ class RoundIconBtn extends ConsumerWidget {
     this.size = 36,
     this.iconSize = 20,
     this.tooltip,
+    this.background,
   });
 
   final IconData icon;
@@ -55,12 +56,13 @@ class RoundIconBtn extends ConsumerWidget {
   final double size;
   final double iconSize;
   final String? tooltip;
+  final Color? background;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final compact = ref.watch(desktopModeProvider);
     final btn = Material(
-      color: context.scheme.surfaceContainerHigh,
+      color: background ?? context.scheme.surfaceContainerHigh,
       shape: const CircleBorder(),
       clipBehavior: Clip.antiAlias,
       child: InkWell(

@@ -12,7 +12,7 @@ import 'tag_models.dart';
 
 /// 公共库列表(角色=OC、画风=画师串),映射为统一 [TagEntry] 供页面渲染。
 /// 依赖 bot 会话:未授权抛 [StateError]('need-bot'),UI 据此显示授权提示
-/// (范式同 publicVibesProvider)。场景/其他无公共库。
+/// (范式同 publicVibesProvider)。场景/其他/自定义类别无公共库。
 final publicTagsProvider = FutureProvider.family<List<TagEntry>, TagCategory>((
   ref,
   cat,
@@ -59,7 +59,7 @@ final publicTagsProvider = FutureProvider.family<List<TagEntry>, TagCategory>((
             createdBy: a.ownerId ?? a.addedBy,
           ),
       ];
-    case TagCategory.scene || TagCategory.other:
+    default:
       return const [];
   }
 });

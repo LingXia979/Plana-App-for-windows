@@ -273,7 +273,15 @@ void main() {
       expect(preview, findsNothing);
       await tester.tap(thumb);
       await tester.pumpAndSettle();
-      expect(find.text('选择角色'), findsOneWidget);
+      // 选角面板现在显示类别页签,验证真实替换行为而非旧标题。
+      expect(find.byKey(const ValueKey('replacement')), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('replacement')));
+      await tester.pumpAndSettle();
+      final chosen = fixture.container.read(generateProvider).characters.single;
+      expect(chosen.name, '新角色');
+      expect(chosen.positive, 'new traveler');
+      expect(chosen.avatar, fixture.local);
+      expect(preview, findsNothing);
       await finish(tester);
     });
   });

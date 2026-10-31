@@ -48,8 +48,8 @@ const _ownedPublic = TagEntry(
 
 class _Library extends TagLibrary {
   @override
-  Future<TagLibraryState> build() async => const TagLibraryState(
-    entries: [_mine, _favorite],
+  Future<TagLibraryState> build() async => TagLibraryState(
+    entries: const [_mine, _favorite],
     pools: {
       TagCategory.character: ['常用', '空标签'],
     },

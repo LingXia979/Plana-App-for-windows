@@ -81,7 +81,7 @@ Future<({ProviderContainer c, LibraryPicks? Function() result})> _open(
     overrides: [
       tagLibraryProvider.overrideWith(_Library.new),
       botSessionProvider.overrideWith(_Session.new),
-      for (final cat in TagCategory.values)
+      for (final cat in TagCategory.builtins)
         publicTagsProvider(cat).overrideWith((_) async => const []),
       tagAuthorNamesProvider.overrideWith((_) async => const {}),
       codexFavoritesProvider.overrideWith(_Favorites.new),

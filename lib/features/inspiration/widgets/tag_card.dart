@@ -160,12 +160,15 @@ class TagCard extends StatelessWidget {
           child: Stack(
             fit: StackFit.expand,
             children: [
-              TagCardPreview(
-                url: previewUrl,
-                name: entry.name,
-                decodeWidth: decodeWidth,
-                mosaic: mosaic,
-              ),
+              if (!tagCategoryDef(entry.category).hasPreview)
+                TagTextPreview(text: entry.positive)
+              else
+                TagCardPreview(
+                  url: previewUrl,
+                  name: entry.name,
+                  decodeWidth: decodeWidth,
+                  mosaic: mosaic,
+                ),
               if (mosaic)
                 Center(
                   child: Container(
@@ -467,4 +470,26 @@ class _HueStripePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _HueStripePainter old) => old.hue != hue;
+}
+
+/// Text categories reserve their card body for prompts, with no image placeholder.
+class TagTextPreview extends StatelessWidget {
+  const TagTextPreview({super.key, required this.text});
+  final String text;
+
+  @override
+  Widget build(BuildContext context) => ColoredBox(
+    color: context.scheme.surfaceContainerLow,
+    child: Padding(
+      padding: const EdgeInsets.fromLTRB(14, 50, 14, 38),
+      child: Text(
+        text,
+        maxLines: 8,
+        overflow: TextOverflow.ellipsis,
+        style: context.texts.bodyMedium?.copyWith(
+          color: context.scheme.onSurface,
+        ),
+      ),
+    ),
+  );
 }

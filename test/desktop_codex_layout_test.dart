@@ -10,6 +10,7 @@ import 'package:plana_app/core/store/app_stores.dart';
 import 'package:plana_app/core/theme/app_theme.dart';
 import 'package:plana_app/features/editor/data/tag_translation_service.dart';
 import 'package:plana_app/features/inspiration/codex/codex_favorites.dart';
+import 'package:plana_app/features/inspiration/codex/codex_block.dart';
 import 'package:plana_app/features/inspiration/codex/codex_models.dart';
 import 'package:plana_app/features/inspiration/codex/codex_providers.dart';
 import 'package:plana_app/features/inspiration/codex/codex_view.dart';
@@ -251,6 +252,61 @@ void main() {
       expect(key('desktop-codex-card-style7'), findsNothing);
       await tester.pumpWidget(const SizedBox());
       expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'blocked categories stay out of desktop search, random and detail paging',
+    (tester) async {
+      await mount(tester);
+      await tester.tap(key('codex-category-自然'));
+      await tester.pumpAndSettle();
+      container.read(codexBlocksProvider.notifier).toggle(meta.id, ['自然']);
+      await tester.pumpAndSettle();
+      expect(find.text('全部词条 · 6 条'), findsOneWidget);
+      expect(key('desktop-codex-card-style0'), findsNothing);
+      expect(
+        tester.widget<ListTile>(key('codex-category-自然')).enabled,
+        isFalse,
+      );
+      await tester.enterText(key('desktop-codex-search'), 'character-ONLY');
+      await tester.pumpAndSettle(const Duration(milliseconds: 300));
+      expect(key('desktop-codex-card-style7'), findsOneWidget);
+      expect(key('desktop-codex-card-style0'), findsNothing);
+      await tester.enterText(key('desktop-codex-search'), '');
+      await tester.pumpAndSettle(const Duration(milliseconds: 300));
+      await tester.tap(key('desktop-codex-card-style6'));
+      await tester.pumpAndSettle();
+      expect(find.text('1 / 6'), findsOneWidget);
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pumpAndSettle();
+      expect(find.text('2 / 6'), findsOneWidget);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      await tester.tap(key('desktop-codex-random'));
+      await tester.pumpAndSettle();
+      for (final entry in entries.take(6)) {
+        expect(
+          find.descendant(
+            of: key('desktop-codex-detail'),
+            matching: find.text(entry.title),
+          ),
+          findsNothing,
+        );
+      }
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      await tester.tap(key('codex-category-picker'));
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('解除屏蔽'), findsOneWidget);
+      await tester.tap(find.byTooltip('解除屏蔽'));
+      await tester.pumpAndSettle();
+      expect(container.read(codexBlockProvider(meta.id)).active, isFalse);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(key('desktop-codex-card-style0'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
     },
   );
 

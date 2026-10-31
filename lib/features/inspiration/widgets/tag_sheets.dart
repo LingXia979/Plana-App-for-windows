@@ -612,15 +612,27 @@ class _BackupSheetState extends ConsumerState<_BackupSheet> {
     }
   }
 
+  /// 内置四类 + 自定义类别。
+  List<TagCategoryDef> get _allDefs => [
+    ...kTagCategoryDefs,
+    ...?ref.read(tagLibraryProvider).value?.customDefs,
+  ];
+
   String _detailLine(Map<TagCategory, String> parts) => [
-    for (final d in kTagCategoryDefs)
+    for (final d in _allDefs)
       if (parts[d.key] case final String s) '${d.label} $s',
   ].join(' · ');
 
   Future<void> _upload() => _run('backup', (sid) async {
     final lib = ref.read(tagLibraryProvider.notifier);
     final categories = lib.encodeBackup();
-    final n = categories.values.fold(0, (a, l) => a + l.length);
+    final custom = lib.encodeCustom();
+    final n =
+        categories.values.fold(0, (a, l) => a + l.length) +
+        (custom['items'] as Map).values.fold<int>(
+          0,
+          (a, l) => a + (l as List).length,
+        );
     final cloudTotal = _cloudCounts.values.fold(0, (a, b) => a + b);
     final ok = await confirmDialog(
       context,
@@ -632,10 +644,15 @@ class _BackupSheetState extends ConsumerState<_BackupSheet> {
     );
     if (!ok || !mounted) return;
     final client = ref.read(backendClientProvider);
-    await client.uploadTagBackup(sessionId: sid, categories: categories);
+    await client.uploadTagBackup(
+      sessionId: sid,
+      categories: categories,
+      custom: custom,
+    );
     final detail = _detailLine({
-      for (final d in kTagCategoryDefs)
-        d.key: '${categories[d.webId]?.length ?? 0}',
+      for (final d in _allDefs)
+        d.key:
+            '${d.key.isCustom ? (custom['items'] as Map)[d.webId]?.length ?? 0 : categories[d.webId]?.length ?? 0}',
     });
     await client.recordBackupLog(
       sessionId: sid,
@@ -654,10 +671,13 @@ class _BackupSheetState extends ConsumerState<_BackupSheet> {
     final client = ref.read(backendClientProvider);
     final r = await client.getTagBackup(sid);
     var n = 0;
-    for (final v in r.categories.values) {
+    for (final v in [
+      ...r.categories.values,
+      ...?(r.custom?['items'] as Map?)?.values,
+    ]) {
       if (v is List) n += v.length;
     }
-    if (n == 0) {
+    if (n == 0 && r.custom == null) {
       if (mounted) {
         hintSnack(context, '云端暂无备份', icon: Icons.cloud_off_outlined);
       }
@@ -666,7 +686,7 @@ class _BackupSheetState extends ConsumerState<_BackupSheet> {
     if (!mounted) return;
     final lib = ref.read(tagLibraryProvider.notifier);
     // 恢复前算清「覆盖 / 新增」,别让人在不知情下被整包盖掉
-    final pre = lib.previewMerge(r.categories);
+    final pre = lib.previewMerge(r.categories, custom: r.custom);
     final ok = await confirmDialog(
       context,
       title: pre.overwrite > 0 ? '恢复将覆盖本地数据' : '恢复备份?',
@@ -676,7 +696,7 @@ class _BackupSheetState extends ConsumerState<_BackupSheet> {
       confirmLabel: '继续恢复',
     );
     if (!ok || !mounted) return;
-    final stat = await lib.mergeBackup(r.categories);
+    final stat = await lib.mergeBackup(r.categories, custom: r.custom);
     final detail = _detailLine({
       for (final e in stat.entries)
         e.key: '+${e.value.added}/✎${e.value.updated}',
@@ -776,7 +796,7 @@ class _BackupSheetState extends ConsumerState<_BackupSheet> {
 
       // 本 app / web tag-manager 导出的单分类备份:仍按当前分类校验
       final parsed = parseBackupFile(j);
-      if (parsed.cat != d.key) {
+      if (parsed.cat != d.key && !parsed.cat.isCustom) {
         throw FormatException(
           '分类不匹配:文件是「${tagCategoryDef(parsed.cat).label}」,当前是「${d.label}」',
         );
@@ -785,14 +805,23 @@ class _BackupSheetState extends ConsumerState<_BackupSheet> {
         if (mounted) hintSnack(context, '文件里没有条目', icon: Icons.info_outline);
         return;
       }
-      final payload = {d.webId: parsed.items};
+      final restoredDef = TagCategoryDef.fromJson(j['categoryDefinition']);
+      final importDef = parsed.cat.isCustom && restoredDef?.key == parsed.cat
+          ? restoredDef!
+          : tagCategoryDef(parsed.cat);
+      final payload = {importDef.webId: parsed.items};
+      final custom = parsed.cat.isCustom
+          ? <String, dynamic>{
+              'defs': [importDef.toJson()],
+            }
+          : null;
 
       if (!mounted) return;
       final picked = await showImportPicker(
         context,
         title: '选择要导入的内容',
         options: [
-          for (final def in kTagCategoryDefs)
+          for (final def in [importDef])
             if (payload[def.webId] case final List items)
               ImportOption(
                 key: def.webId,
@@ -809,7 +838,7 @@ class _BackupSheetState extends ConsumerState<_BackupSheet> {
           if (picked.contains(e.key)) e.key: e.value,
       };
       final pre = lib.previewMerge(sel);
-      await lib.mergeBackup(sel);
+      await lib.mergeBackup(sel, custom: custom);
       if (mounted) {
         hintSnack(
           context,
@@ -939,12 +968,13 @@ class _BackupSheetState extends ConsumerState<_BackupSheet> {
               ],
             ),
             const SizedBox(height: 8),
-            // 每类一张卡:本地/云端计数 + 明确的导出/导入按钮
-            for (final d in kTagCategoryDefs) ...[
+            // 每类一张卡:本地/云端计数 + 明确的导出/导入按钮。
+            // 自定义类别的云端条数是合计的,单类不分开写
+            for (final d in _allDefs) ...[
               _categoryCard(
                 d,
                 lib?.of(d.key).length ?? 0,
-                _cloudCounts[d.webId],
+                d.key.isCustom ? null : _cloudCounts[d.webId],
               ),
               const SizedBox(height: 8),
             ],

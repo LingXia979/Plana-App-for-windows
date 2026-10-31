@@ -106,7 +106,7 @@ void main() {
     'all inspiration categories fold both sides, including single words, without exposing IDs',
     () {
       final source = imported([
-        for (final category in TagCategory.values)
+        for (final category in TagCategory.builtins)
           entry(
             name: '条目-${category.name}',
             category: category,

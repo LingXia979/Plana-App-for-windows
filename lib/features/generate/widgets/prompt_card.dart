@@ -409,7 +409,7 @@ class _PromptCardState extends ConsumerState<PromptCard> {
   }
 
   /// 多选态的卡头:左边退出 + 已选几格,右边停用 / 删除 / 存到灵感库 / 合并,
-  /// 还是卡头那排圆钮。合并至少勾两格,存只勾一格、且这格不空;用不了的灰着。
+  /// 还是卡头那排圆钮。合并至少勾两格,存要勾的格里有不空的;用不了的灰着。
   Widget _selectHeader(
     BuildContext context,
     List<PromptSection> sections,
@@ -425,9 +425,9 @@ class _PromptCardState extends ConsumerState<PromptCard> {
     final rows = picked;
     final anyOn = rows.any((s) => s.enabled);
     final canMerge = picked.length >= 2;
-    final canSave =
-        picked.length == 1 &&
-        sectionSaveText(picked.single, mainPrompt).positive.isNotEmpty;
+    final canSave = picked.any(
+      (s) => sectionSaveText(s, mainPrompt).positive.isNotEmpty,
+    );
     final actions = <Widget>[
       RoundIconBtn(
         Icons.power_settings_new,
@@ -457,7 +457,11 @@ class _PromptCardState extends ConsumerState<PromptCard> {
           size: size,
           tooltip: '存到灵感库',
           color: canSave ? scheme.primary : scheme.outline,
-          onTap: canSave ? () => _savePicked(anchor, picked.single) : null,
+          onTap: !canSave
+              ? null
+              : picked.length == 1
+              ? () => _savePicked(anchor, picked.single)
+              : () => _savePickedAll(context, picked),
         ),
       ),
       // 合并是这一栏的正事:勾够两格就填主色
@@ -603,6 +607,32 @@ class _PromptCardState extends ConsumerState<PromptCard> {
     if (await saveSectionToLibrary(anchor, ref, source) && mounted) {
       _exitSelect();
     }
+  }
+
+  /// 勾了几格:每格直接存成一条(见 saveSectionsToLibrary),存完退出多选。
+  Future<void> _savePickedAll(
+    BuildContext context,
+    List<PromptSection> rows,
+  ) async {
+    ref.read(editorSessionsProvider).flushPending();
+    final current = ref.read(generateProvider);
+    final ids = {for (final row in rows) row.id};
+    final sources = withMainRow(
+      current.sections,
+      current.prompt,
+    ).where((s) => ids.contains(s.id)).toList();
+    final r = await saveSectionsToLibrary(ref, sources);
+    if (!mounted || !context.mounted) return;
+    _exitSelect();
+    hintSnack(
+      context,
+      r.saved == 0
+          ? '灵感库里都已有了'
+          : r.skipped > 0
+          ? '已存 ${r.saved} 条到灵感库,${r.skipped} 条已有'
+          : '已存 ${r.saved} 条到灵感库',
+      icon: Icons.check_circle_outline,
+    );
   }
 
   void _openEditor(BuildContext context, {required bool positive}) {
