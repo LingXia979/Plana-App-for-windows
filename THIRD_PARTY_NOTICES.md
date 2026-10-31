@@ -36,7 +36,7 @@ Flutter SDK 及其自带组件遵循 BSD 3-Clause(Copyright 2014 The Flutter Aut
 
 | 文件 | 出处 | 许可 |
 |---|---|---|
-| `danbooru.tsv` | 标签表、热度、类目与中文译名取自 [zhulinyv/Auto-NovelAI-Refactor](https://github.com/zhulinyv/Auto-NovelAI-Refactor) 的 `assets/danbooru_tags_full_zh.csv`,上游已不收录的少量旧 tag 沿用其早先的 `danbooru_e621_merged_with_zh.csv`;标签体系与别名归 [Danbooru](https://danbooru.donmai.us/) | 上游项目为 **GPL-3.0**,与本项目同许可,再分发合规 |
+| `danbooru.tsv`（源码）及由其生成的 `danbooru.tagidx`（运行时离线索引） | 标签表、热度、类目与中文译名取自 [zhulinyv/Auto-NovelAI-Refactor](https://github.com/zhulinyv/Auto-NovelAI-Refactor) 的 `assets/danbooru_tags_full_zh.csv`,上游已不收录的少量旧 tag 沿用其早先的 `danbooru_e621_merged_with_zh.csv`;标签体系与别名归 [Danbooru](https://danbooru.donmai.us/) | 上游项目为 **GPL-3.0**,与本项目同许可,再分发合规 |
 | `t5_tokenizer.json` | NovelAI 的 T5 分词器词表,字节级原样拷贝 | 版权归 Anlatan;本项目仅为 token 计数而调用,不作他用 |
 | `models/censor_n.ort` | 自动打码的检测模型,[deepghs/anime_censor_detection](https://huggingface.co/deepghs/anime_censor_detection) 的 `censor_detect_v1.0_n`。本项目只做了格式转换与量化(静态导出 → 动态 int8 → ORT 格式),**权重未经再训练** | **MIT**(权重仓库)。另见下方关于 YOLOv8 的说明 |
 
@@ -69,3 +69,10 @@ Ultralytics 的代码本身**不随包分发**,仅在离线转换模型时用过
 
 Dart 侧的绑定 `flutter_onnxruntime` 为 **MIT**(Copyright (c) 2025 MASIC AI),
 已计入上文 Dart 依赖清单。
+
+
+## Windows 分支与本次来源
+
+原版应用来自 [mc5024/Plana-App](https://github.com/mc5024/Plana-App)，Windows 重构来自 [LingXia979/Plana-App-for-windows](https://github.com/LingXia979/Plana-App-for-windows)，后续桌面改进选择性参考 [shenghuo2/Plana-App-Desktop](https://github.com/shenghuo2/Plana-App-Desktop)。windows.58 分批适配原版 v1.2.2（固定提交 `46deaa02fab835df8ef88d5248015a79b0bf9b30`）；各作者及上游历史中的 AI 辅助署名见 README 的贡献者记录。
+
+Windows 包使用 ONNX Runtime 1.22.0 x64，与上方 Android 自编库分别分发；相应许可和第三方说明见包内 `licenses/ONNXRuntime-LICENSE.txt`、`licenses/ONNXRuntime-ThirdPartyNotices.txt`。Microsoft Visual C++、Inno Setup 和 7-Zip 声明见 `licenses/WINDOWS-RUNTIME-NOTICES.txt` 及同目录许可。Flutter／Dart 依赖完整许可随 `data/flutter_assets/NOTICES.Z` 提供；对应源码随 `source-code.zip` 提供。

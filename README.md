@@ -13,20 +13,34 @@
 [![Status](https://img.shields.io/badge/状态-桌面版测试中-6A5ACD)](#项目状态)
 [![Flutter](https://img.shields.io/badge/built%20with-Flutter-02569B?logo=flutter&logoColor=white)](https://flutter.dev)
 
-[本次更新](#本次更新windows57) · [界面预览](#界面预览) · [桌面版亮点](#桌面版亮点) · [贡献者](#贡献者) · [问题反馈](https://github.com/LingXia979/Plana-App-for-windows/issues) · [上游项目](https://github.com/mc5024/Plana-App)
+[本次更新](#本次更新windows58) · [界面预览](#界面预览) · [桌面版亮点](#桌面版亮点) · [贡献者](#贡献者) · [问题反馈](https://github.com/LingXia979/Plana-App-for-windows/issues) · [上游项目](https://github.com/mc5024/Plana-App)
 
 </div>
 
 ## 项目状态
 
 本项目基于 [Plana App](https://github.com/mc5024/Plana-App) 开发 Windows 桌面适配，并选择性同步 [shenghuo2/Plana-App-Desktop](https://github.com/shenghuo2/Plana-App-Desktop) 的桌面功能与修复。
-当前版本为 **1.2.1-windows.57（构建 76）**。本分支提供对应的 Windows 桌面源码，安装包与便携版见 [Releases](https://github.com/LingXia979/Plana-App-for-windows/releases/tag/v1.2.1-windows.57)。
+当前源码版本为 **1.2.2-windows.58（构建 77）**。本分支提供 Windows 桌面源码；安装包与便携版以 [Releases](https://github.com/LingXia979/Plana-App-for-windows/releases) 中已发布的资产为准。
 
-- `main` 与 `Plana-app-for-windows`：本次发布同步更新的 Windows 桌面源码；版本对应源码以 Release 标签为准。
+- `main` 与 `Plana-app-for-windows`：Windows 桌面源码；已发布版本对应的源码以 Release 标签为准。
 - [`plana-app-gallery-optimization`](https://github.com/LingXia979/Plana-App-for-windows/tree/plana-app-gallery-optimization)：图库优化分支。
 - Android 原版介绍与下载请前往[上游仓库](https://github.com/mc5024/Plana-App)。
 
-## 本次更新：windows.57
+## 本次更新：windows.58
+
+- 提示词与输入：显示实际成图尺寸，修正权重组移动、免费模型标记、助手分区导入与画师负面补齐；翻译避开尚未输入完成的内容，失败可恢复。离线补全采用预生成索引，支持分组、纠错与译名缓存，并保留补全来源选择。
+- 图库：新增原比例布局和高清缩略图，胶片条插入／删除后保持浏览位置；固定收藏入口，加入可恢复删除的回收站与 30 天清理规则，保留独立副本、鼠标多选和后台生成跟随。
+- 多画布：参考图、LoRA、底图与重绘状态随各自画布保存；加入画布历史、LoRA 组合和个人尺寸预设。旧存档可迁移，切画布后异步结果仍归属原画布。
+- 助手：支持请求排队和自定义请求头，保留多图、取消与恢复、会话隔离；敏感配置加密保存，调试记录脱敏。
+- 灵感库与法典：自定义类别可改名、排序、选择图标和布局；类别随备份导入导出。分区可批量保存，法典可按书屏蔽分类及其子分类，屏蔽同时影响搜索、随机和详情浏览。
+- 钱包与中转：Bot 余额、分类汇总、筛选／分页流水和每日明细；显示服务器中转价格，切换失败保留原状态。旧后端兼容原账单，切换账号后忽略旧响应；直连仍显示 Anlas，保留 Medium／High 参数与费用规则。
+- Windows 适配：继续保留画布快捷键、原位改名、分组边缘滚动、角色头像预览、独立图库副本、可配置后端与加密凭据；充值码使用桌面另存为，窄窗口余额显示自适应。
+
+本版分 10 批选择性适配原版 [v1.2.2](https://github.com/mc5024/Plana-App/releases/tag/v1.2.2)，固定来源为 [`46deaa0`](https://github.com/mc5024/Plana-App/commit/46deaa02fab835df8ef88d5248015a79b0bf9b30)。保留此前从 [shenghuo2/Plana-App-Desktop](https://github.com/shenghuo2/Plana-App-Desktop) 整合的桌面能力；没有替换为固定后端，没有移除 Anima／Krea 和补全来源选择，也未照搬 Android 专用界面。
+
+功能说明见 [Windows 使用说明](WINDOWS-README.md#上游-122-对齐)。
+
+## 上一轮更新：windows.57
 
 - 保存工作台、助手会话或调试记录失败时保留最新待写内容，显示错误并支持重试；退出保存失败会取消退出。自定义接口读写失败保留原列表和表单，重载成功后才允许覆盖。
 - 后台生成时切页、切图库再返回仍能看到新图，保存阶段也保留提交时的目标图库；切画布后保留当前草稿，用户主动选择历史图片仍优先。
@@ -95,7 +109,7 @@
 
 ## 桌面版亮点
 
-以下功能包含截至 windows.56 的桌面改进。
+以下功能包含截至 windows.58 的桌面改进。
 
 - **桌面工作台**：可调整侧栏宽度，提示词、画布与助手同屏；支持鼠标、键盘、文件拖入和快捷粘贴图片，图片按鼠标所在区域导入。
 - **V5 Full 生成档位**：Medium／High 快捷切换；Medium 固定 14 步，切回 High 恢复原采样参数和负面草稿。档位保存、费用计算、图片导入与重新生成同步支持。
@@ -119,7 +133,7 @@ Windows 版的问题与建议请提交到[本仓库 Issues](https://github.com/L
 
 ## 来源与致谢
 
-- [mc5024/Plana-App](https://github.com/mc5024/Plana-App)：原版应用与 Android 上游，提供核心绘图、提示词、图库及助手基础。
+- [mc5024/Plana-App](https://github.com/mc5024/Plana-App)：原版应用与 Android 上游，提供核心绘图、提示词、图库及助手基础；本版从固定 v1.2.2 分批适配离线补全、回收站、画布历史、灵感类别与钱包等更新。
 - [shenghuo2/Plana-App-Desktop](https://github.com/shenghuo2/Plana-App-Desktop)：在本项目 Windows 重构版上继续开发的桌面项目；分批选择性同步其多画布、提示词分区、编辑器、助手、账号调度与后续存储恢复、后台生成、Bot 轮询和图库缓存改进，并适配本分支的 Windows 操作习惯。
 - [LingXia979/Plana-App-for-windows](https://github.com/LingXia979/Plana-App-for-windows)：Windows 桌面重构、图库改进、本地交互整合与 Windows 安装包维护。
 
