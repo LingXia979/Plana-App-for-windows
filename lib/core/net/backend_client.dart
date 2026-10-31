@@ -311,6 +311,11 @@ class NaiQuota {
     this.isAdmin = false,
     this.freeMode = false,
     this.refillPerDay = 0,
+    this.sharedPool = true,
+    this.relayEnabled = false,
+    this.relayAvailable = true,
+    this.relayPrice = 0.05,
+    this.relayPriceLegacy = 0.05,
   });
 
   /// 今日余额(张)。服务端按秒连续回充,所以带小数 —— 显示时**向下**取整,
@@ -340,18 +345,58 @@ class NaiQuota {
   /// 每天回充多少张。
   final double refillPerDay;
 
+  /// 共享号渠道开着没有。false = NAI 出图全走中转(按张从钱包扣),上面几项
+  /// 额度不再生效。老服务端不下发时按开着算。
+  final bool sharedPool;
+
+  /// 自己开没开「中转出图」。
+  final bool relayEnabled;
+
+  /// 中转渠道本身能不能用(后台配没配好)。
+  final bool relayAvailable;
+
+  /// 中转单价(元 / 张):V5 / V4.5 及更早。
+  final double relayPrice;
+  final double relayPriceLegacy;
+
   /// 现在能出几张(余额 + 赠送)。
   int get available => (balance + extra).floor();
 
-  factory NaiQuota.fromJson(Map<String, dynamic> j) => NaiQuota(
-    balance: (j['daily_balance'] as num?)?.toDouble() ?? 0,
-    limit: (j['daily_limit'] as num?)?.toInt() ?? 0,
-    extra: (j['extra_balance'] as num?)?.toDouble() ?? 0,
-    activated: j['activated'] != false,
-    isAdmin: j['is_admin'] == true,
-    freeMode: j['free_mode'] == true,
-    refillPerDay: (j['refill_per_day'] as num?)?.toDouble() ?? 0,
+  /// 共享号已停用:点数、V5 额度都不再管用,NAI 能不能出图只看中转开关。
+  bool get relayOnly => !sharedPool;
+
+  NaiQuota copyWith({bool? relayEnabled, bool? relayAvailable}) => NaiQuota(
+    balance: balance,
+    limit: limit,
+    extra: extra,
+    activated: activated,
+    isAdmin: isAdmin,
+    freeMode: freeMode,
+    refillPerDay: refillPerDay,
+    sharedPool: sharedPool,
+    relayEnabled: relayEnabled ?? this.relayEnabled,
+    relayAvailable: relayAvailable ?? this.relayAvailable,
+    relayPrice: relayPrice,
+    relayPriceLegacy: relayPriceLegacy,
   );
+
+  factory NaiQuota.fromJson(Map<String, dynamic> j) {
+    final price = (j['relay_price'] as num?)?.toDouble() ?? 0.05;
+    return NaiQuota(
+      balance: (j['daily_balance'] as num?)?.toDouble() ?? 0,
+      limit: (j['daily_limit'] as num?)?.toInt() ?? 0,
+      extra: (j['extra_balance'] as num?)?.toDouble() ?? 0,
+      activated: j['activated'] != false,
+      isAdmin: j['is_admin'] == true,
+      freeMode: j['free_mode'] == true,
+      refillPerDay: (j['refill_per_day'] as num?)?.toDouble() ?? 0,
+      sharedPool: j['shared_pool'] != false,
+      relayEnabled: j['relay_enabled'] == true,
+      relayAvailable: j['relay_available'] != false,
+      relayPrice: price,
+      relayPriceLegacy: (j['relay_price_legacy'] as num?)?.toDouble() ?? price,
+    );
+  }
 }
 
 /// 一段用量统计(个人 `/api/user/stats` 与平台 `/api/platform/stats(/all)`
@@ -438,6 +483,187 @@ class HourlyHeat {
 
   final List<({int hour, double avg, double total})> cells;
   final int totalDays;
+}
+
+/// 元 → 分。服务端的金额是两位小数的元,直接乘 100 会带浮点尾巴
+/// (0.29 * 100 = 28.999999999999996),所以一律 round。
+int _yuanToFen(Object? v) => (((v as num?)?.toDouble() ?? 0) * 100).round();
+
+/// 钱包里的一笔流水(`/api/wallet` 的 `recent` 与 `/api/wallet/ledger` 的
+/// `items` 同结构)。
+///
+/// 2026-10-18 起服务端把原来的两本账 —— NAI 中转按月出账、租卡 / 视频由管理员
+/// 手动结算 —— 并成了钱包:每人一个余额,消费成功就实时扣一笔,充值和调整由
+/// 管理员登记。没有账期、结算日、分摊了,只剩这一本流水。
+class WalletEntry {
+  const WalletEntry({
+    required this.id,
+    required this.ts,
+    required this.amountFen,
+    this.kind = '',
+    this.title = '',
+    this.note = '',
+  });
+
+  final int id;
+
+  /// 北京时间 naive ISO,截到秒(`2026-10-18T14:02:03`)。
+  final String ts;
+
+  /// 金额,**分**。扣款为负、入账为正。
+  ///
+  /// 服务端给的是元;换成整数分再用,当天合计不会攒出浮点误差,
+  /// 正负判断也不会被 -0.0 这类边角绊倒。
+  final int amountFen;
+
+  /// `nai` / `video` / `rental` / `topup`(充值)/ `adjust`(扣款调整)。
+  /// 只拿来挑图标 —— 配色看 [amountFen] 的正负,不看 kind。
+  final String kind;
+
+  /// 给人看的标题与一行说明,服务端拼好的(`NAI 出图` / `V5 Full · 832×1216`)。
+  final String title;
+  final String note;
+
+  bool get isCredit => amountFen > 0;
+
+  /// `MM-DD HH:mm`。按位切出来原样显示 —— 服务端给的就是北京时间,不用换算。
+  String get shortTime =>
+      ts.length >= 16 ? ts.substring(5, 16).replaceFirst('T', ' ') : ts;
+
+  /// `HH:mm`,同一天的列表里不必再写日期。
+  String get clock => ts.length >= 16 ? ts.substring(11, 16) : ts;
+
+  factory WalletEntry.fromJson(Map<String, dynamic> j) => WalletEntry(
+    id: (j['id'] as num?)?.toInt() ?? 0,
+    ts: j['ts']?.toString() ?? '',
+    amountFen: _yuanToFen(j['amount']),
+    kind: j['kind']?.toString() ?? '',
+    title: j['title']?.toString() ?? '',
+    note: j['note']?.toString() ?? '',
+  );
+}
+
+/// 扣款的一个类目(`/api/wallet` 的 `categories`):按流水标题 + kind 汇总。
+class WalletCategory {
+  const WalletCategory({
+    required this.title,
+    this.kind = '',
+    this.count = 0,
+    this.amountFen = 0,
+  });
+
+  final String title;
+  final String kind;
+  final int count;
+
+  /// 这一类累计扣了多少(分,正数)。
+  final int amountFen;
+
+  factory WalletCategory.fromJson(Map<String, dynamic> j) => WalletCategory(
+    title: j['title']?.toString() ?? '',
+    kind: j['kind']?.toString() ?? '',
+    count: (j['count'] as num?)?.toInt() ?? 0,
+    amountFen: _yuanToFen(j['amount']),
+  );
+}
+
+/// 我的钱包(`GET /api/wallet`):余额、累计扣款 / 入账、在跑的租卡。
+class WalletSummary {
+  const WalletSummary({
+    this.userId = '',
+    this.nickname = '',
+    this.balanceFen = 0,
+    this.chargedFen = 0,
+    this.creditedFen = 0,
+    this.count = 0,
+    this.recent = const [],
+    this.categories = const [],
+    this.pendingRentalFen = 0,
+    this.pendingRentalCount = 0,
+    this.startFrom = '',
+    this.isAdmin = false,
+  });
+
+  final String userId;
+
+  /// bot 记下的昵称,可能为空。
+  final String nickname;
+
+  /// 余额(分)。**可以是负数** —— 消费成功就扣,不先看余额够不够。
+  final int balanceFen;
+
+  /// 累计扣款 / 累计入账(分,都是正数)。
+  final int chargedFen;
+  final int creditedFen;
+
+  /// 流水总笔数。
+  final int count;
+
+  /// 最近几笔(新→旧),条数看请求时的 limit。
+  final List<WalletEntry> recent;
+
+  /// 扣款按类目汇总,花得多的在前。老服务端没有这个字段时为空。
+  final List<WalletCategory> categories;
+
+  /// 还在跑的租卡累计到现在的钱(分)与台数。**还没扣** —— 租卡在关机那一刻
+  /// 才扣这一程,所以不在 [balanceFen] 里,界面上要单独说一句。
+  final int pendingRentalFen;
+  final int pendingRentalCount;
+
+  /// 钱包的起算日 `yyyy-MM-dd`:这天之前的消费不在钱包里。
+  final String startFrom;
+
+  /// **调用方**是不是管理员。
+  final bool isAdmin;
+
+  bool get owing => balanceFen < 0;
+
+  factory WalletSummary.fromJson(Map<String, dynamic> j) {
+    final p = (j['pending'] as Map?)?.cast<String, dynamic>() ?? const {};
+    return WalletSummary(
+      userId: j['user_id']?.toString() ?? '',
+      nickname: j['nickname']?.toString() ?? '',
+      // 有整数的 balance_fen 就用它,没有再从元换算
+      balanceFen:
+          (j['balance_fen'] as num?)?.toInt() ?? _yuanToFen(j['balance']),
+      chargedFen: _yuanToFen(j['charged_total']),
+      creditedFen: _yuanToFen(j['credited_total']),
+      count: (j['count'] as num?)?.toInt() ?? 0,
+      recent: [
+        for (final e in (j['recent'] as List?) ?? const [])
+          if (e is Map) WalletEntry.fromJson(e.cast<String, dynamic>()),
+      ],
+      categories: [
+        for (final e in (j['categories'] as List?) ?? const [])
+          if (e is Map) WalletCategory.fromJson(e.cast<String, dynamic>()),
+      ],
+      pendingRentalFen: _yuanToFen(p['rental']),
+      pendingRentalCount: (p['rental_count'] as num?)?.toInt() ?? 0,
+      startFrom: j['start_from']?.toString() ?? '',
+      isAdmin: j['is_admin'] == true,
+    );
+  }
+}
+
+/// 流水的一页(`GET /api/wallet/ledger`),新→旧。
+class WalletLedger {
+  const WalletLedger({this.items = const [], this.nextCursor});
+
+  final List<WalletEntry> items;
+
+  /// 下一页游标,原样传回去续翻;null = 到底了。
+  final String? nextCursor;
+
+  factory WalletLedger.fromJson(Map<String, dynamic> j) {
+    final next = j['next_cursor']?.toString() ?? '';
+    return WalletLedger(
+      items: [
+        for (final e in (j['items'] as List?) ?? const [])
+          if (e is Map) WalletEntry.fromJson(e.cast<String, dynamic>()),
+      ],
+      nextCursor: next.isEmpty ? null : next,
+    );
+  }
 }
 
 /// 账单里「一个人」的一行。estimate 的 current_user 与 settlement 结构略异:
@@ -1608,6 +1834,21 @@ class BackendClient {
   Future<NaiQuota> myNaiQuota(String sessionId) async =>
       NaiQuota.fromJson(await _getJson('/user/quota', sessionId));
 
+  /// 拨自己的「中转出图」开关。回执:`enabled` 现在的状态、`available` 渠道能不能用。
+  Future<({bool enabled, bool available})> setMyRelay(
+    String sessionId,
+    bool enabled,
+  ) async {
+    final j = await _postJson('/user/quota/relay', {
+      'enabled': enabled,
+    }, sessionId);
+    if (j['enabled'] is! bool ||
+        (j.containsKey('available') && j['available'] is! bool)) {
+      throw const FormatException('中转设置响应无效');
+    }
+    return (enabled: j['enabled'] == true, available: j['available'] != false);
+  }
+
   // ── 出图租卡(anima / krea2 付费档)──────────────────────────────
   // 服务端 `agent_router/img_rental.py`。四个端点都要 Bot 会话。
   // 免费档仍走 Modal 共享通道,这几个只管租来的那台机器。
@@ -2455,6 +2696,52 @@ class BackendClient {
       await _getJson('/billing/settlement', sessionId),
     );
   }
+
+  /// 我的钱包。[limit] = 顺带下发最近几笔(0~50);只要余额就传 0。
+  Future<WalletSummary> wallet(String sessionId, {int limit = 10}) async {
+    final json = await _getJson('/wallet?limit=$limit', sessionId);
+    final balance = json['balance_fen'] ?? json['balance'];
+    if (balance is! num || !balance.isFinite) {
+      throw const FormatException('钱包余额响应无效');
+    }
+    return WalletSummary.fromJson(json);
+  }
+
+  /// 流水翻页,新→旧。
+  ///
+  /// [cursor] 传上一页的 [WalletLedger.nextCursor],不传 = 第一页;
+  /// [kind] ∈ `all` / `charge`(只看扣款)/ `credit`(只看入账);
+  /// [since] / [until] 只取年月日、按北京时间的日期算,含头不含尾 ——
+  /// 看某一天就传那天和下一天。
+  Future<WalletLedger> walletLedger(
+    String sessionId, {
+    int limit = 50,
+    String? cursor,
+    String kind = 'all',
+    DateTime? since,
+    DateTime? until,
+  }) async {
+    String ymd(DateTime d) =>
+        '${d.year.toString().padLeft(4, '0')}-'
+        '${d.month.toString().padLeft(2, '0')}-'
+        '${d.day.toString().padLeft(2, '0')}';
+    final q = [
+      'limit=$limit',
+      'kind=${Uri.encodeComponent(kind)}',
+      if (cursor != null && cursor.isNotEmpty)
+        'cursor=${Uri.encodeComponent(cursor)}',
+      if (since != null) 'since=${ymd(since)}',
+      if (until != null) 'until=${ymd(until)}',
+    ];
+    return WalletLedger.fromJson(
+      await _getJson('/wallet/ledger?${q.join('&')}', sessionId),
+    );
+  }
+
+  /// 收款码图片地址(公开端点,直接交给 RemoteImage)。[type] ∈ `wechat` /
+  /// `alipay`。路径沿用旧名;没配收款码时回 404。
+  String paymentQrUrl(String type) =>
+      '$baseUrl/api/billing/qrcode?type=${Uri.encodeComponent(type)}';
 
   // ── LoRA 管理(anima / krea 出图渠道,契约对齐 web loraService.ts) ──
   //

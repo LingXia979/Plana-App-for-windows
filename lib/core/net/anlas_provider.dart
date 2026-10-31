@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../auth/auth_mode.dart';
@@ -17,8 +19,10 @@ final anlasProvider = AsyncNotifierProvider<AnlasNotifier, NaiSubscription?>(
 );
 
 class AnlasNotifier extends AsyncNotifier<NaiSubscription?> {
+  int _request = 0;
   @override
   Future<NaiSubscription?> build() async {
+    _request++;
     // await 依赖(而非取 .value):懒加载 storage 首读期间 .value 是 null,
     // 会先空跑一轮返回 null、再等重建,首帧点数/Opus 状态平白慢一拍。
     final mode = await ref.watch(authModeProvider.future);
@@ -60,15 +64,32 @@ class AnlasNotifier extends AsyncNotifier<NaiSubscription?> {
   /// 免费图的费用胶囊闪现 20 Anlas 再变回免费。
   /// 例外是手里本来就没数:没有值可丢,置 loading 顶栏那格才转得起来。
   Future<void> refresh() async {
-    final blank = state.asData?.value == null && !state.isLoading;
+    if (state.isLoading) {
+      try {
+        await future;
+      } catch (_) {}
+      if (!ref.mounted) return;
+    }
+    final mode = ref.read(authModeProvider).asData?.value;
+    if (mode == null) return;
+    final request = ++_request;
+    final blank = state.asData?.value == null;
+    bool Function() ownerValid = () => true;
+    bool current() =>
+        ref.mounted &&
+        request == _request &&
+        ref.read(authModeProvider).asData?.value == mode &&
+        ownerValid();
     try {
-      final mode = ref.read(authModeProvider).value;
       final NaiSubscription? next;
       if (mode == AuthMode.bot) {
+        unawaited(ref.read(walletSummaryProvider.notifier).refresh());
         final base = await ref.read(backendBaseProvider.future);
-        if (base.isEmpty) return;
+        if (!current() || base.isEmpty) return;
+        final client = ref.read(backendClientProvider);
+        ownerValid = () => identical(client, ref.read(backendClientProvider));
         if (blank) state = const AsyncLoading();
-        final res = await ref.read(backendClientProvider).getAnlas();
+        final res = await client.getAnlas();
         next = (
           anlas: res.anlas,
           fixedAnlas: res.anlas,
@@ -79,17 +100,17 @@ class AnlasNotifier extends AsyncNotifier<NaiSubscription?> {
         );
       } else {
         final key = await ref.read(primaryNaiKeyProvider.future);
-        if (key == null || key.token.isEmpty) return;
+        if (!current() || key == null || key.token.isEmpty) return;
+        final client = ref.read(naiClientProvider(key.endpoint));
+        ownerValid = () =>
+            identical(key, ref.read(primaryNaiKeyProvider).asData?.value) &&
+            identical(client, ref.read(naiClientProvider(key.endpoint)));
         if (blank) state = const AsyncLoading();
-        next = await ref
-            .read(naiClientProvider(key.endpoint))
-            .subscription(key.token);
+        next = await client.subscription(key.token);
       }
-      state = AsyncData(next);
+      if (current()) state = AsyncData(next);
     } catch (_) {
-      // 拉失败保留旧值(旧行为会把显示清掉,更糟);本来就没数的退回「没数」,
-      // 不然顶栏那格会一直转下去。
-      if (blank) state = const AsyncData(null);
+      if (current() && blank) state = const AsyncData(null);
     }
   }
 }
@@ -122,32 +143,146 @@ final naiQuotaProvider = AsyncNotifierProvider<NaiQuotaNotifier, NaiQuota?>(
 );
 
 class NaiQuotaNotifier extends AsyncNotifier<NaiQuota?> {
+  int _fetchRequest = 0;
+  int _relayRequest = 0;
+
   @override
   Future<NaiQuota?> build() async {
-    final mode = await ref.watch(authModeProvider.future);
-    if (mode != AuthMode.bot) return null;
-    final session = await ref.watch(botSessionProvider.future);
-    if (session == null) return null;
-    return _fetch(session.sessionId);
+    _fetchRequest++;
+    _relayRequest++;
+    final scope = await ref.watch(botFinanceScopeProvider.future);
+    return scope == null ? null : _fetch(scope);
   }
 
-  /// 主动刷新(弹层打开 / 点刷新 / 生成后):**静默**拉新,理由同
-  /// [AnlasNotifier.refresh] —— 置 loading 会让读数先闪没再回来。
   Future<void> refresh() async {
-    if (ref.read(authModeProvider).value != AuthMode.bot) return;
-    final session = await ref.read(botSessionProvider.future);
-    if (session == null) return;
-    final next = await _fetch(session.sessionId);
-    if (next != null) state = AsyncData(next); // 拉失败保留旧值
+    if (state.isLoading) {
+      try {
+        await future;
+      } catch (_) {}
+      return;
+    }
+    final request = ++_fetchRequest;
+    final scope = await ref.read(botFinanceScopeProvider.future);
+    if (scope == null || !_sameFinanceScope(ref, scope)) return;
+    final next = await _fetch(scope);
+    if (_sameFinanceScope(ref, scope) &&
+        request == _fetchRequest &&
+        next != null) {
+      state = AsyncData(next);
+    }
   }
 
-  /// 拿不到就 null:老服务端根本没有这个端点(404),那时整块不显示,
-  /// 而不是弹一个用户什么也做不了的错。
-  Future<NaiQuota?> _fetch(String sessionId) async {
+  /// 只在服务端确认后更新开关,失败保留原值。确认之前的额度请求不得盖回旧开关。
+  Future<void> setRelay(bool enabled) async {
+    final scope = await ref.read(botFinanceScopeProvider.future);
+    if (scope == null || !_sameFinanceScope(ref, scope)) {
+      throw StateError('未授权');
+    }
+    final request = ++_relayRequest;
+    final result = await scope.client.setMyRelay(scope.sessionId, enabled);
+    if (!_sameFinanceScope(ref, scope) || request != _relayRequest) return;
+    _fetchRequest++;
+    final quota = state.asData?.value;
+    if (quota != null) {
+      state = AsyncData(
+        quota.copyWith(
+          relayEnabled: result.enabled,
+          relayAvailable: result.available,
+        ),
+      );
+    }
+  }
+
+  Future<NaiQuota?> _fetch(BotFinanceScope scope) async {
     try {
-      return await ref.read(backendClientProvider).myNaiQuota(sessionId);
+      return await scope.client.myNaiQuota(scope.sessionId);
     } catch (_) {
       return null;
+    }
+  }
+}
+
+/// 钱包与中转请求绑定到接入方式、会话和后端。切换期间不给旧会话继续发请求。
+typedef BotFinanceScope = ({String sessionId, BackendClient client});
+
+final botFinanceScopeProvider = FutureProvider<BotFinanceScope?>((ref) async {
+  final mode = await ref.watch(authModeProvider.future);
+  if (mode != AuthMode.bot) return null;
+  final session = await ref.watch(botSessionProvider.future);
+  if (session == null || session.expired) return null;
+  return (
+    sessionId: session.sessionId,
+    client: ref.watch(backendClientProvider),
+  );
+});
+
+bool _sameFinanceScope(Ref ref, BotFinanceScope scope) =>
+    ref.mounted && ref.read(botFinanceScopeProvider).asData?.value == scope;
+
+/// 统计页允许手动查看另一套账本。钱包始终用 Bot 会话,不会用 NAI 直连密钥。
+/// 创作页只在 Bot 接入方式下订阅它。
+final walletAccountScopeProvider = FutureProvider<BotFinanceScope?>((
+  ref,
+) async {
+  final session = await ref.watch(botSessionProvider.future);
+  if (session == null || session.expired) return null;
+  return (
+    sessionId: session.sessionId,
+    client: ref.watch(backendClientProvider),
+  );
+});
+
+bool _sameWalletScope(Ref ref, BotFinanceScope scope) =>
+    ref.mounted && ref.read(walletAccountScopeProvider).asData?.value == scope;
+
+/// 旧后端未实现钱包接口时才回退旧账单;网络错误不能冒充空钱包。
+bool walletEndpointUnsupported(Object error) =>
+    error is BackendException && const [404, 405, 501].contains(error.status);
+
+final walletSummaryProvider =
+    AsyncNotifierProvider<WalletSummaryNotifier, WalletSummary?>(
+      WalletSummaryNotifier.new,
+      retry: (_, _) => null,
+    );
+
+class WalletSummaryNotifier extends AsyncNotifier<WalletSummary?> {
+  int _request = 0;
+
+  @override
+  Future<WalletSummary?> build() async {
+    _request++;
+    final scope = await ref.watch(walletAccountScopeProvider.future);
+    if (scope == null) return null;
+    try {
+      return await scope.client.wallet(scope.sessionId, limit: 0);
+    } catch (error) {
+      if (walletEndpointUnsupported(error)) return null;
+      rethrow;
+    }
+  }
+
+  /// 成功才替换余额;旧账号、旧后端和较早的刷新结果不能写回当前状态。
+  Future<void> refresh() async {
+    if (state.isLoading) {
+      try {
+        await future;
+      } catch (_) {}
+      return;
+    }
+    final request = ++_request;
+    final scope = await ref.read(walletAccountScopeProvider.future);
+    if (scope == null || !_sameWalletScope(ref, scope)) return;
+    bool current() => _sameWalletScope(ref, scope) && request == _request;
+    try {
+      final next = await scope.client.wallet(scope.sessionId, limit: 0);
+      if (current()) state = AsyncData(next);
+    } catch (error, stack) {
+      if (!current()) return;
+      if (walletEndpointUnsupported(error)) {
+        state = const AsyncData(null);
+      } else if (state.asData?.value == null) {
+        state = AsyncError(error, stack);
+      }
     }
   }
 }

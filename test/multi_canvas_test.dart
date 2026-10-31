@@ -29,6 +29,8 @@ import 'package:plana_app/features/generate/models.dart';
 import 'package:plana_app/features/generate/prompt_presets.dart';
 import 'package:plana_app/features/generate/state_codec.dart';
 import 'package:plana_app/features/generate/widgets/top_bar.dart';
+import 'package:plana_app/features/generate/widgets/top_bar_status.dart';
+import 'package:plana_app/features/generate/widgets/anlas_panel.dart';
 
 class _TokenMode extends AuthModeNotifier {
   @override
@@ -1435,7 +1437,10 @@ void main() {
     expect(c.read(generateProvider).params.model, 'NAI 5.0 Curated');
     expect(find.text('NAI 5.0 Curated'), findsOneWidget);
     expect(find.text('1,234'), findsOneWidget);
-    expect(find.text('70%'), findsOneWidget);
+    final status = tester.widget<TopBarStatus>(find.byType(TopBarStatus));
+    expect(status.value, '1,234');
+    expect(status.meter?.label, '70%');
+    expect(status.meter?.fraction, closeTo(.7, .001));
     canvases.create();
     gen.setModel('NAI 4.0 Full');
     await tester.pumpAndSettle();
@@ -1446,6 +1451,10 @@ void main() {
     await tester.tap(find.byTooltip('点数与额度'));
     await tester.pumpAndSettle();
     expect(find.text('点数与额度'), findsOneWidget);
+    expect(
+      tester.widget<UsageCard>(find.byType(UsageCard)).usage.batteryPct,
+      70,
+    );
     expect(tester.takeException(), isNull);
     await tester.pump(const Duration(seconds: 1));
   });

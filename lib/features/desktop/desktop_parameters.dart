@@ -64,9 +64,14 @@ class _DesktopParametersState extends ConsumerState<_DesktopParameters> {
     );
   }
 
-  late final seed = TextEditingController(
-    text: ref.read(generateProvider).params.seed,
-  );
+  late final TextEditingController seed;
+
+  @override
+  void initState() {
+    super.initState();
+    seed = TextEditingController(text: ref.read(generateProvider).params.seed);
+  }
+
   @override
   void dispose() {
     _highlightTimer?.cancel();

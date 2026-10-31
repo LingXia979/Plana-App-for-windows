@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/net/anlas_provider.dart';
+import '../../../core/auth/auth_mode.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/ui/param_input.dart';
 import '../../../core/util/haptics.dart';
@@ -12,7 +13,13 @@ import '../generate_state.dart';
 import '../generation_controller.dart';
 import '../loop_controller.dart';
 import '../models.dart'
-    show GenParams, kBatchMax, stepsRangeOf, isAnimaModel, isKreaModel;
+    show
+        GenParams,
+        kBatchMax,
+        stepsRangeOf,
+        isAnimaModel,
+        isKreaModel,
+        isNai5Model;
 import '../vibe_encoder.dart';
 import '../../import/import_panel.dart';
 import 'advanced_sheet.dart';
@@ -539,7 +546,10 @@ class _GenerateButton extends StatelessWidget {
                         curve: Motion.standard,
                         child: AnimatedSwitcher(
                           duration: Motion.fast,
-                          child: CostPill(key: ValueKey(cost), cost: cost),
+                          child: GenerationCostPill(
+                            key: ValueKey(cost),
+                            cost: cost,
+                          ),
                         ),
                       ),
                     ),
@@ -639,10 +649,37 @@ class _GenerateButton extends StatelessWidget {
 /// **公开只为可测**:这颗胶囊的不变量(免费与两位数等宽、两档等高、不撑满
 /// 按钮)全是布局层面的,analyze 一条都查不出来,历史上连着栽过三次。
 /// 直接 pump 它比经由整页去凑一个免费/收费状态可靠得多,见 widget_test。
+class GenerationCostPill extends ConsumerWidget {
+  const GenerationCostPill({super.key, required this.cost});
+  final int cost;
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final bot = ref.watch(authModeProvider).asData?.value == AuthMode.bot;
+    final model = ref.watch(generateProvider.select((s) => s.params.model));
+    final quota = bot && model.startsWith('NAI ')
+        ? ref.watch(naiQuotaProvider).asData?.value
+        : null;
+    if (quota == null || !quota.relayOnly) return CostPill(cost: cost);
+    final price = isNai5Model(model)
+        ? quota.relayPrice
+        : quota.relayPriceLegacy;
+    final label = !quota.relayAvailable
+        ? '中转不可用'
+        : !quota.relayEnabled
+        ? '中转未启用'
+        : '¥${price.toStringAsFixed(2)}/张';
+    return Tooltip(
+      message: '中转按每张计费，实际扣款以钱包流水为准；可在顶部余额中设置。',
+      child: CostPill(cost: cost, relayLabel: label),
+    );
+  }
+}
+
 class CostPill extends StatelessWidget {
-  const CostPill({super.key, required this.cost});
+  const CostPill({super.key, required this.cost, this.relayLabel});
 
   final int cost;
+  final String? relayLabel;
 
   static const _icon = 12.0;
   static const _gap = 3.0;
@@ -688,7 +725,7 @@ class CostPill extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
-    final paid = cost > 0;
+    final paid = cost > 0 || relayLabel != null;
     // 底色换了,字色得跟着换到配套的那支 —— onPrimary 是给按钮底色配的,
     // 压在浅粉上会在浅色主题下变成浅字压浅底。
     final fg = paid ? scheme.onTertiaryContainer : scheme.onPrimary;
@@ -725,7 +762,18 @@ class CostPill extends StatelessWidget {
             Row(
               mainAxisSize: MainAxisSize.min,
               mainAxisAlignment: MainAxisAlignment.center,
-              children: !paid
+              children: relayLabel != null
+                  ? [
+                      Flexible(
+                        child: Text(
+                          relayLabel!,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: style,
+                        ),
+                      ),
+                    ]
+                  : !paid
                   ? [Text('免费', maxLines: 1, softWrap: false, style: style)]
                   : [
                       Icon(Icons.toll, size: _icon, color: fg),

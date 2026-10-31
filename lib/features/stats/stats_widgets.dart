@@ -102,10 +102,12 @@ class StatTile extends StatelessWidget {
           children: [
             Icon(icon, size: 14, color: scheme.onSurfaceVariant),
             const SizedBox(width: 5),
-            Text(
-              label,
-              style: context.texts.labelSmall!.copyWith(
-                color: scheme.onSurfaceVariant,
+            Flexible(
+              child: Text(
+                label,
+                style: context.texts.labelSmall!.copyWith(
+                  color: scheme.onSurfaceVariant,
+                ),
               ),
             ),
           ],
@@ -118,21 +120,18 @@ class StatTile extends StatelessWidget {
             width: 52,
           )
         else
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.baseline,
-            textBaseline: TextBaseline.alphabetic,
+          Wrap(
+            crossAxisAlignment: WrapCrossAlignment.end,
+            spacing: 4,
             children: [
               Text(value ?? '—', style: mono(context, size: 17)),
               if (suffix != null) ...[
-                const SizedBox(width: 4),
-                Flexible(
-                  child: Text(
-                    suffix!,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: context.texts.labelSmall!.copyWith(
-                      color: scheme.onSurfaceVariant,
-                    ),
+                Text(
+                  suffix!,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: context.texts.labelSmall!.copyWith(
+                    color: scheme.onSurfaceVariant,
                   ),
                 ),
               ],

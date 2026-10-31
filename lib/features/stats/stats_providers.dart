@@ -4,6 +4,8 @@ import '../../core/auth/bot_session_store.dart';
 import '../../core/net/backend_client.dart';
 import '../../core/net/nai_client.dart' show NaiUsage;
 
+export '../../core/net/anlas_provider.dart' show walletSummaryProvider;
+
 /// 统计页的数据源。服务端端点(除在线人数)都要 Bot 会话;
 /// 失败/未授权一律回 null,由页面按「—」/未授权提示降级,不弹错。
 /// range ∈ today/week/month。
@@ -90,6 +92,41 @@ final dayDetailsProvider = FutureProvider.autoDispose
       }
     });
 
+/// 某一天的钱包流水(扣款与入账,新→旧)。参数为该天 00:00。
+///
+/// 当天的合计要拿全量算,所以按页拉齐再交出去。一张中转图就是一笔,平常一页
+/// 就够;拉满 [_kDayLedgerPages] 页还没到底就停,`nextCursor` 原样留着,
+/// 页面据此注明只列了一部分。
+final dayWalletLedgerProvider = FutureProvider.autoDispose
+    .family<WalletLedger?, DateTime>(
+      (ref, day) => _withSession(ref, (c, sid) async {
+        final until = day.add(const Duration(days: 1));
+        final items = <int, WalletEntry>{};
+        final seen = <String>{};
+        String? cursor;
+        for (var i = 0; i < _kDayLedgerPages; i++) {
+          final page = await c.walletLedger(
+            sid,
+            limit: 100,
+            cursor: cursor,
+            since: day,
+            until: until,
+          );
+          for (final item in page.items) {
+            items.putIfAbsent(item.id, () => item);
+          }
+          cursor = page.nextCursor;
+          // 异常游标不继续循环；保留游标，让页面说明这只是部分记录。
+          if (cursor == null || page.items.isEmpty || !seen.add(cursor)) break;
+          if (!ref.mounted) break;
+        }
+        return WalletLedger(items: items.values.toList(), nextCursor: cursor);
+      }),
+    );
+
+/// 某一天的流水最多翻几页(每页 100 笔)。
+const _kDayLedgerPages = 20;
+
 /// 某一天的逐笔生成明细(服务端 `/api/user/stats/calls`)。
 /// 后端未部署该接口时返回 null,页面退回「只有当日次数」的说明。
 final dayCallsProvider = FutureProvider.autoDispose
@@ -129,6 +166,33 @@ final poolUsageProvider = FutureProvider.autoDispose<NaiUsage?>((ref) async {
     return null; // 老服务端没这个端点 → 那块不画
   }
 });
+
+/// 钱包金额(分 → 文案),和服务端同一种写法:扣款 `-¥0.03`、入账 `+¥20.00`。
+/// [sign] = false 时正数不带 +(余额、合计用),负数照样带 -。
+String fmtFen(int fen, {bool sign = true}) {
+  final head = fen < 0 ? '-' : (sign && fen > 0 ? '+' : '');
+  return '$head¥${(fen.abs() / 100).toStringAsFixed(2)}';
+}
+
+/// 各项占总和的整数百分比,合计恰为 100(最大余数法,与 web `sharePercents` 一致)。
+/// 总和不大于 0 时全为 0。
+List<int> sharePercents(List<int> amounts) {
+  final total = amounts.fold(0, (s, a) => s + a);
+  if (total <= 0) return [for (final _ in amounts) 0];
+  final raw = [for (final a in amounts) a * 100 / total];
+  final out = [for (final r in raw) r.floor()];
+  // 余数一样时靠前的先补
+  final order = List.generate(amounts.length, (i) => i)
+    ..sort((a, b) {
+      final c = (raw[b] - out[b]).compareTo(raw[a] - out[a]);
+      return c != 0 ? c : a - b;
+    });
+  final missing = 100 - out.fold(0, (s, p) => s + p);
+  for (var k = 0; k < missing; k++) {
+    out[order[k]]++;
+  }
+  return out;
+}
 
 /// 金额:整数照 [fmtInt],带角分的保留两位。
 String fmtFee(double v) =>

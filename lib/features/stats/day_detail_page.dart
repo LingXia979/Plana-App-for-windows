@@ -7,6 +7,8 @@ import '../../core/theme/app_theme.dart';
 import 'key_ledger.dart';
 import 'stats_providers.dart';
 import 'stats_widgets.dart';
+import 'wallet_page.dart';
+import '../../core/ui/settings_scaffold.dart';
 
 enum DayDetailMode {
   points('点数详情'),
@@ -42,11 +44,19 @@ class DayDetailPage extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return Scaffold(
-      appBar: AppBar(title: Text('$label · ${mode.title}')),
+    final wallet = bot ? ref.watch(walletSummaryProvider) : null;
+    final walletMode =
+        bot && mode == DayDetailMode.points && wallet?.asData?.value != null;
+    return SettingsScaffold(
+      appBar: AppBar(
+        title: Text('$label · ${walletMode ? '钱包流水' : mode.title}'),
+      ),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(14, 8, 14, 24),
-        children: bot ? _botBody(context, ref) : _keyBody(context, ref),
+        children: [
+          const SettingsPageHeader(),
+          ...(bot ? _botBody(context, ref) : _keyBody(context, ref)),
+        ],
       ),
     );
   }
@@ -54,6 +64,206 @@ class DayDetailPage extends ConsumerWidget {
   // ── Bot:服务端明细 ────────────────
 
   List<Widget> _botBody(BuildContext context, WidgetRef ref) {
+    final summary = ref.watch(walletSummaryProvider);
+    if (summary.asData?.value != null) {
+      return mode == DayDetailMode.points
+          ? _botWallet(context, ref)
+          : _botGens(context, ref);
+    }
+    if (summary.asData != null) return _legacyBotBody(context, ref);
+    if (summary.isLoading) return _skeletonRows(4);
+    return [
+      StatsCard(
+        child: Column(
+          children: [
+            const Text('暂时无法取得钱包信息'),
+            TextButton(
+              onPressed: () => ref.invalidate(walletSummaryProvider),
+              child: const Text('重试'),
+            ),
+          ],
+        ),
+      ),
+    ];
+  }
+
+  /// 当天的钱包流水:扣款 / 入账两个合计 + 逐笔。
+  List<Widget> _botWallet(BuildContext context, WidgetRef ref) {
+    final scheme = context.scheme;
+    final async = ref.watch(dayWalletLedgerProvider(day));
+    final w = async.asData?.value;
+    final loading = async.isLoading && w == null;
+
+    if (!async.isLoading && w == null) {
+      return const [StatsCard(child: Text('当天的流水暂时查不到,稍后再试'))];
+    }
+
+    // 扣款和入账分开合计:两件事,轧差没有意义(那是余额的事)
+    var charged = 0, credited = 0, nCharge = 0, nCredit = 0;
+    for (final e in w?.items ?? const <WalletEntry>[]) {
+      if (e.amountFen < 0) {
+        charged -= e.amountFen;
+        nCharge++;
+      } else if (e.amountFen > 0) {
+        credited += e.amountFen;
+        nCredit++;
+      }
+    }
+
+    return [
+      StatsCard(
+        child: Row(
+          children: [
+            Expanded(
+              child: StatTile(
+                icon: Icons.remove_circle_outline,
+                label: w?.nextCursor != null ? '已加载扣款' : '当日扣款',
+                value: w == null ? null : fmtFen(charged, sign: false),
+                suffix: nCharge > 0 ? '$nCharge 笔' : null,
+                loading: loading,
+              ),
+            ),
+            Expanded(
+              child: StatTile(
+                icon: Icons.add_circle_outline,
+                label: w?.nextCursor != null ? '已加载入账' : '当日入账',
+                value: w == null ? null : fmtFen(credited, sign: false),
+                suffix: nCredit > 0 ? '$nCredit 笔' : null,
+                loading: loading,
+              ),
+            ),
+          ],
+        ),
+      ),
+      const SizedBox(height: 10),
+      StatsCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              '逐笔流水',
+              style: context.texts.bodyMedium!.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 2),
+            if (w == null)
+              ..._skeletonRows(4)
+            else if (w.items.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                child: Text(
+                  '当天没有钱包流水',
+                  style: context.texts.bodySmall!.copyWith(
+                    color: scheme.outline,
+                  ),
+                ),
+              )
+            else ...[
+              for (final e in w.items)
+                WalletEntryRow(entry: e, withDate: false),
+              // 翻页到上限还没到底(见 dayWalletLedgerProvider):合计也只算了列出来的这些
+              if (w.nextCursor != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4, bottom: 4),
+                  child: Text(
+                    '仅取得 ${fmtInt(w.items.length)} 笔，合计为已显示记录；可稍后重试。',
+                    style: context.texts.labelSmall!.copyWith(
+                      color: scheme.outline,
+                    ),
+                  ),
+                ),
+            ],
+          ],
+        ),
+      ),
+    ];
+  }
+
+  /// 当天的逐笔生成(`/api/user/stats/calls`):合计按逐笔现算。
+  List<Widget> _botGens(BuildContext context, WidgetRef ref) {
+    final callsAsync = ref.watch(dayCallsProvider(day));
+    final calls = callsAsync.asData?.value;
+    final loading = callsAsync.isLoading && calls == null;
+
+    return [
+      StatsCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: StatTile(
+                    icon: Icons.image_outlined,
+                    label: '当日生图',
+                    value: calls == null ? null : fmtInt(calls.length),
+                    loading: loading,
+                  ),
+                ),
+                Expanded(
+                  child: StatTile(
+                    icon: Icons.toll_outlined,
+                    label: '点数消耗',
+                    value: calls == null
+                        ? null
+                        : fmtInt(calls.fold(0, (s, c) => s + c.anlas)),
+                    loading: loading,
+                  ),
+                ),
+              ],
+            ),
+            if (calls != null) ...[
+              const CardDivider(),
+              Row(
+                children: [
+                  Expanded(
+                    child: StatTile(
+                      icon: Icons.redeem_outlined,
+                      label: '免费张数',
+                      value: fmtInt(calls.where((c) => c.anlas == 0).length),
+                    ),
+                  ),
+                  Expanded(
+                    child: StatTile(
+                      icon: Icons.straighten,
+                      label: '平均步数',
+                      value: () {
+                        final ok = calls.where((c) => c.steps > 0).toList();
+                        return ok.isEmpty
+                            ? '—'
+                            : fmtInt(
+                                ok.fold(0, (s, c) => s + c.steps) / ok.length,
+                              );
+                      }(),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ],
+        ),
+      ),
+      const SizedBox(height: 10),
+      StatsCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              '逐笔生成',
+              style: context.texts.bodyMedium!.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 2),
+            ..._callRows(context, calls, callsAsync.isLoading, calls?.length),
+          ],
+        ),
+      ),
+    ];
+  }
+
+  List<Widget> _legacyBotBody(BuildContext context, WidgetRef ref) {
     final async = ref.watch(dayDetailsProvider(day));
     final d = async.value;
     final loading = async.isLoading;

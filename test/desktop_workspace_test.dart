@@ -121,6 +121,22 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  testWidgets('collapsed parameters close without editing seed', (
+    tester,
+  ) async {
+    await tester.runAsync(
+      () => stores.prefs.write(
+        key: 'desktop_generation_settings_expanded',
+        value: '0',
+      ),
+    );
+    await mount(tester, const Size(1440, 900));
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+  });
+
   Future<void> screenshot(WidgetTester tester, String name) async {
     if (Platform.environment['PLANA_DESKTOP_CAPTURE'] != '1') return;
     await tester.runAsync(

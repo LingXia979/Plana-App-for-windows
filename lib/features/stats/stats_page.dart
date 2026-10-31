@@ -17,6 +17,7 @@ import 'ledger_page.dart';
 import 'platform_page.dart';
 import 'stats_providers.dart';
 import 'stats_widgets.dart';
+import 'wallet_page.dart';
 
 /// 统计主页:右上角下拉切数据源(Bot 服务端 / 直连 Key 本机),
 /// 主体是纯数据——时间范围 + hero 大数字 + 随范围变化的可点趋势图
@@ -89,7 +90,7 @@ class _StatsPageState extends ConsumerState<StatsPage> {
           if (_bot && session == null) {
             children.add(
               const StatsCard(
-                child: Text('尚未 Bot 授权。在「我的 → 账号与接入」完成授权后,可查看服务端统计与账单。'),
+                child: Text('尚未 Bot 授权。在「我的 → 账号与接入」完成授权后,可查看服务端统计与钱包。'),
               ),
             );
           } else {
@@ -99,9 +100,14 @@ class _StatsPageState extends ConsumerState<StatsPage> {
           if (_bot) {
             if (session != null) {
               children.add(const SizedBox(height: 12));
-              children.add(_billingEntry(context));
-              children.add(const SizedBox(height: 10));
-              children.add(_gpuBillsEntry(context));
+              final wallet = ref.watch(walletSummaryProvider);
+              if (wallet.asData != null && wallet.asData!.value == null) {
+                children.add(_billingEntry(context));
+                children.add(const SizedBox(height: 10));
+                children.add(_gpuBillsEntry(context));
+              } else {
+                children.add(_walletEntry(context, wallet));
+              }
             }
             children.add(const SizedBox(height: 10));
             children.add(_platformEntry(context));
@@ -115,6 +121,8 @@ class _StatsPageState extends ConsumerState<StatsPage> {
               ref.invalidate(billingEstimateProvider);
               ref.invalidate(billingSettlementProvider);
               ref.invalidate(gpuBillsProvider);
+              ref.invalidate(walletSummaryProvider);
+              ref.invalidate(dayWalletLedgerProvider);
               ref.invalidate(platformHourlyProvider);
             },
             child: ListView(
@@ -289,7 +297,12 @@ class _StatsPageState extends ConsumerState<StatsPage> {
                   final n = _billedCount(picked);
                   return _DetailEntry(
                     icon: Icons.toll_outlined,
-                    label: '点数详情',
+                    label:
+                        _bot &&
+                            ref.watch(walletSummaryProvider).asData?.value !=
+                                null
+                        ? '钱包流水'
+                        : '点数详情',
                     value: n == null ? null : fmtInt(n),
                     unit: '笔',
                     loading: _bot && n == null,
@@ -468,7 +481,22 @@ class _StatsPageState extends ConsumerState<StatsPage> {
       return ledger.gensForDay(key).where((g) => g.pts > 0).length +
           ledger.opsForDay(key).length;
     }
-    return ref.watch(dayDetailsProvider(_dayOf(p))).value?.records.length;
+    final wallet = ref.watch(walletSummaryProvider);
+    if (wallet.asData?.value != null) {
+      return ref
+          .watch(dayWalletLedgerProvider(_dayOf(p)))
+          .asData
+          ?.value
+          ?.items
+          .length;
+    }
+    if (wallet.asData == null) return null;
+    return ref
+        .watch(dayDetailsProvider(_dayOf(p)))
+        .asData
+        ?.value
+        ?.records
+        .length;
   }
 
   /// 选中格归属的日期(今日档整天;其余按 `MM-dd` 配当前年份还原)。
@@ -551,6 +579,30 @@ class _StatsPageState extends ConsumerState<StatsPage> {
           );
         }(),
     ];
+  }
+
+  Widget _walletEntry(
+    BuildContext context,
+    AsyncValue<WalletSummary?> summary,
+  ) {
+    final w = summary.asData?.value;
+    return _EntryCard(
+      icon: Icons.account_balance_wallet_outlined,
+      title: '钱包',
+      subWidget: summary.isLoading && w == null
+          ? const SkeletonBox(width: 140, height: 14)
+          : Text(
+              w == null
+                  ? '余额暂未取得 · 查看流水与刷新'
+                  : '余额 ${fmtFen(w.balanceFen, sign: false)} · 流水与充值',
+              style: context.texts.labelSmall!.copyWith(
+                color: w?.owing == true
+                    ? context.scheme.error
+                    : context.scheme.onSurfaceVariant,
+              ),
+            ),
+      onTap: () => _push(const WalletPage()),
+    );
   }
 
   /// NAI 账单入口。Key 模式下它就是本机账本,标题不带「NAI」——

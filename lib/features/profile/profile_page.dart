@@ -77,7 +77,7 @@ class ProfilePage extends ConsumerWidget {
                 _EntryCard(
                   icon: Icons.query_stats,
                   title: '统计',
-                  subtitle: '用量 · 账单 · 全平台统计',
+                  subtitle: '用量 · 钱包 · 全平台统计',
                   onTap: () => push(const StatsPage()),
                 ),
                 const SizedBox(height: 10),
