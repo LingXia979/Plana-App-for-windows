@@ -8,7 +8,6 @@ import '../../core/auth/nai_keys.dart';
 import '../../core/net/backend_config.dart';
 import '../../core/net/nai_client.dart';
 import '../../core/net/nai_key_status.dart';
-import '../../core/platform/desktop.dart';
 import '../../core/theme/app_theme.dart';
 import '../editor/data/completion_source.dart';
 import '../generate/widgets/common.dart'
@@ -16,10 +15,9 @@ import '../generate/widgets/common.dart'
 import '../onboarding/bot_auth_page.dart';
 import '../stats/stats_providers.dart' show fmtInt;
 import 'token_manage_page.dart';
-import 'network_settings_page.dart';
 import '../../core/util/haptics.dart';
 
-/// 账号与接入(我的页二级):接入方式切换、Token / Bot 凭据、直连代理、标签补全来源。
+/// 账号与接入(我的页二级):接入方式切换、Token / Bot 凭据、标签补全来源。
 class AccountPage extends ConsumerStatefulWidget {
   const AccountPage({super.key});
 
@@ -89,12 +87,6 @@ class _AccountPageState extends ConsumerState<AccountPage> {
             onPrimary: _makePrimary,
             onManage: _openTokens,
           ),
-          const SizedBox(height: 12),
-          if (ref.watch(desktopModeProvider)) ...[
-            const NetworkProxyEntry(),
-            const SizedBox(height: 12),
-          ],
-          const NaiRelayCard(),
           const SizedBox(height: 12),
           _BotCard(
             session: session,

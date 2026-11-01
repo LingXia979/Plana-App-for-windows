@@ -33,6 +33,8 @@ bool FlutterWindow::OnCreate() {
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
   clipboard_channel_ = std::make_unique<ClipboardChannel>(
       GetHandle(), flutter_controller_->engine()->messenger());
+  proxy_assist_channel_ = std::make_unique<ProxyAssistChannel>(
+      GetHandle(), flutter_controller_->engine()->messenger());
   // 原生拦 Ctrl+V 之后,图经 plana/image_drop 的 `paste` 推给 Dart ——
   // 落点仍由 Dart 侧按光标/焦点裁(见 lib/core/ui/image_drop.dart)。
   paste_channel_ =
@@ -92,6 +94,7 @@ void FlutterWindow::OnDestroy() {
   image_clipboard_.reset();
   paste_channel_.reset();
   clipboard_channel_.reset();
+  proxy_assist_channel_.reset();
   if (image_drop_target_) {
     RevokeDragDrop(image_drop_window_);
     image_drop_target_->Release();
@@ -110,6 +113,7 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
   if (message == WM_CLOSE) RecordRuntimeEvent("window-close-request");
+  if (proxy_assist_channel_ && proxy_assist_channel_->HandleMessage(message, wparam)) return 0;
   // Give Flutter, including plugins, an opportunity to handle window messages.
   if (flutter_controller_) {
     std::optional<LRESULT> result =

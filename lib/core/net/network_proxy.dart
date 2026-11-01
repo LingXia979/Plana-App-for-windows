@@ -9,17 +9,21 @@ import '../store/app_stores.dart';
 const kNetworkProxyKey = 'network_proxy';
 const kDefaultNetworkProxyAddress = 'http://127.0.0.1:7890';
 
+enum ProxySoftware { auto, clash, other }
+
 /// Transport settings are independent of NAI endpoint selection and credentials.
 class NetworkProxySettings {
   const NetworkProxySettings({
     this.enabled = false,
     this.address = kDefaultNetworkProxyAddress,
     this.bypassLocal = true,
+    this.software = ProxySoftware.auto,
   });
 
   final bool enabled;
   final String address;
   final bool bypassLocal;
+  final ProxySoftware software;
 
   static String normalizeAddress(String input) {
     final value = input.trim();
@@ -50,6 +54,7 @@ class NetworkProxySettings {
     enabled: enabled,
     address: normalizeAddress(address),
     bypassLocal: bypassLocal,
+    software: software,
   );
 
   static NetworkProxySettings decode(String? raw) {
@@ -60,6 +65,11 @@ class NetworkProxySettings {
         enabled: json['enabled'] == true,
         address: json['address'] as String,
         bypassLocal: json['bypassLocal'] != false,
+        software:
+            ProxySoftware.values
+                .where((v) => v.name == json['software'])
+                .firstOrNull ??
+            ProxySoftware.auto,
       ).validated();
     } catch (_) {
       return const NetworkProxySettings();
@@ -70,6 +80,7 @@ class NetworkProxySettings {
     'enabled': enabled,
     'address': address,
     'bypassLocal': bypassLocal,
+    'software': software.name,
   });
 
   String get directive {

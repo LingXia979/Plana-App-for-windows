@@ -2,14 +2,18 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plana_app/core/net/nai_proxy.dart';
 import 'package:plana_app/core/net/network_proxy.dart';
+import 'package:plana_app/core/net/proxy_import.dart';
+import 'package:plana_app/core/platform/clipboard_image.dart';
 import 'package:plana_app/core/platform/desktop.dart';
 import 'package:plana_app/core/store/app_stores.dart';
 import 'package:plana_app/core/store/prefs_store.dart';
 import 'package:plana_app/core/theme/app_theme.dart';
+import 'package:plana_app/core/ui/image_drop.dart';
 import 'package:plana_app/features/profile/network_settings_page.dart';
 
 import 'support/desktop_capture.dart';
@@ -19,6 +23,11 @@ void main() {
   late PrefsStore prefs;
   late ProviderContainer container;
   late Completer<String> probe;
+  late ClipboardContent clipboard;
+  late Uint8List screenshot;
+  late Future<String> Function(Uint8List) recognize;
+  var clipboardReads = 0;
+  var fallbackDrops = 0;
   final tested = <NetworkProxySettings>[];
   final capture = GlobalKey();
   setUpAll(loadDesktopCaptureFonts);
@@ -26,11 +35,29 @@ void main() {
     root = await Directory.systemTemp.createTemp('plana_network_ui_');
     prefs = PrefsStore.emptyForTest(root);
     probe = Completer<String>();
+    screenshot = await File(
+      'test/fixtures/proxy_assist/settings.png',
+    ).readAsBytes();
+    clipboard = ClipboardContent.empty;
+    clipboardReads = 0;
+    fallbackDrops = 0;
+    recognize = (_) async =>
+        'Mixed Port: 7897\nSOCKS Port: 7898\nExternal Controller: 9090';
     tested.clear();
     container = ProviderContainer(
       overrides: [
         prefsStoreProvider.overrideWithValue(prefs),
         desktopModeProvider.overrideWithValue(true),
+        proxyClipboardReaderProvider.overrideWithValue(() async {
+          clipboardReads++;
+          return clipboard;
+        }),
+        proxyImageRecognizerProvider.overrideWithValue(
+          (bytes) => recognize(bytes),
+        ),
+        detectedProxySoftwareProvider.overrideWith(
+          (ref, address) async => ProxySoftware.clash,
+        ),
         networkProxyProbeProvider.overrideWithValue((settings) {
           tested.add(settings);
           return probe.future;
@@ -71,7 +98,16 @@ void main() {
               ).copyWith(textScaler: TextScaler.linear(scale)),
               child: child!,
             ),
-            home: const NetworkSettingsPage(),
+            home: DesktopImageDropHost(
+              child: ImageDropRegion(
+                label: 'synthetic artwork importer',
+                pasteFallback: true,
+                onDrop: (_, _) async {
+                  fallbackDrops++;
+                },
+                child: const NetworkSettingsPage(),
+              ),
+            ),
           ),
         ),
       ),
@@ -108,7 +144,7 @@ void main() {
         'http://localhost:7897',
       );
       expect(container.read(naiProxyProvider), isFalse);
-      expect(find.text('Plana → Clash / 本机代理 → NovelAI'), findsOneWidget);
+      expect(find.text('Plana → Clash → NovelAI'), findsOneWidget);
       final relay = find.widgetWithText(SwitchListTile, kNaiProxyTitle);
       await tester.ensureVisible(relay);
       await tester.runAsync(() async {
@@ -117,7 +153,7 @@ void main() {
       });
       await tester.pumpAndSettle();
       expect(
-        find.text('Plana → Clash / 本机代理 → Cloudflare 云端转发 → NovelAI'),
+        find.text('Plana → Clash → Cloudflare 转发 → NovelAI'),
         findsOneWidget,
       );
       expect(
@@ -223,6 +259,212 @@ void main() {
       );
       expect(find.text('有未应用的修改'), findsOneWidget);
       expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'clipboard screenshot fills only its HTTP draft, never enables or saves',
+    (tester) async {
+      clipboard = ClipboardContent(image: screenshot, format: 'png');
+      await mount(tester);
+      expect(clipboardReads, 0);
+      await tester.tap(find.text('粘贴识别'));
+      await tester.pumpAndSettle();
+      expect(clipboardReads, 1);
+      expect(
+        tester
+            .widget<TextFormField>(
+              find.byKey(const ValueKey('network-proxy-address')),
+            )
+            .controller!
+            .text,
+        'http://127.0.0.1:7897',
+      );
+      expect(container.read(networkProxyProvider).enabled, isFalse);
+      expect(prefs.get(kNetworkProxyKey), isNull);
+      expect(find.textContaining('已填入'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'copied text with multiple valid addresses requires a choice and supports cancellation',
+    (tester) async {
+      clipboard = const ClipboardContent(
+        text: 'Mixed Port: 7897\nHTTP Port: 8080',
+      );
+      await mount(tester);
+      await tester.tap(find.text('粘贴识别'));
+      await tester.pumpAndSettle();
+      expect(find.text('选择识别到的代理地址'), findsOneWidget);
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<TextFormField>(
+              find.byKey(const ValueKey('network-proxy-address')),
+            )
+            .controller!
+            .text,
+        kDefaultNetworkProxyAddress,
+      );
+      await tester.tap(find.text('粘贴识别'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('http://127.0.0.1:8080'));
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<TextFormField>(
+              find.byKey(const ValueKey('network-proxy-address')),
+            )
+            .controller!
+            .text,
+        'http://127.0.0.1:8080',
+      );
+      expect(prefs.get(kNetworkProxyKey), isNull);
+    },
+  );
+
+  testWidgets(
+    'editing during OCR prevents an old result from replacing the new address',
+    (tester) async {
+      final pending = Completer<String>();
+      recognize = (_) => pending.future;
+      clipboard = ClipboardContent(image: screenshot, format: 'png');
+      await mount(tester);
+      await tester.tap(find.text('粘贴识别'));
+      await tester.pumpAndSettle();
+      final field = find.byKey(const ValueKey('network-proxy-address'));
+      await tester.enterText(field, 'http://127.0.0.1:8888');
+      pending.complete('Mixed Port: 7897');
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<TextFormField>(field).controller!.text,
+        'http://127.0.0.1:8888',
+      );
+      expect(find.textContaining('已填入'), findsNothing);
+      expect(prefs.get(kNetworkProxyKey), isNull);
+    },
+  );
+
+  testWidgets(
+    'clipboard with no usable address preserves the form and explains failure',
+    (tester) async {
+      clipboard = const ClipboardContent(text: 'SOCKS port: 7891');
+      await mount(tester);
+      await tester.tap(find.text('粘贴识别'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('未找到 HTTP'), findsOneWidget);
+      expect(
+        tester
+            .widget<TextFormField>(
+              find.byKey(const ValueKey('network-proxy-address')),
+            )
+            .controller!
+            .text,
+        kDefaultNetworkProxyAddress,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'native Ctrl+V image reaches proxy OCR instead of artwork import',
+    (tester) async {
+      await mount(tester);
+      await tester.runAsync(() async {
+        await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+          'plana/image_drop',
+          const StandardMethodCodec().encodeMethodCall(
+            MethodCall('paste', {
+              'bytes': screenshot,
+              'bitmap': false,
+              'x': 120.0,
+              'y': 150.0,
+            }),
+          ),
+          (_) {},
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+      });
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<TextFormField>(
+              find.byKey(const ValueKey('network-proxy-address')),
+            )
+            .controller!
+            .text,
+        'http://127.0.0.1:7897',
+      );
+      expect(clipboardReads, 0);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'repeated Ctrl+V during recognition never falls through to artwork import',
+    (tester) async {
+      final pending = Completer<String>();
+      var ocrCalls = 0;
+      recognize = (_) {
+        ocrCalls++;
+        return pending.future;
+      };
+      await mount(tester);
+      for (var i = 0; i < 2; i++) {
+        await tester.runAsync(() async {
+          await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+            'plana/image_drop',
+            const StandardMethodCodec().encodeMethodCall(
+              MethodCall('paste', {
+                'bytes': screenshot,
+                'bitmap': false,
+                'x': 120.0,
+                'y': 150.0,
+              }),
+            ),
+            (_) {},
+          );
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+        });
+        await tester.pump();
+      }
+      expect(ocrCalls, 1);
+      expect(fallbackDrops, 0);
+      await tester.runAsync(() async {
+        pending.complete('Mixed Port: 7897');
+        await Future<void>.delayed(Duration.zero);
+      });
+      await tester.pumpAndSettle();
+      expect(find.textContaining('已填入'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'manual software label persists without changing transport address',
+    (tester) async {
+      await mount(tester);
+      await tester.tap(find.widgetWithText(SwitchListTile, '使用本机 HTTP 代理'));
+      await tester.tap(find.byType(DropdownButtonFormField<ProxySoftware>));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('代理软件').last);
+      await tester.pumpAndSettle();
+      await save(tester);
+      expect(
+        container.read(networkProxyProvider).software,
+        ProxySoftware.other,
+      );
+      expect(
+        container.read(networkProxyProvider).address,
+        kDefaultNetworkProxyAddress,
+      );
+      expect(find.text('Plana → 代理软件 → NovelAI'), findsOneWidget);
+      expect(
+        NetworkProxySettings.decode(prefs.get(kNetworkProxyKey)).software,
+        ProxySoftware.other,
+      );
     },
   );
 
