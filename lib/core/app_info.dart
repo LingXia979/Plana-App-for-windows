@@ -8,8 +8,8 @@ library;
 /// `android:label` 一起改 —— 那个是桌面图标下的名字,读不到 Dart 常量。
 const kAppName = 'Plana app for windows';
 const kAppTagline = 'NovelAI 桌面创作端';
-const kAppVersion = '1.2.2-windows.58';
-const kAppBuild = '77';
+const kAppVersion = '1.2.2-windows.59';
+const kAppBuild = '78';
 
 /// 预发布版(版号带 `-`):关于页加内测标,免得测试反馈回来分不清版本。
 bool get kIsPrerelease => kAppVersion.contains('-');
@@ -45,7 +45,7 @@ const kQqGroupId = '1078261982';
 /// **开源发布后把仓库名填在这里 —— 只此一处。** 留空时检查更新显示「暂无更新信息」、
 /// 关于页不显示源码行,都不报错。填了之后应用只做两件事:比版本、把用户送去
 /// Release 页;下载和安装始终交给浏览器与系统。
-const kGithubRepo = 'mc5024/Plana-App';
+const kGithubRepo = 'LingXia979/Plana-App-for-windows';
 
 /// 本项目的许可证。GPL-3.0:分发修改版(含打包成 APK 分发)必须同样开源。
 const kLicense = 'GPL-3.0';

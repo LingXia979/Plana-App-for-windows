@@ -1,12 +1,52 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:plana_app/core/store/prefs_store.dart';
 import 'package:plana_app/features/update/update_service.dart';
 
 /// 更新判定的纯逻辑。错了不会崩,只会"永远不提示"或"反复提示已装的版本" ——
 /// 两种都是用户不会报、你也看不见的静默故障,所以钉在这里。
 void main() {
+  test(
+    'Windows release checks use the Windows repository and recognize the combined update',
+    () async {
+      final client = MockClient((request) async {
+        expect(request.url.host, 'api.github.com');
+        expect(
+          request.url.path,
+          '/repos/LingXia979/Plana-App-for-windows/releases',
+        );
+        return http.Response(
+          jsonEncode([
+            {
+              'tag_name': 'v1.2.2-windows.59',
+              'html_url':
+                  'https://github.com/LingXia979/Plana-App-for-windows/releases/tag/v1.2.2-windows.59',
+              'prerelease': false,
+              'draft': false,
+            },
+          ]),
+          200,
+        );
+      });
+      addTearDown(client.close);
+      await http.runWithClient(() async {
+        expect(
+          (await fetchLatestRelease('1.2.1-windows.57'))?.tag,
+          'v1.2.2-windows.59',
+        );
+        expect(
+          (await fetchLatestRelease('1.2.2-windows.58'))?.tag,
+          'v1.2.2-windows.59',
+        );
+        expect(await fetchLatestRelease('1.2.2-windows.59'), isNull);
+      }, () => client);
+    },
+  );
+
   group('compareSemver', () {
     void newer(String a, String b) {
       expect(compareSemver(a, b), greaterThan(0), reason: '$a 应比 $b 新');

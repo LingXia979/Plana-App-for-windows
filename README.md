@@ -13,20 +13,24 @@
 [![Status](https://img.shields.io/badge/状态-桌面版测试中-6A5ACD)](#项目状态)
 [![Flutter](https://img.shields.io/badge/built%20with-Flutter-02569B?logo=flutter&logoColor=white)](https://flutter.dev)
 
-[本次更新](#本次更新windows58) · [界面预览](#界面预览) · [桌面版亮点](#桌面版亮点) · [贡献者](#贡献者) · [问题反馈](https://github.com/LingXia979/Plana-App-for-windows/issues) · [上游项目](https://github.com/mc5024/Plana-App)
+[本次更新](#本次更新windows59) · [界面预览](#界面预览) · [桌面版亮点](#桌面版亮点) · [贡献者](#贡献者) · [问题反馈](https://github.com/LingXia979/Plana-App-for-windows/issues) · [上游项目](https://github.com/mc5024/Plana-App)
 
 </div>
 
 ## 项目状态
 
 本项目基于 [Plana App](https://github.com/mc5024/Plana-App) 开发 Windows 桌面适配，并选择性同步 [shenghuo2/Plana-App-Desktop](https://github.com/shenghuo2/Plana-App-Desktop) 的桌面功能与修复。
-当前源码版本为 **1.2.2-windows.58（构建 77）**。本分支提供 Windows 桌面源码；安装包与便携版以 [Releases](https://github.com/LingXia979/Plana-App-for-windows/releases) 中已发布的资产为准。
+当前版本为 **1.2.2-windows.59（构建 78）**。本次发布一并包含上游 1.2.2 的十批适配和本机代理改进，安装包与便携版见 [Releases](https://github.com/LingXia979/Plana-App-for-windows/releases/tag/v1.2.2-windows.59)。
 
 - `main` 与 `Plana-app-for-windows`：Windows 桌面源码；已发布版本对应的源码以 Release 标签为准。
 - [`plana-app-gallery-optimization`](https://github.com/LingXia979/Plana-App-for-windows/tree/plana-app-gallery-optimization)：图库优化分支。
 - Android 原版介绍与下载请前往[上游仓库](https://github.com/mc5024/Plana-App)。
 
-## 本次更新：windows.58
+## 本次更新：windows.59
+
+- 网络与代理：新增独立设置页，支持 Clash 或其他软件的 HTTP / Mixed 代理、连接测试和具体路线显示；原“代理访问 NovelAI”明确为 Cloudflare 云端转发，与本机代理分开设置。
+- 代理设置更方便：截图可从剪贴板粘贴、Ctrl+V、拖入或选图，本机 OCR 提取地址，支持系统代理截图及全角点号；多个地址可选择，不上传截图。卡片可折叠，开关立即生效，地址、软件名称与局域网直连选项单独保存。
+- 本机与局域网直连：访问本机、`.local` 和私有 IP 时绕过应用内代理，其他请求交给代理软件；不改动 Clash 的规则或 Windows 系统代理。
 
 - 提示词与输入：显示实际成图尺寸，修正权重组移动、免费模型标记、助手分区导入与画师负面补齐；翻译避开尚未输入完成的内容，失败可恢复。离线补全采用预生成索引，支持分组、纠错与译名缓存，并保留补全来源选择。
 - 图库：新增原比例布局和高清缩略图，胶片条插入／删除后保持浏览位置；固定收藏入口，加入可恢复删除的回收站与 30 天清理规则，保留独立副本、鼠标多选和后台生成跟随。
@@ -38,7 +42,7 @@
 
 本版分 10 批选择性适配原版 [v1.2.2](https://github.com/mc5024/Plana-App/releases/tag/v1.2.2)，固定来源为 [`46deaa0`](https://github.com/mc5024/Plana-App/commit/46deaa02fab835df8ef88d5248015a79b0bf9b30)。保留此前从 [shenghuo2/Plana-App-Desktop](https://github.com/shenghuo2/Plana-App-Desktop) 整合的桌面能力；没有替换为固定后端，没有移除 Anima／Krea 和补全来源选择，也未照搬 Android 专用界面。
 
-功能说明见 [Windows 使用说明](WINDOWS-README.md#上游-122-对齐)。
+上游合并最初在本地 windows.58 验证；本次 windows.59 与代理改动一并发布。功能说明见 [上游 1.2.2 对齐](WINDOWS-README.md#上游-122-对齐)及[网络与代理](WINDOWS-README.md#网络与代理本地新增)。
 
 ## 上一轮更新：windows.57
 
@@ -77,9 +81,9 @@
 
 ## 下载与安装
 
-- [中文安装包（Windows x64）](https://github.com/LingXia979/Plana-App-for-windows/releases/download/v1.2.1-windows.57/Plana-Windows-1.2.1-windows.57-x64-setup.exe)：按中文向导选择安装目录，支持开始菜单、可选桌面快捷方式及卸载。
-- [便携版 ZIP](https://github.com/LingXia979/Plana-App-for-windows/releases/download/v1.2.1-windows.57/Plana-Windows-1.2.1-windows.57-x64.zip)：完整解压后运行 `plana_app_for_windows.exe`。
-- [SHA-256 校验清单](https://github.com/LingXia979/Plana-App-for-windows/releases/download/v1.2.1-windows.57/Plana-Windows-1.2.1-windows.57-x64-SHA256.txt)。
+- [中文安装包（Windows x64）](https://github.com/LingXia979/Plana-App-for-windows/releases/download/v1.2.2-windows.59/Plana-Windows-1.2.2-windows.59-x64-setup.exe)：按中文向导选择安装目录，支持开始菜单、可选桌面快捷方式及卸载。
+- [便携版 ZIP](https://github.com/LingXia979/Plana-App-for-windows/releases/download/v1.2.2-windows.59/Plana-Windows-1.2.2-windows.59-x64.zip)：完整解压后运行 `plana_app_for_windows.exe`。
+- [SHA-256 校验清单](https://github.com/LingXia979/Plana-App-for-windows/releases/download/v1.2.2-windows.59/Plana-Windows-1.2.2-windows.59-x64-SHA256.txt)。
 
 升级前请关闭旧版。作品自动保存到程序旁的 `output` 文件夹，卸载保留个人数据。发布包不附带个人账号、API/Bot/Web 授权、提示词草稿或私人 tag 库，首次使用请自行配置。当前安装包未进行代码签名。
 
@@ -109,7 +113,7 @@
 
 ## 桌面版亮点
 
-以下功能包含截至 windows.58 的桌面改进。
+以下功能包含截至 windows.59 的桌面改进。
 
 - **桌面工作台**：可调整侧栏宽度，提示词、画布与助手同屏；支持鼠标、键盘、文件拖入和快捷粘贴图片，图片按鼠标所在区域导入。
 - **V5 Full 生成档位**：Medium／High 快捷切换；Medium 固定 14 步，切回 High 恢复原采样参数和负面草稿。档位保存、费用计算、图片导入与重新生成同步支持。
