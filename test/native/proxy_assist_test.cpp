@@ -13,18 +13,19 @@ void Require(bool condition, const char* message) {
 int main(int argc, char** argv) {
   try {
     Require(argc >= 2, "Pass a synthetic OCR fixture");
-    std::ifstream file(argv[1], std::ios::binary);
-    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(file)), {});
-    const auto text = RecognizeProxyImage(bytes);
-    std::cout << text;
-    Require(text.find("7897") != std::string::npos, "OCR must read the mixed port");
-    Require(text.find("9090") != std::string::npos, "OCR must retain other fields for disambiguation");
-    std::string compact = text;
-    compact.erase(std::remove(compact.begin(), compact.end(), ' '), compact.end());
     const auto hasFlag = [&](const std::string& flag) {
       for (int i = 2; i < argc; ++i) if (argv[i] == flag) return true;
       return false;
     };
+    std::ifstream file(argv[1], std::ios::binary);
+    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(file)), {});
+    const auto text = RecognizeProxyImage(bytes);
+    std::cout << text;
+    if (hasFlag("--text-only")) return 0;
+    Require(text.find("7897") != std::string::npos, "OCR must read the mixed port");
+    Require(text.find("9090") != std::string::npos, "OCR must retain other fields for disambiguation");
+    std::string compact = text;
+    compact.erase(std::remove(compact.begin(), compact.end(), ' '), compact.end());
     Require(compact.find(hasFlag("--chinese") ? "混合端口" : "MixedPort") != std::string::npos,
             "OCR must read the HTTP/Mixed label, not just the port number");
     bool rejected = false;

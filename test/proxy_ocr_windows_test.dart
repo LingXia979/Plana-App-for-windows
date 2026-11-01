@@ -6,16 +6,37 @@ import 'package:plana_app/core/net/proxy_import.dart';
 
 void main() {
   final executable = Platform.environment['PLANA_PROXY_ASSIST_TEST_BIN'];
-  for (final chinese in [false, true]) {
+  final providedScreenshot = Platform.environment['PLANA_PROXY_OCR_FIXTURE'];
+  final cases = [
+    (
+      name: 'English',
+      path: 'test/fixtures/proxy_assist/settings.png',
+      flags: <String>[],
+    ),
+    (
+      name: 'Chinese',
+      path: 'test/fixtures/proxy_assist/settings-zh.png',
+      flags: ['--chinese'],
+    ),
+    (
+      name: 'system proxy',
+      path: 'test/fixtures/proxy_assist/system-proxy-settings.png',
+      flags: ['--text-only'],
+    ),
+    if (providedScreenshot != null)
+      (
+        name: 'provided system proxy',
+        path: providedScreenshot,
+        flags: ['--text-only'],
+      ),
+  ];
+  for (final fixture in cases) {
     test(
-      'native ${chinese ? 'Chinese' : 'English'} screenshot yields only the HTTP/Mixed address',
+      'native ${fixture.name} screenshot yields only the HTTP/Mixed address',
       () async {
         final result = await Process.run(
           executable!,
-          [
-            'test/fixtures/proxy_assist/settings${chinese ? '-zh' : ''}.png',
-            if (chinese) '--chinese',
-          ],
+          [fixture.path, ...fixture.flags],
           stdoutEncoding: utf8,
           stderrEncoding: utf8,
         );

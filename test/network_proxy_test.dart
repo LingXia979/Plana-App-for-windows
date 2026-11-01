@@ -167,6 +167,53 @@ void main() {
   );
 
   test(
+    'immediate toggles and configuration saves preserve each other through disk reopen',
+    () async {
+      final root = await Directory.systemTemp.createTemp('plana_proxy_toggle_');
+      addTearDown(() => root.delete(recursive: true));
+      final prefs = PrefsStore.emptyForTest(root);
+      final container = ProviderContainer(
+        overrides: [prefsStoreProvider.overrideWithValue(prefs)],
+      );
+      addTearDown(container.dispose);
+      final notifier = container.read(networkProxyProvider.notifier);
+      final enable = notifier.setEnabled(true);
+      expect(
+        container.read(networkProxyRuntimeProvider).settings.enabled,
+        isTrue,
+      );
+      final configure = notifier.saveConfiguration(
+        address: 'http://localhost:7897',
+        bypassLocal: false,
+        software: ProxySoftware.other,
+      );
+      expect(container.read(networkProxyProvider).enabled, isTrue);
+      final disable = notifier.setEnabled(false);
+      expect(
+        container.read(networkProxyRuntimeProvider).settings.enabled,
+        isFalse,
+      );
+      await Future.wait([enable, configure, disable]);
+      final reopened = await PrefsStore.open(
+        root,
+        legacyRead: (_) async => null,
+        legacyDelete: (_) async {},
+      );
+      final saved = NetworkProxySettings.decode(reopened.get(kNetworkProxyKey));
+      expect(saved.enabled, isFalse);
+      expect(saved.address, 'http://localhost:7897');
+      expect(saved.bypassLocal, isFalse);
+      expect(saved.software, ProxySoftware.other);
+      await notifier.saveConfiguration(
+        address: 'http://localhost:7898',
+        bypassLocal: true,
+        software: ProxySoftware.auto,
+      );
+      expect(container.read(networkProxyProvider).enabled, isFalse);
+    },
+  );
+
+  test(
     'disk failure is reported, runtime stays usable and same settings can retry',
     () async {
       final root = await Directory.systemTemp.createTemp('plana_proxy_fail_');
@@ -179,9 +226,8 @@ void main() {
       );
       addTearDown(container.dispose);
       final notifier = container.read(networkProxyProvider.notifier);
-      const settings = NetworkProxySettings(enabled: true);
       await expectLater(
-        notifier.save(settings),
+        notifier.setEnabled(true),
         throwsA(isA<FileSystemException>()),
       );
       expect(
@@ -189,7 +235,7 @@ void main() {
         isTrue,
       );
       await blocker.delete();
-      await notifier.save(settings);
+      await notifier.setEnabled(true);
       final saved =
           jsonDecode(await File('${blocker.path}/settings.json').readAsString())
               as Map;

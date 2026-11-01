@@ -76,6 +76,23 @@ void main() {
   );
 
   test(
+    'system proxy OCR accepts full-width punctuation and digits without guessing a port',
+    () {
+      expect(
+        addresses(
+          '系 统 代 理 设 置\n当 前 系 统 代 理\n开 启 状 态 ： 已 启 用\n服 务 地 址 ： 127 ． 0 ． 0 ． 1 ： 7897',
+        ),
+        ['http://127.0.0.1:7897'],
+      );
+      expect(addresses('服务地址：１２７．０．０．１：７８９７'), ['http://127.0.0.1:7897']);
+      expect(addresses('ＨＴＴＰ：／／１２７．０．０．１：７８９７'), ['http://127.0.0.1:7897']);
+      expect(addresses('ＳＯＣＫＳ：１２７．０．０．１：７８９８'), isEmpty);
+      expect(addresses('控 制 地 址 ： 127 ． 0 ． 0 ． 1 ： 9090'), isEmpty);
+      expect(addresses('系统代理 已启用 7897'), isEmpty);
+    },
+  );
+
+  test(
     'old settings preserve connection while new software choice survives encoding',
     () {
       final old = NetworkProxySettings.decode(

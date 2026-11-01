@@ -74,6 +74,7 @@ void main() {
   Future<void> mount(
     WidgetTester tester, {
     bool dark = false,
+    bool expanded = true,
     double width = 950,
     double scale = 1,
   }) async {
@@ -113,6 +114,20 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
+    if (expanded) {
+      await tester.tap(find.byKey(const ValueKey('network-proxy-expand')));
+      await tester.pumpAndSettle();
+    }
+  }
+
+  Future<void> toggle(WidgetTester tester) async {
+    final control = find.widgetWithText(SwitchListTile, '使用本机 HTTP 代理');
+    await tester.ensureVisible(control);
+    await tester.runAsync(() async {
+      await tester.tap(control);
+      await prefs.idle;
+    });
+    await tester.pumpAndSettle();
   }
 
   Future<void> save(WidgetTester tester) async {
@@ -126,16 +141,25 @@ void main() {
   }
 
   testWidgets(
-    'save applies only the local proxy; relay remains a separate immediate setting',
+    'switch applies immediately while saving edits leaves enable state and relay untouched',
     (tester) async {
       await mount(tester);
-      await tester.tap(find.widgetWithText(SwitchListTile, '使用本机 HTTP 代理'));
+      await toggle(tester);
+      expect(container.read(networkProxyProvider).enabled, isTrue);
+      expect(
+        container.read(networkProxyRuntimeProvider).settings.enabled,
+        isTrue,
+      );
+      expect(
+        container.read(networkProxyProvider).address,
+        kDefaultNetworkProxyAddress,
+      );
       await tester.enterText(
         find.byKey(const ValueKey('network-proxy-address')),
         'http://localhost:7897',
       );
       await tester.pump();
-      expect(container.read(networkProxyProvider).enabled, isFalse);
+      expect(container.read(networkProxyProvider).enabled, isTrue);
       expect(find.text('有未应用的修改'), findsOneWidget);
       await save(tester);
       expect(container.read(networkProxyProvider).enabled, isTrue);
@@ -183,9 +207,21 @@ void main() {
         container.read(networkProxyProvider).address,
         kDefaultNetworkProxyAddress,
       );
-      await tester.tap(find.widgetWithText(SwitchListTile, '使用本机 HTTP 代理'));
-      await save(tester);
+      await toggle(tester);
       expect(container.read(networkProxyProvider).enabled, isFalse);
+      expect(
+        container.read(networkProxyProvider).address,
+        kDefaultNetworkProxyAddress,
+      );
+      expect(
+        tester
+            .widget<TextFormField>(
+              find.byKey(const ValueKey('network-proxy-address')),
+            )
+            .controller!
+            .text,
+        'socks5://localhost:7891',
+      );
       expect(tester.takeException(), isNull);
     },
   );
@@ -371,7 +407,7 @@ void main() {
   testWidgets(
     'native Ctrl+V image reaches proxy OCR instead of artwork import',
     (tester) async {
-      await mount(tester);
+      await mount(tester, expanded: false);
       await tester.runAsync(() async {
         await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
           'plana/image_drop',
@@ -398,6 +434,7 @@ void main() {
         'http://127.0.0.1:7897',
       );
       expect(clipboardReads, 0);
+      expect(find.text('保存并应用'), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );
@@ -446,7 +483,7 @@ void main() {
     'manual software label persists without changing transport address',
     (tester) async {
       await mount(tester);
-      await tester.tap(find.widgetWithText(SwitchListTile, '使用本机 HTTP 代理'));
+      await toggle(tester);
       await tester.tap(find.byType(DropdownButtonFormField<ProxySoftware>));
       await tester.pumpAndSettle();
       await tester.tap(find.text('代理软件').last);
@@ -468,6 +505,144 @@ void main() {
     },
   );
 
+  testWidgets(
+    'collapsed card keeps the switch and address, and edits reveal save controls',
+    (tester) async {
+      await mount(tester, expanded: false);
+      final field = find.byKey(const ValueKey('network-proxy-address'));
+      final expand = find.byKey(const ValueKey('network-proxy-expand'));
+      expect(field, findsOneWidget);
+      expect(find.text('粘贴识别'), findsNothing);
+      expect(find.text('保存并应用'), findsNothing);
+      expect(find.byType(DropdownButtonFormField<ProxySoftware>), findsNothing);
+      await captureDesktop(tester, capture, 'network-proxy-collapsed');
+      await toggle(tester);
+      expect(container.read(networkProxyProvider).enabled, isTrue);
+      expect(find.text('保存并应用'), findsNothing);
+      await tester.enterText(field, 'http://127.0.0.1:7897');
+      await tester.pumpAndSettle();
+      expect(find.text('保存并应用'), findsOneWidget);
+      await tester.tap(find.widgetWithText(CheckboxListTile, '本机与局域网直连'));
+      await tester.tap(find.byType(DropdownButtonFormField<ProxySoftware>));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('代理软件').last);
+      await tester.pumpAndSettle();
+      await tester.tap(expand);
+      await tester.pumpAndSettle();
+      expect(find.text('保存并应用'), findsNothing);
+      expect(find.text('有未应用的修改，展开后保存'), findsOneWidget);
+      await toggle(tester);
+      final applied = container.read(networkProxyProvider);
+      expect(applied.enabled, isFalse);
+      expect(applied.address, kDefaultNetworkProxyAddress);
+      expect(applied.bypassLocal, isTrue);
+      expect(applied.software, ProxySoftware.auto);
+      expect(
+        tester.widget<TextFormField>(field).controller!.text,
+        'http://127.0.0.1:7897',
+      );
+      await tester.tap(expand);
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<CheckboxListTile>(find.byType(CheckboxListTile)).value,
+        isFalse,
+      );
+      await save(tester);
+      final saved = NetworkProxySettings.decode(prefs.get(kNetworkProxyKey));
+      expect(saved.enabled, isFalse);
+      expect(saved.address, 'http://127.0.0.1:7897');
+      expect(saved.bypassLocal, isFalse);
+      expect(saved.software, ProxySoftware.other);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'failed toggle persistence can retry without saving an address draft',
+    (tester) async {
+      final blocker = File('${root.path}/blocked');
+      // Create disk-backed futures in the real async zone, as in setUp.
+      await tester.runAsync(() async {
+        await blocker.writeAsString('synthetic blocker');
+        container.dispose();
+        prefs = PrefsStore.emptyForTest(Directory(blocker.path));
+        container = ProviderContainer(
+          overrides: [
+            prefsStoreProvider.overrideWithValue(prefs),
+            desktopModeProvider.overrideWithValue(true),
+            detectedProxySoftwareProvider.overrideWith(
+              (ref, address) async => ProxySoftware.clash,
+            ),
+          ],
+        );
+      });
+      await mount(tester, expanded: false);
+      await tester.runAsync(() async {
+        await tester.tap(find.widgetWithText(SwitchListTile, '使用本机 HTTP 代理'));
+        try {
+          await prefs.idle;
+        } on FileSystemException {
+          /* The page reports it. */
+        }
+      });
+      await tester.pumpAndSettle();
+      expect(find.text('重试保存开关'), findsOneWidget);
+      expect(
+        container.read(networkProxyRuntimeProvider).settings.enabled,
+        isTrue,
+      );
+      final field = find.byKey(const ValueKey('network-proxy-address'));
+      await tester.enterText(field, 'http://127.0.0.1:7897');
+      await tester.pumpAndSettle();
+      await tester.runAsync(() async {
+        await blocker.delete();
+        await tester.tap(find.text('重试保存开关'));
+        await prefs.idle;
+      });
+      await tester.pumpAndSettle();
+      expect(find.text('重试保存开关'), findsNothing);
+      final saved = NetworkProxySettings.decode(prefs.get(kNetworkProxyKey));
+      expect(saved.enabled, isTrue);
+      expect(saved.address, kDefaultNetworkProxyAddress);
+      expect(
+        tester.widget<TextFormField>(field).controller!.text,
+        'http://127.0.0.1:7897',
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'toggling during OCR keeps the imported draft separate from the applied address',
+    (tester) async {
+      final pending = Completer<String>();
+      recognize = (_) => pending.future;
+      clipboard = ClipboardContent(image: screenshot, format: 'png');
+      await mount(tester);
+      await tester.tap(find.text('粘贴识别'));
+      await tester.pump();
+      await toggle(tester);
+      pending.complete('服 务 地 址 ： 127 ． 0 ． 0 ． 1 ： 7897');
+      await tester.pumpAndSettle();
+      expect(find.textContaining('已填入'), findsOneWidget);
+      expect(container.read(networkProxyProvider).enabled, isTrue);
+      expect(
+        container.read(networkProxyProvider).address,
+        kDefaultNetworkProxyAddress,
+      );
+      expect(
+        tester
+            .widget<TextFormField>(
+              find.byKey(const ValueKey('network-proxy-address')),
+            )
+            .controller!
+            .text,
+        'http://127.0.0.1:7897',
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets('light desktop settings explain both routes without overflow', (
     tester,
   ) async {
@@ -484,10 +659,24 @@ void main() {
     (tester) async {
       await mount(tester, dark: true, width: 420, scale: 1.4);
       await captureDesktop(tester, capture, 'network-proxy-dark-narrow');
-      await tester.ensureVisible(find.text(kNaiProxyTitle));
+      final scrollable = find
+          .descendant(
+            of: find.byType(ListView),
+            matching: find.byType(Scrollable),
+          )
+          .first;
+      await tester.scrollUntilVisible(
+        find.text(kNaiProxyTitle),
+        300,
+        scrollable: scrollable,
+      );
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
-      await tester.ensureVisible(find.text('当前已应用的路线'));
+      await tester.scrollUntilVisible(
+        find.text('当前已应用的路线'),
+        300,
+        scrollable: scrollable,
+      );
       await tester.pumpAndSettle();
       await captureDesktop(tester, capture, 'network-proxy-dark-route');
       expect(tester.takeException(), isNull);

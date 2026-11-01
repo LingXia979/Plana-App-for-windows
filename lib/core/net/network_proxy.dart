@@ -160,6 +160,30 @@ class NetworkProxyNotifier extends Notifier<NetworkProxySettings> {
   NetworkProxySettings build() =>
       ref.read(networkProxyRuntimeProvider).settings;
 
+  /// Toggle the applied connection, without committing a page's draft fields.
+  Future<void> setEnabled(bool enabled) => save(
+    NetworkProxySettings(
+      enabled: enabled,
+      address: state.address,
+      bypassLocal: state.bypassLocal,
+      software: state.software,
+    ),
+  );
+
+  /// Saving connection details never changes whether the proxy is enabled.
+  Future<void> saveConfiguration({
+    required String address,
+    required bool bypassLocal,
+    required ProxySoftware software,
+  }) => save(
+    NetworkProxySettings(
+      enabled: state.enabled,
+      address: address,
+      bypassLocal: bypassLocal,
+      software: software,
+    ),
+  );
+
   Future<void> save(NetworkProxySettings next) async {
     next = next.validated();
     ref.read(networkProxyRuntimeProvider).settings = next;

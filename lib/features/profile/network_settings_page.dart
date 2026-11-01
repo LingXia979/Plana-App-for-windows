@@ -25,9 +25,11 @@ class NetworkSettingsPage extends ConsumerStatefulWidget {
 class _NetworkSettingsPageState extends ConsumerState<NetworkSettingsPage> {
   final _form = GlobalKey<FormState>();
   late final TextEditingController _address;
-  late bool _enabled;
   late bool _bypassLocal;
   late ProxySoftware _software;
+  bool _expanded = false;
+  bool _toggling = false;
+  String? _toggleError;
   bool _importing = false;
   int _importGeneration = 0;
   String? _importMessage;
@@ -42,7 +44,6 @@ class _NetworkSettingsPageState extends ConsumerState<NetworkSettingsPage> {
     super.initState();
     final saved = ref.read(networkProxyProvider);
     _address = TextEditingController(text: saved.address);
-    _enabled = saved.enabled;
     _bypassLocal = saved.bypassLocal;
     _software = saved.software;
   }
@@ -54,7 +55,7 @@ class _NetworkSettingsPageState extends ConsumerState<NetworkSettingsPage> {
   }
 
   NetworkProxySettings get _draft => NetworkProxySettings(
-    enabled: _enabled,
+    enabled: ref.read(networkProxyProvider).enabled,
     address: _address.text,
     bypassLocal: _bypassLocal,
     software: _software,
@@ -68,28 +69,45 @@ class _NetworkSettingsPageState extends ConsumerState<NetworkSettingsPage> {
     _saveMessage = null;
   }
 
+  Future<void> _setEnabled(bool enabled) async {
+    if (_toggling || _saving) return;
+    setState(() {
+      _toggling = true;
+      _toggleError = null;
+    });
+    try {
+      await ref.read(networkProxyProvider.notifier).setEnabled(enabled);
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _toggleError = '开关已在本次运行生效，但保存失败，重启可能丢失。请检查磁盘后重试。';
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _toggling = false);
+    }
+  }
+
   Future<void> _save() async {
-    // Always allow disabling even if the address field currently contains a typo.
-    final valid = _form.currentState!.validate();
-    if (_enabled && !valid) return;
-    final next = valid
-        ? _draft
-        : NetworkProxySettings(
-            enabled: false,
-            address: ref.read(networkProxyProvider).address,
-            bypassLocal: _bypassLocal,
-            software: _software,
-          );
+    if (!_form.currentState!.validate()) return;
+    final next = _draft;
     setState(() {
       _saving = true;
       _saveMessage = null;
     });
     try {
-      await ref.read(networkProxyProvider.notifier).save(next);
+      await ref
+          .read(networkProxyProvider.notifier)
+          .saveConfiguration(
+            address: next.address,
+            bypassLocal: next.bypassLocal,
+            software: next.software,
+          );
       ref.invalidate(detectedProxySoftwareProvider(next.address));
       if (!mounted) return;
       setState(() {
         _address.text = ref.read(networkProxyProvider).address;
+        _toggleError = null;
         _saveMessage = '已保存并应用。新请求使用当前设置，进行中的任务和连接不会被重启。';
       });
       _form.currentState!.validate();
@@ -113,6 +131,7 @@ class _NetworkSettingsPageState extends ConsumerState<NetworkSettingsPage> {
     if (_importing || _saving) return;
     final generation = ++_importGeneration;
     setState(() {
+      _expanded = true;
       _importing = true;
       _importMessage = null;
     });
@@ -220,12 +239,13 @@ class _NetworkSettingsPageState extends ConsumerState<NetworkSettingsPage> {
     ref.listen(networkProxyProvider, (previous, next) {
       if (!_saving &&
           previous != null &&
-          _enabled == previous.enabled &&
+          (previous.address != next.address ||
+              previous.bypassLocal != next.bypassLocal ||
+              previous.software != next.software) &&
           _address.text == previous.address &&
           _bypassLocal == previous.bypassLocal &&
           _software == previous.software) {
         setState(() {
-          _enabled = next.enabled;
           _address.text = next.address;
           _bypassLocal = next.bypassLocal;
           _software = next.software;
@@ -246,7 +266,6 @@ class _NetworkSettingsPageState extends ConsumerState<NetworkSettingsPage> {
             ) !=
             'DIRECT';
     final dirty =
-        saved.enabled != _enabled ||
         saved.address != _address.text ||
         saved.bypassLocal != _bypassLocal ||
         saved.software != _software;
@@ -274,20 +293,42 @@ class _NetworkSettingsPageState extends ConsumerState<NetworkSettingsPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('本机代理', style: context.texts.titleMedium),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text('本机代理', style: context.texts.titleMedium),
+                        ),
+                        IconButton(
+                          key: const ValueKey('network-proxy-expand'),
+                          tooltip: _expanded ? '收起详细设置' : '展开详细设置',
+                          onPressed: () =>
+                              setState(() => _expanded = !_expanded),
+                          icon: Icon(
+                            _expanded ? Icons.expand_less : Icons.expand_more,
+                          ),
+                        ),
+                      ],
+                    ),
                     const SizedBox(height: 6),
                     Text('通过 Clash 或其他代理软件连接网络。请先启动代理软件。', style: small),
                     SwitchListTile(
                       contentPadding: EdgeInsets.zero,
                       title: const Text('使用本机 HTTP 代理'),
-                      value: _enabled,
-                      onChanged: _saving
-                          ? null
-                          : (v) => setState(() {
-                              _enabled = v;
-                              _changed();
-                            }),
+                      subtitle: const Text('开关立即生效，使用已保存的地址'),
+                      value: saved.enabled,
+                      onChanged: _saving || _toggling ? null : _setEnabled,
                     ),
+                    if (_toggleError != null) ...[
+                      Text(_toggleError!, style: small),
+                      TextButton(
+                        onPressed: _saving || _toggling
+                            ? null
+                            : () => _setEnabled(
+                                ref.read(networkProxyProvider).enabled,
+                              ),
+                        child: const Text('重试保存开关'),
+                      ),
+                    ],
                     TextFormField(
                       key: const ValueKey('network-proxy-address'),
                       controller: _address,
@@ -308,120 +349,134 @@ class _NetworkSettingsPageState extends ConsumerState<NetworkSettingsPage> {
                           return e.message;
                         }
                       },
-                      onChanged: (_) => setState(_changed),
+                      onChanged: (_) => setState(() {
+                        _expanded = true;
+                        _changed();
+                      }),
                     ),
                     const SizedBox(height: 8),
                     Text(
                       '7890 仅为示例，请以代理软件的 HTTP / Mixed 端口为准。不要填订阅链接、控制端口或 SOCKS 端口。',
                       style: small,
                     ),
-                    const SizedBox(height: 10),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: [
-                        OutlinedButton.icon(
-                          onPressed: _saving || _importing ? null : _paste,
-                          icon: const Icon(Icons.content_paste, size: 18),
-                          label: Text(_importing ? '识别中…' : '粘贴识别'),
-                        ),
-                        TextButton.icon(
-                          onPressed: _saving || _importing
-                              ? null
-                              : _pickScreenshot,
-                          icon: const Icon(Icons.image_search, size: 18),
-                          label: const Text('选择截图'),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      '复制截图或文字地址后点「粘贴识别」。也可直接在本页粘贴或拖入截图；图片仅在本机识别。',
-                      style: small,
-                    ),
-                    if (_importMessage != null)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 8),
-                        child: Text(_importMessage!),
+                    if (!_expanded && dirty)
+                      TextButton(
+                        onPressed: () => setState(() => _expanded = true),
+                        child: const Text('有未应用的修改，展开后保存'),
                       ),
-                    const SizedBox(height: 12),
-                    DropdownButtonFormField<ProxySoftware>(
-                      key: ValueKey('proxy-software-${_software.name}'),
-                      initialValue: _software,
-                      isExpanded: true,
-                      decoration: const InputDecoration(
-                        labelText: '软件名称（用于路线显示）',
-                        border: OutlineInputBorder(),
+                    if (_expanded) ...[
+                      const SizedBox(height: 10),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          OutlinedButton.icon(
+                            onPressed: _saving || _importing ? null : _paste,
+                            icon: const Icon(Icons.content_paste, size: 18),
+                            label: Text(_importing ? '识别中…' : '粘贴识别'),
+                          ),
+                          TextButton.icon(
+                            onPressed: _saving || _importing
+                                ? null
+                                : _pickScreenshot,
+                            icon: const Icon(Icons.image_search, size: 18),
+                            label: const Text('选择截图'),
+                          ),
+                        ],
                       ),
-                      items: const [
-                        DropdownMenuItem(
-                          value: ProxySoftware.auto,
-                          child: Text('自动识别'),
-                        ),
-                        DropdownMenuItem(
-                          value: ProxySoftware.clash,
-                          child: Text('Clash'),
-                        ),
-                        DropdownMenuItem(
-                          value: ProxySoftware.other,
-                          child: Text('代理软件'),
-                        ),
-                      ],
-                      onChanged: _saving
-                          ? null
-                          : (value) => setState(() {
-                              _software = value!;
-                              _changed();
-                            }),
-                    ),
-                    CheckboxListTile(
-                      contentPadding: EdgeInsets.zero,
-                      controlAffinity: ListTileControlAffinity.leading,
-                      title: const Text('本机与局域网直连'),
-                      subtitle: const Text('跳过 localhost、.local 名称和私有 IP 地址'),
-                      value: _bypassLocal,
-                      onChanged: _saving
-                          ? null
-                          : (v) => setState(() {
-                              _bypassLocal = v!;
-                              _changed();
-                            }),
-                    ),
-                    Wrap(
-                      spacing: 10,
-                      runSpacing: 8,
-                      crossAxisAlignment: WrapCrossAlignment.center,
-                      children: [
-                        FilledButton.icon(
-                          onPressed: _saving || _importing ? null : _save,
-                          icon: const Icon(Icons.check, size: 18),
-                          label: Text(_saving ? '保存中…' : '保存并应用'),
-                        ),
-                        OutlinedButton.icon(
-                          onPressed: _saving || _testing || _importing
-                              ? null
-                              : _test,
-                          icon: const Icon(Icons.network_check, size: 18),
-                          label: Text(_testing ? '测试中…' : '测试代理'),
-                        ),
-                        if (dirty) Text('有未应用的修改', style: small),
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-                    Text(
-                      '测试只用所填代理访问 NovelAI，不携带令牌、不生成图片，也不会自动启用或保存设置。',
-                      style: small,
-                    ),
-                    if (_saveMessage != null)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 10),
-                        child: Text(_saveMessage!),
+                      const SizedBox(height: 6),
+                      Text(
+                        '复制截图或文字地址后点「粘贴识别」。也可直接在本页粘贴或拖入截图；图片仅在本机识别。',
+                        style: small,
                       ),
-                    if (_testMessage != null)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 10),
-                        child: Text(_testMessage!),
+                      if (_importMessage != null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 8),
+                          child: Text(_importMessage!),
+                        ),
+                      const SizedBox(height: 12),
+                      DropdownButtonFormField<ProxySoftware>(
+                        key: ValueKey('proxy-software-${_software.name}'),
+                        initialValue: _software,
+                        isExpanded: true,
+                        decoration: const InputDecoration(
+                          labelText: '软件名称（用于路线显示）',
+                          border: OutlineInputBorder(),
+                        ),
+                        items: const [
+                          DropdownMenuItem(
+                            value: ProxySoftware.auto,
+                            child: Text('自动识别'),
+                          ),
+                          DropdownMenuItem(
+                            value: ProxySoftware.clash,
+                            child: Text('Clash'),
+                          ),
+                          DropdownMenuItem(
+                            value: ProxySoftware.other,
+                            child: Text('代理软件'),
+                          ),
+                        ],
+                        onChanged: _saving
+                            ? null
+                            : (value) => setState(() {
+                                _software = value!;
+                                _changed();
+                              }),
                       ),
+                      CheckboxListTile(
+                        contentPadding: EdgeInsets.zero,
+                        controlAffinity: ListTileControlAffinity.leading,
+                        title: const Text('本机与局域网直连'),
+                        subtitle: const Text('跳过 localhost、.local 名称和私有 IP 地址'),
+                        value: _bypassLocal,
+                        onChanged: _saving
+                            ? null
+                            : (v) => setState(() {
+                                _bypassLocal = v!;
+                                _changed();
+                              }),
+                      ),
+                      Wrap(
+                        spacing: 10,
+                        runSpacing: 8,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          FilledButton.icon(
+                            onPressed: _saving || _importing || _toggling
+                                ? null
+                                : _save,
+                            icon: const Icon(Icons.check, size: 18),
+                            label: Text(_saving ? '保存中…' : '保存并应用'),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: _saving || _testing || _importing
+                                ? null
+                                : _test,
+                            icon: const Icon(Icons.network_check, size: 18),
+                            label: Text(_testing ? '测试中…' : '测试代理'),
+                          ),
+                          if (dirty) Text('有未应用的修改', style: small),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      Text('「保存并应用」仅保存地址、软件名称和局域网直连设置，不改变开关。', style: small),
+                      const SizedBox(height: 6),
+                      Text(
+                        '测试只用所填代理访问 NovelAI，不携带令牌、不生成图片，也不会自动启用或保存设置。',
+                        style: small,
+                      ),
+                      if (_saveMessage != null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 10),
+                          child: Text(_saveMessage!),
+                        ),
+                      if (_testMessage != null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 10),
+                          child: Text(_testMessage!),
+                        ),
+                    ],
                   ],
                 ),
               ),

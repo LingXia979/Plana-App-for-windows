@@ -21,8 +21,11 @@ List<ProxyAddressCandidate> parseProxyAddresses(String input) {
     throw const FormatException('识别内容过长，请只截取代理端口区域');
   }
   final text = input
-      .replaceAll('：', ':')
-      .replaceAll('／', '/')
+      // Chinese Windows OCR can return full-width dots/digits in an IPv4 address.
+      .replaceAllMapped(
+        RegExp(r'[！-～]'),
+        (match) => String.fromCharCode(match.group(0)!.codeUnitAt(0) - 0xfee0),
+      )
       .replaceAll('。', '.')
       .replaceAllMapped(RegExp(r'(?<=\d)\s*\.\s*(?=\d)'), (_) => '.')
       .replaceAllMapped(RegExp(r'(?<=\d)\s*:\s*(?=\d)'), (_) => ':');
