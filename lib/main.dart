@@ -1,8 +1,11 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'core/app_info.dart';
 import 'core/auth/auth_mode.dart';
+import 'core/net/network_proxy.dart';
 import 'core/platform/desktop.dart';
 import 'core/store/app_stores.dart';
 import 'core/store/gen_settings.dart';
@@ -40,6 +43,12 @@ Future<void> _startApplication() async {
   // 不再需要第二笔 I/O,也不必再解一次 Keystore。
   RuntimeDiagnostics.current?.event('boot-stores');
   final stores = await AppStores.open();
+  final networkProxy = NetworkProxyOverrides(
+    NetworkProxySettings.decode(stores.prefs.get(kNetworkProxyKey)),
+  );
+  if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+    HttpOverrides.global = networkProxy;
+  }
   RuntimeDiagnostics.current?.event('boot-stores-ready');
   await tagDbReady;
   final themeInit = loadThemeSettings(stores.prefs);
@@ -47,6 +56,7 @@ Future<void> _startApplication() async {
     ProviderScope(
       overrides: [
         appStoresProvider.overrideWithValue(stores),
+        networkProxyRuntimeProvider.overrideWithValue(networkProxy),
         themeInitProvider.overrideWithValue(themeInit),
         localTagDbProvider.overrideWithValue(tagDb),
       ],

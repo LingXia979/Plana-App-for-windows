@@ -9,6 +9,7 @@ import '../profile/about_page.dart';
 import '../profile/account_page.dart';
 import '../profile/appearance_page.dart';
 import '../profile/gen_settings_page.dart';
+import '../profile/network_settings_page.dart';
 import '../profile/storage_page.dart';
 import '../stats/stats_page.dart';
 import '../shell/shell_state.dart';
@@ -16,6 +17,7 @@ import 'desktop_tools_page.dart';
 
 enum _Section {
   account('账号与接入', Icons.manage_accounts_outlined, '账户与服务', AccountPage()),
+  network('网络与代理', Icons.settings_ethernet, '账户与服务', NetworkSettingsPage()),
   dataImport('数据导入', Icons.import_export, '账户与服务', WebBackupPage()),
   generation('生成设置', Icons.tune, '创作偏好', GenSettingsPage()),
   presets('提示词预设', Icons.bookmark_outline, '创作偏好', PromptPresetManagePage()),

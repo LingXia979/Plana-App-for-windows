@@ -166,6 +166,7 @@ Future<List<Uint8List>> streamBotTask({
   }
 
   WebSocket? ws;
+  HttpClient? wsClient;
   StreamSubscription<dynamic>? wsSub;
   Timer? heartbeat;
 
@@ -265,7 +266,13 @@ Future<List<Uint8List>> streamBotTask({
   // —— WS 主链路(连不上就纯靠轮询兜底)——
   try {
     final wsUrl = '${baseUrl.replaceFirst(RegExp(r'^http'), 'ws')}/ws/bot';
-    ws = await WebSocket.connect(wsUrl).timeout(const Duration(seconds: 12));
+    // A task-owned client observes the app's current proxy override even if the
+    // SDK's shared WebSocket client was initialized before app startup.
+    wsClient = HttpClient();
+    ws = await WebSocket.connect(
+      wsUrl,
+      customClient: wsClient,
+    ).timeout(const Duration(seconds: 12));
     wsSub = ws.listen(handle, onError: (_) {}, onDone: () {});
     ws.add(jsonEncode({'action': 'bind_session', 'session_id': sessionId}));
     ws.add(jsonEncode({'action': 'subscribe_task', 'task_id': taskId}));
@@ -276,6 +283,7 @@ Future<List<Uint8List>> streamBotTask({
     });
   } catch (_) {
     // 忽略:轮询兜底仍会跑
+    wsClient?.close(force: true);
   }
 
   // —— HTTP 轮询兜底(每 2.5s)——
@@ -347,5 +355,6 @@ Future<List<Uint8List>> streamBotTask({
     heartbeat?.cancel();
     await wsSub?.cancel();
     await ws?.close();
+    wsClient?.close(force: true);
   }
 }

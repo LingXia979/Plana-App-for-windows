@@ -909,7 +909,7 @@ class _AccessStepState extends ConsumerState<_AccessStep>
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Text(
-                                      '代理访问 NovelAI',
+                                      kNaiProxyTitle,
                                       style: context.texts.labelMedium!
                                           .copyWith(
                                             color: scheme.onSurfaceVariant,
