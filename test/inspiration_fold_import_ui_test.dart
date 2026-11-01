@@ -16,12 +16,18 @@ import 'package:plana_app/features/editor/widgets/chip_flow_view.dart';
 import 'package:plana_app/features/generate/generate_state.dart';
 import 'package:plana_app/features/generate/models.dart';
 import 'package:plana_app/features/generate/prompt_presets.dart';
+import 'package:plana_app/features/generate/prompt_sections.dart';
+import 'package:plana_app/features/generate/state_codec.dart';
 import 'package:plana_app/features/generate/widgets/desktop_prompt_card.dart';
+import 'package:plana_app/features/generate/widgets/prompt_card.dart';
 import 'package:plana_app/features/inspiration/inspiration_page.dart';
+import 'package:plana_app/features/inspiration/codex/codex_models.dart';
+import 'package:plana_app/features/inspiration/codex/codex_sheets.dart';
 import 'package:plana_app/features/inspiration/public_tags.dart';
 import 'package:plana_app/features/inspiration/tag_library.dart';
 import 'package:plana_app/features/inspiration/tag_models.dart';
 import 'package:plana_app/features/shell/shell_state.dart';
+import 'support/desktop_capture.dart';
 
 class _MemoryPresets extends PromptPresetsNotifier {
   @override
@@ -36,6 +42,7 @@ class _MemoryPresets extends PromptPresetsNotifier {
 
 void main() {
   final binding = TestWidgetsFlutterBinding.ensureInitialized();
+  setUpAll(loadDesktopCaptureFonts);
   const paths = MethodChannel('plugins.flutter.io/path_provider');
   const entries = [
     TagEntry(
@@ -54,14 +61,30 @@ void main() {
       negative: 'bad paws, bad tail',
       createdAt: 1,
     ),
+    TagEntry(
+      id: 'a12',
+      category: TagCategory.artist,
+      name: 'A12',
+      positive: 'artist:wlop, shared artist',
+      negative: 'lowres, blurry',
+    ),
+    TagEntry(
+      id: 'a13',
+      category: TagCategory.artist,
+      name: 'A13',
+      positive: 'shared artist, artist:ask',
+      negative: 'blurry, artifacts',
+    ),
   ];
   late Directory temp;
   late AppStores stores;
   late ProviderContainer container;
   late GenerateNotifier gen;
+  late GlobalKey capture;
 
   setUp(() async {
     FlutterSecureStorage.setMockInitialValues({});
+    capture = GlobalKey();
     temp = Directory.systemTemp.createTempSync('plana_fold_import_ui_');
     File('${temp.path}/tag_library.json').writeAsStringSync(
       jsonEncode({'entries': entries.map((e) => e.toJson()).toList()}),
@@ -125,38 +148,50 @@ void main() {
     await tester.pumpWidget(
       UncontrolledProviderScope(
         container: container,
-        child: MaterialApp(
-          theme: AppTheme.light().copyWith(platform: TargetPlatform.windows),
-          home: Consumer(
-            builder: (context, ref, _) => IndexedStack(
-              index: ref.watch(shellIndexProvider) == kTabCreate ? 0 : 1,
-              children: [
-                Scaffold(
-                  body: Align(
-                    alignment: Alignment.topLeft,
-                    child: SizedBox(
-                      width: 380,
-                      child: SingleChildScrollView(
-                        child: Column(
-                          children: [
-                            const DesktopPromptCard(),
-                            for (final c
-                                in ref.watch(generateProvider).characters)
-                              Padding(
-                                padding: const EdgeInsets.all(12),
-                                child: DesktopPromptCard(
-                                  key: ValueKey(c.id),
-                                  charId: c.id,
+        child: RepaintBoundary(
+          key: capture,
+          child: MaterialApp(
+            debugShowCheckedModeBanner: false,
+            theme: AppTheme.light().copyWith(
+              platform: TargetPlatform.windows,
+              textTheme: AppTheme.light().textTheme.apply(
+                fontFamily: 'Microsoft YaHei',
+              ),
+            ),
+            home: Consumer(
+              builder: (context, ref, _) => IndexedStack(
+                index: ref.watch(shellIndexProvider) == kTabCreate ? 0 : 1,
+                children: [
+                  Scaffold(
+                    body: Align(
+                      alignment: Alignment.topLeft,
+                      child: SizedBox(
+                        width: 380,
+                        child: SingleChildScrollView(
+                          child: Column(
+                            children: [
+                              if (ref.watch(generateProvider).sections.isEmpty)
+                                const DesktopPromptCard()
+                              else
+                                const PromptCard(),
+                              for (final c
+                                  in ref.watch(generateProvider).characters)
+                                Padding(
+                                  padding: const EdgeInsets.all(12),
+                                  child: DesktopPromptCard(
+                                    key: ValueKey(c.id),
+                                    charId: c.id,
+                                  ),
                                 ),
-                              ),
-                          ],
+                            ],
+                          ),
                         ),
                       ),
                     ),
                   ),
-                ),
-                const InspirationPage(),
-              ],
+                  const InspirationPage(),
+                ],
+              ),
             ),
           ),
         ),
@@ -237,15 +272,138 @@ void main() {
     expect(tester.takeException(), isNull);
   }
 
+  Future<void> loadLegacyFolds(WidgetTester tester, List<TagEntry> used) async {
+    final draft = appendTagPromptsFolded(
+      positiveDraft: gen.state.prompt,
+      negativeDraft: gen.state.negativePrompt,
+      entries: used,
+    );
+    gen.setPrompts(
+      positive: outputOf(draft.positiveDraft),
+      negative: outputOf(draft.negativeDraft),
+      positiveRaw: draft.positiveDraft,
+      negativeRaw: draft.negativeDraft,
+      promptFoldLinks: draft.links,
+    );
+    container.read(shellIndexProvider.notifier).select(kTabCreate);
+    await tester.pumpAndSettle();
+  }
+
+  for (final artist in [false, true]) {
+    testWidgets(
+      'real library imports create complete named sections even on repeat; artist=$artist',
+      (tester) async {
+        gen.setPrompts(positive: 'shared artist, forest', negative: 'lowres');
+        final used = artist
+            ? entries.skip(2).toList()
+            : entries.take(2).toList();
+        await mount(tester);
+        if (artist) await tap(tester, key('inspiration-category-artist'));
+        await importEntries(tester, [used.first.id]);
+        final original = gen.state.sections.last;
+        expect(original.name, used.first.name);
+        expect(original.positive, used.first.positive);
+        expect(original.negative, used.first.negative);
+        await tap(
+          tester,
+          find.descendant(
+            of: key('sec${original.id}'),
+            matching: find.byTooltip('停用分区'),
+          ),
+        );
+        container.read(shellIndexProvider.notifier).select(kTabInspiration);
+        await tester.pumpAndSettle();
+        await importEntries(tester, used.map((e) => e.id).toList());
+        final state = gen.state;
+        expect(state.sections, hasLength(4));
+        expect(state.sections[1].enabled, isFalse);
+        expect(state.sections.map((s) => s.id).toSet(), hasLength(4));
+        expect(state.prompt, 'shared artist, forest');
+        expect(state.negativePrompt, 'lowres');
+        for (var i = 0; i < used.length; i++) {
+          final section = state.sections[i + 2];
+          expect(section.name, used[i].name);
+          expect(section.positive, used[i].positive);
+          expect(section.negative, used[i].negative);
+          expect(
+            find.descendant(
+              of: key('sec${section.id}'),
+              matching: find.text(used[i].name),
+            ),
+            findsOneWidget,
+          );
+        }
+        expect(
+          composeSections(state).prompt,
+          'shared artist, forest, ${used[0].positive}, ${used[1].positive}',
+        );
+        final saved = await encodeGenerateState(state, stores.blobs);
+        final restored = await decodeGenerateState(saved.json, stores.blobs);
+        expect(
+          restored.sections.map((s) => s.positive),
+          state.sections.map((s) => s.positive),
+        );
+        expect(
+          restored.sections.map((s) => s.name),
+          state.sections.map((s) => s.name),
+        );
+        await captureDesktop(
+          tester,
+          capture,
+          'entry-sections-${artist ? 'artist' : 'character'}',
+        );
+        await finish(tester);
+      },
+    );
+  }
+
   testWidgets(
-    'real main import links both folds and either-side delete and undo preserve unrelated words',
+    'codex import defaults to a complete named section, including repeated content',
+    (tester) async {
+      gen.setPrompts(positive: 'forest, night');
+      final entry = CodexEntry.fromJson(const {
+        'id': 'fixture',
+        'title': 'A24 夜景',
+        'tags': 'forest, night',
+      });
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: MaterialApp(
+            home: Scaffold(
+              body: Consumer(
+                builder: (context, ref, _) => TextButton(
+                  onPressed: () => codexAddToPrompt(ref, entry),
+                  child: const Text('导入法典'),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('导入法典'));
+      await tester.pump();
+      await tester.tap(find.text('导入法典'));
+      await tester.pump();
+      expect(gen.state.sections.map((s) => s.name), ['主体', 'A24 夜景', 'A24 夜景']);
+      expect(gen.state.sections.last.positive, 'forest, night');
+      expect(
+        composeSections(gen.state).prompt,
+        'forest, night, forest, night, forest, night',
+      );
+      await finish(tester);
+    },
+  );
+
+  testWidgets(
+    'legacy main folds keep paired delete and undo behavior after the import migration',
     (tester) async {
       gen.setPrompts(
         positive: 'sunrise, forest',
         negative: 'rain, manual exclusion',
       );
       await mount(tester);
-      await importEntries(tester, ['traveler', 'cat']);
+      await loadLegacyFolds(tester, entries.take(2).toList());
       final imported = gen.state;
       expect(parseFolds(imported.promptRaw), hasLength(2));
       expect(parseFolds(imported.negativePromptRaw), hasLength(2));
@@ -345,7 +503,7 @@ void main() {
     (tester) async {
       gen.setPrompts(positive: 'forest', negative: 'rain');
       await mount(tester);
-      await importEntries(tester, ['traveler']);
+      await loadLegacyFolds(tester, [entries.first]);
       final imported = gen.state;
       final pair = imported.promptFoldLinks.single;
       final mountedEditor = tester.state<ChipFlowViewState>(

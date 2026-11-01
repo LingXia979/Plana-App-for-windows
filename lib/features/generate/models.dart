@@ -420,19 +420,18 @@ enum LoopCount {
   x4('4'),
   x8('8'),
   x16('16'),
-  infinite('∞');
+  infinite('∞'),
+  custom('自定义');
 
   const LoopCount(this.label);
   final String label;
-
-  /// 循环张数;0 表示无限(手动停止或失败为止)。
-  int get count => switch (this) {
-    LoopCount.x4 => 4,
-    LoopCount.x8 => 8,
-    LoopCount.x16 => 16,
-    LoopCount.infinite => 0,
-  };
 }
+
+const kDefaultCustomLoopCount = 8;
+const kMaxCustomLoopCount = 9999;
+
+bool isValidCustomLoopCount(Object? count) =>
+    count is int && count >= 1 && count <= kMaxCustomLoopCount;
 
 class SizePreset {
   const SizePreset(
@@ -1039,6 +1038,7 @@ class GenParams {
     this.cfgRescale = 0.0,
     this.normalizeVibe = true,
     this.loop = LoopCount.x8,
+    this.customLoopCount = kDefaultCustomLoopCount,
     this.animaSteps = 12,
     this.animaCfg = 1.0,
     this.animaSampler = 'euler',
@@ -1075,6 +1075,19 @@ class GenParams {
   /// 多张 Vibe 时把强度按比例缩到合计 ≤1(关掉则各自独立相加)。
   final bool normalizeVibe;
   final LoopCount loop;
+  final int customLoopCount;
+
+  /// 开始循环时锁定的总张数。只有明确选择无限档才返回 0。
+  int get loopCount => switch (loop) {
+    LoopCount.x4 => 4,
+    LoopCount.x8 => 8,
+    LoopCount.x16 => 16,
+    LoopCount.infinite => 0,
+    LoopCount.custom =>
+      isValidCustomLoopCount(customLoopCount)
+          ? customLoopCount
+          : kDefaultCustomLoopCount,
+  };
 
   // Anima 专属采样参数(与 NAI 的 steps/cfg/sampler 独立,两套不混用)。
   final int animaSteps;
@@ -1212,6 +1225,7 @@ class GenParams {
     double? cfgRescale,
     bool? normalizeVibe,
     LoopCount? loop,
+    int? customLoopCount,
     int? animaSteps,
     double? animaCfg,
     String? animaSampler,
@@ -1239,6 +1253,7 @@ class GenParams {
       cfgRescale: cfgRescale ?? this.cfgRescale,
       normalizeVibe: normalizeVibe ?? this.normalizeVibe,
       loop: loop ?? this.loop,
+      customLoopCount: customLoopCount ?? this.customLoopCount,
       animaSteps: animaSteps ?? this.animaSteps,
       animaCfg: animaCfg ?? this.animaCfg,
       animaSampler: animaSampler ?? this.animaSampler,

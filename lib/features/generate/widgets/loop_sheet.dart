@@ -30,18 +30,44 @@ class _LoopSheet extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final loop = ref.watch(loopStatusProvider);
     return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+      padding: EdgeInsets.fromLTRB(
+        20,
+        0,
+        20,
+        20 + MediaQuery.viewInsetsOf(context).bottom,
+      ),
       child: loop.active ? _Running(loop: loop) : const _Setup(),
     );
   }
 }
 
 /// 配置态:张数档位(直接写回全局参数)+ 成本预估 + 开始。
-class _Setup extends ConsumerWidget {
+class _Setup extends ConsumerStatefulWidget {
   const _Setup();
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_Setup> createState() => _SetupState();
+}
+
+class _SetupState extends ConsumerState<_Setup> {
+  late final TextEditingController _customCount;
+
+  @override
+  void initState() {
+    super.initState();
+    _customCount = TextEditingController(
+      text: ref.read(generateProvider).params.customLoopCount.toString(),
+    );
+  }
+
+  @override
+  void dispose() {
+    _customCount.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final scheme = context.scheme;
     final s = ref.watch(generateProvider);
     final p = s.params;
@@ -57,7 +83,11 @@ class _Setup extends ConsumerWidget {
     final vibeFee =
         ref.watch(vibeEncodeFeeProvider(vibeEncodeFeeKey(sent))).value ?? 0;
     final cost = estimateCost(sent, isOpus: isOpus, v5Charged: v5Charged);
-    final n = p.loop.count;
+    final custom = p.loop == LoopCount.custom;
+    final valid =
+        !custom ||
+        isValidCustomLoopCount(int.tryParse(_customCount.text.trim()));
+    final n = p.loopCount;
 
     final free = cost == 0 && vibeFee == 0;
     final costText = free
@@ -84,30 +114,61 @@ class _Setup extends ConsumerWidget {
           ),
         ),
         const SizedBox(height: 16),
-        Row(
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Expanded(child: Text('张数', style: context.texts.bodyMedium)),
-            SegmentedButton<LoopCount>(
-              segments: [
-                for (final l in LoopCount.values)
-                  ButtonSegment(
-                    value: l,
-                    label: l == LoopCount.infinite
-                        ? const Icon(Icons.all_inclusive, size: 15)
-                        : Text(l.label),
+            Text('张数', style: context.texts.bodyMedium),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: SegmentedButton<LoopCount>(
+                segments: [
+                  for (final l in LoopCount.values)
+                    ButtonSegment(
+                      value: l,
+                      label: l == LoopCount.infinite
+                          ? const Icon(Icons.all_inclusive, size: 15)
+                          : Text(l.label, maxLines: 1),
+                    ),
+                ],
+                selected: {p.loop},
+                onSelectionChanged: (sel) =>
+                    ref.read(generateProvider.notifier).setLoop(sel.first),
+                showSelectedIcon: false,
+                style: const ButtonStyle(
+                  visualDensity: VisualDensity(horizontal: -3, vertical: -3),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  padding: WidgetStatePropertyAll(
+                    EdgeInsets.symmetric(horizontal: 4),
                   ),
-              ],
-              selected: {p.loop},
-              onSelectionChanged: (sel) =>
-                  ref.read(generateProvider.notifier).setLoop(sel.first),
-              showSelectedIcon: false,
-              style: const ButtonStyle(
-                visualDensity: VisualDensity(horizontal: -3, vertical: -3),
-                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  minimumSize: WidgetStatePropertyAll(Size(0, 40)),
+                ),
               ),
             ),
           ],
         ),
+        if (custom) ...[
+          const SizedBox(height: 12),
+          TextField(
+            key: const ValueKey('custom-loop-count'),
+            controller: _customCount,
+            autofocus: true,
+            keyboardType: TextInputType.number,
+            decoration: InputDecoration(
+              labelText: '自定义张数',
+              suffixText: '张',
+              helperText: '输入 1–$kMaxCustomLoopCount 的整数',
+              errorText: valid ? null : '请输入 1–$kMaxCustomLoopCount 的整数',
+            ),
+            onChanged: (value) {
+              setState(() {});
+              final count = int.tryParse(value.trim());
+              if (isValidCustomLoopCount(count)) {
+                ref.read(generateProvider.notifier).setCustomLoopCount(count!);
+              }
+            },
+          ),
+        ],
         const SizedBox(height: 12),
         Row(
           children: [
@@ -115,7 +176,7 @@ class _Setup extends ConsumerWidget {
             // 「12/张 · 共 246 Anlas」这类串在窄屏会顶破一行,收进 Flexible
             Flexible(
               child: Text(
-                costText,
+                valid ? costText : '填写有效张数后计算',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 textAlign: TextAlign.end,
@@ -134,7 +195,7 @@ class _Setup extends ConsumerWidget {
         ),
         const SizedBox(height: 18),
         FilledButton(
-          onPressed: gen.busy
+          onPressed: gen.busy || !valid
               ? null
               : () async {
                   // 无限 + 收费档:没有张数上限就没有花费上限,且退到后台仍会继续,
@@ -173,7 +234,11 @@ class _Setup extends ConsumerWidget {
             ),
           ),
           child: Text(
-            gen.busy ? '当前有生成进行中' : '开始循环 ${n > 0 ? '×$n' : '∞'}',
+            gen.busy
+                ? '当前有生成进行中'
+                : !valid
+                ? '请填写生成张数'
+                : '开始循环 ${n > 0 ? '×$n' : '∞'}',
             style: const TextStyle(fontWeight: FontWeight.w700),
           ),
         ),

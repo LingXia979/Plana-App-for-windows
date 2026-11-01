@@ -94,7 +94,7 @@ Future<GenerateNotifier> _pumpCard(
         'looking at viewer, smile',
     negative: 'lowres, bad anatomy',
   );
-  gen.addEntrySections([_a12]);
+  gen.addEntrySections([_a12], name: '画风');
   gen.addSection();
 
   await tester.pumpWidget(

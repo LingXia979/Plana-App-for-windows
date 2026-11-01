@@ -59,13 +59,15 @@ class _Client extends NaiClient {
 }
 
 class _LoopClient extends _Client {
-  _LoopClient(this.bytes, {this.steps = 28});
+  _LoopClient(this.bytes, {this.steps = 28, int capacity = 4})
+    : requests = List.generate(capacity, (_) => Completer<void>()),
+      finish = List.generate(capacity, (_) => Completer<void>());
 
   final Uint8List bytes;
   final int steps;
   final bodies = <Map<String, dynamic>>[];
-  final requests = List.generate(4, (_) => Completer<void>());
-  final finish = List.generate(4, (_) => Completer<void>());
+  final List<Completer<void>> requests;
+  final List<Completer<void>> finish;
   int count = 0;
 
   @override
@@ -84,6 +86,50 @@ class _LoopClient extends _Client {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  test(
+    'custom loop sends exactly the requested images and locks total at start',
+    () async {
+      final stores = AppStores.ephemeral();
+      final bytes = Uint8List.fromList(
+        img.encodePng(img.Image(width: 32, height: 32)),
+      );
+      final client = _LoopClient(bytes, capacity: 8);
+      final c = ProviderContainer(
+        overrides: [
+          appStoresProvider.overrideWithValue(stores),
+          desktopModeProvider.overrideWithValue(true),
+          authModeProvider.overrideWith(_Auth.new),
+          naiKeysStoreProvider.overrideWith(_Keys.new),
+          naiClientProvider.overrideWith((ref, base) => client),
+        ],
+      );
+      try {
+        await c.read(authModeProvider.future);
+        await c.read(naiKeysStoreProvider.future);
+        final gen = c.read(generateProvider.notifier);
+        gen.setCustomLoopCount(7);
+        gen.setLoop(LoopCount.custom);
+        final work = c.read(loopStatusProvider.notifier).start();
+        for (var i = 0; i < 7; i++) {
+          await client.requests[i].future.timeout(const Duration(seconds: 10));
+          expect(c.read(loopStatusProvider).total, 7);
+          if (i == 0) gen.setCustomLoopCount(2);
+          client.finish[i].complete();
+        }
+        await work.timeout(const Duration(seconds: 10));
+        expect(client.count, 7);
+        expect(client.requests[7].isCompleted, isFalse);
+        expect(c.read(galleryProvider).results, hasLength(7));
+        expect(c.read(loopStatusProvider).active, isFalse);
+        expect(gen.state.params.loopCount, 2);
+      } finally {
+        c.dispose();
+        stores.flushNow();
+        await stores.gallery.idle;
+        await stores.albums.idle;
+      }
+    },
+  );
   test(
     'gallery and desktop export use returned image size, keeping input size',
     () async {

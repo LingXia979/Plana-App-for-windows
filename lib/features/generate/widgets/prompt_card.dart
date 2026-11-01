@@ -680,7 +680,7 @@ class _PromptCardState extends ConsumerState<PromptCard> {
   }
 
   /// 卡头「灵感库」:角色、画风、场景与法典收藏都能挑。选完每条自成一格、
-  /// 不折叠,格子名是分类名(角色也进分区,角色卡有自己的选择器),按勾选顺序
+  /// 不折叠,格子名是条目编号／名称(角色也进分区,角色卡有自己的选择器),按勾选顺序
   /// 接在最后;法典收藏同法典页的「使用」(角色段照旧拆成角色卡),画师串词典
   /// 里收的算画风。
   Future<void> _importFromLibrary(BuildContext context, WidgetRef ref) async {

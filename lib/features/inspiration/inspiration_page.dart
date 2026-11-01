@@ -15,7 +15,7 @@ import '../../core/theme/app_theme.dart';
 import '../../core/ui/pinch_columns.dart';
 import '../../core/ui/scroll_memory.dart';
 import '../../core/ui/selection_bar.dart';
-import '../editor/editor_models.dart' show draftOf, outputOf, pickEditorText;
+import '../editor/editor_models.dart' show draftOf, outputOf;
 import '../generate/canvas_state.dart';
 import '../generate/gen_modules.dart';
 import '../generate/generate_state.dart';
@@ -426,38 +426,13 @@ class _InspirationPageState extends ConsumerState<InspirationPage>
     );
   }
 
-  /// 角色「主提示词」/ 画风/场景/其他「确认选择」:正负向拼进主提示词。
-  /// 主提示词分过区时,每个条目自成一格、不折叠(同提示词卡头的「灵感库」)。
+  /// 角色「主提示词」/ 画风/场景/其他「确认选择」:先为每个条目新建命名分区,
+  /// 再完整写入正负向(同提示词卡头的「灵感库」)。
   Future<void> _confirmToPrompt(TagLibraryState lib) async {
     final entries = _resolveSelected(lib);
     if (entries.isEmpty) return;
-    final gen = ref.read(generateProvider);
-    if (gen.sections.isNotEmpty) {
-      ref.read(generateProvider.notifier).addEntrySections(entries);
-      await _afterConfirm(entries, '已加入提示词');
-      return;
-    }
-    // 追加到编辑器原文草稿(带回既有的禁用/折叠),每个条目自成一个折叠组;
-    // 定稿由 outputOf 从草稿导出 —— 两者必须同时写,只写定稿的话草稿会被
-    // 判过期作废,这次加进去的折叠(以及用户原有的禁用词)就一起没了。
-    final draft = appendTagPromptsFolded(
-      positiveDraft: pickEditorText(gen.promptRaw, gen.prompt),
-      negativeDraft: pickEditorText(gen.negativePromptRaw, gen.negativePrompt),
-      entries: entries,
-      links: gen.promptFoldLinks,
-    );
-    final positive = outputOf(draft.positiveDraft);
-    final negative = outputOf(draft.negativeDraft);
-    ref
-        .read(generateProvider.notifier)
-        .setPrompts(
-          positive: positive,
-          negative: negative,
-          positiveRaw: draftOf(draft.positiveDraft, positive),
-          negativeRaw: draftOf(draft.negativeDraft, negative),
-          promptFoldLinks: draft.links,
-        );
-    await _afterConfirm(entries, '已加入提示词');
+    ref.read(generateProvider.notifier).addEntrySections(entries);
+    await _afterConfirm(entries, '已加入 ${entries.length} 个提示词分区');
   }
 
   // ---- build ----

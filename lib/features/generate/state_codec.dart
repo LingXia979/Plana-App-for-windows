@@ -224,6 +224,7 @@ Future<EncodedState> encodeGenerateState(
       'cfgRescale': p.cfgRescale,
       'normalizeVibe': p.normalizeVibe,
       'loop': p.loop.name,
+      'customLoopCount': p.customLoopCount,
       'animaSteps': p.animaSteps,
       'animaCfg': p.animaCfg,
       'animaSampler': p.animaSampler,
@@ -543,6 +544,9 @@ Future<GenerateState> decodeGenerateState(
       // 老存档没这个键 → 默认开(与此前恒开的行为一致)
       normalizeVibe: e['normalizeVibe'] != false,
       loop: _enumByName(LoopCount.values, e['loop']) ?? LoopCount.x8,
+      customLoopCount: isValidCustomLoopCount(e['customLoopCount'])
+          ? e['customLoopCount'] as int
+          : kDefaultCustomLoopCount,
       animaSteps: (e['animaSteps'] as num?)?.toInt() ?? params.animaSteps,
       animaCfg: (e['animaCfg'] as num?)?.toDouble() ?? params.animaCfg,
       animaSampler: e['animaSampler'] is String

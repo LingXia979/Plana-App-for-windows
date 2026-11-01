@@ -1,4 +1,4 @@
-import '../../core/util/prompt_tokens.dart' show cleanPromptToken, tokenizeSet;
+import '../../core/util/prompt_tokens.dart' show cleanPromptToken;
 import '../editor/editor_models.dart'
     show
         PromptFoldLink,
@@ -47,8 +47,8 @@ bool mainEnabled(List<PromptSection> list) => list
 
 /// 按行序把主体和启用的分区拼成一整串。[main] 是主体那一侧的词(正或负)。
 ///
-/// 前面几格已经有的普通词,后面的格子里不再重复 —— 画风条目自带的负面常和
-/// 主体负面撞(lowres、blurry),以前追加进同一串时就是去重的。
+/// 正向按分区完整拼接,不同画师串／角色中的相同词也保留。
+/// 负面仍合并重复的普通词,不改动任何分区保存的原文。
 String joinSections(
   List<PromptSection> sections,
   String main, {
@@ -59,10 +59,10 @@ String joinSections(
   return [
     for (final s in _withMain(sections))
       if (_on(s, positive: positive))
-        _dropSeen(
-          _clean(s.isMain ? main : (positive ? s.positive : s.negative)),
-          seen,
-        ),
+        if (positive)
+          _clean(s.isMain ? main : s.positive)
+        else
+          _dropSeen(_clean(s.isMain ? main : s.negative), seen),
   ].where((p) => p.isNotEmpty).join(', ');
 }
 
@@ -267,7 +267,7 @@ GenerateState importPromptsInto(
       for (final f in parseFolds(p.negative)) f.name,
   };
   final usedPos = <String>{}, usedNeg = <String>{}, ids = <String>{};
-  final seenPos = <String>{}, seenNeg = <String>{};
+  final seenNeg = <String>{};
   final positives = <String>[], negatives = <String>[];
   final links = <PromptFoldLink>[];
   for (final part in parts) {
@@ -286,7 +286,7 @@ GenerateState importPromptsInto(
       usedNeg,
       reservedNeg,
     );
-    final pos = deduplicate ? _dropSeenDraft(positive, seenPos) : positive;
+    final pos = positive;
     final neg = deduplicate ? _dropSeenDraft(negative, seenNeg) : negative;
     if (_clean(pos).isNotEmpty) positives.add(_clean(pos));
     if (_clean(neg).isNotEmpty) negatives.add(_clean(neg));
@@ -539,35 +539,25 @@ List<PromptSection> restoreSection(
   return normalizeSections(out);
 }
 
-/// 灵感库条目各自成一格,不折叠:名字取条目名(调用方换成分类名),正负向原样
+/// 灵感库条目各自成一格,不折叠:名字取条目编号／名称,正负向原样
 /// 放进这一格。新格子一律接在最后,按加进来的先后往下排 —— 别按分类插到
 /// 主体前后,那样主体看着像在跳。
 ///
-/// 去重同以前追加时:词已经全在提示词里的跳过;同名同词的格子已经在
-/// (多半是停用了)就打开它,不另建。没分区时连主体一起建出来。
+/// 每次导入都建立独立分区,不按已有词或同名分区去重,也不修改旧分区的开关。
+/// 没分区时连主体一起建出来。
 List<PromptSection> withEntrySections(
   List<PromptSection> list,
   String mainPrompt,
   Iterable<TagEntry> entries, {
   required String Function() newId,
 }) {
-  final out = list.isEmpty ? [const PromptSection.main()] : [...list];
-  final have = tokenizeSet(joinSections(out, mainPrompt, positive: true));
+  final rows = withMainRow(list, mainPrompt);
+  final out = rows.isEmpty ? [const PromptSection.main()] : [...rows];
   for (final e in entries) {
     final rawPos = e.positive.trim(), rawNeg = e.negative.trim();
     if (rawPos.isEmpty && rawNeg.isEmpty) continue;
     final pos = outputOf(rawPos), neg = outputOf(rawNeg);
     final name = e.name.trim();
-    final same = out.indexWhere(
-      (s) => !s.isMain && s.name.trim() == name && s.positive.trim() == pos,
-    );
-    if (same >= 0) {
-      out[same] = out[same].copyWith(enabled: true);
-      continue;
-    }
-    final toks = tokenizeSet(pos);
-    if (toks.isNotEmpty && have.containsAll(toks)) continue;
-    have.addAll(toks);
     final sec = PromptSection(
       id: newId(),
       name: name.isEmpty ? nextSectionName(out) : name,

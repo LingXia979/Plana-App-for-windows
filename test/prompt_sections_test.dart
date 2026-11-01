@@ -126,7 +126,7 @@ void main() {
     expect(stripHiddenModules(plain, const GenModuleSettings()).prompt, 'x');
   });
 
-  test('灵感库条目各自成一格不折叠:一律接在最后,按加进来的先后往下排;重复的不另建', () {
+  test('灵感库条目按名称各自建新分区:重复导入不丢词、不重开旧分区', () {
     const rain = TagEntry(
       id: 's1',
       category: TagCategory.scene,
@@ -147,7 +147,7 @@ void main() {
     // 再来一个画风:不往上插,照样接在最后
     list = withEntrySections(list, '1girl', [_watercolor], newId: _nextId);
     expect(_names(list), ['主体', 'A12', '雨夜', '水彩厚涂']);
-    // 同名同词停用着就打开;词已经全在提示词里的跳过
+    // 同名同词也创建新分区;旧分区保持停用。
     list = [
       for (final s in list) s.name == 'A12' ? s.copyWith(enabled: false) : s,
     ];
@@ -160,8 +160,12 @@ void main() {
         positive: 'night',
       ),
     ], newId: _nextId);
-    expect(_names(list), ['主体', 'A12', '雨夜', '水彩厚涂']);
-    expect(list[1].enabled, isTrue);
+    expect(_names(list), ['主体', 'A12', '雨夜', '水彩厚涂', 'A12', '重复']);
+    expect(list[1].enabled, isFalse);
+    expect(list[4].enabled, isTrue);
+    expect(list[4].positive, _a12.positive);
+    expect(list[4].negative, _a12.negative);
+    expect(list[4].id, isNot(list[1].id));
     // 角色也一样接在最后
     list = withEntrySections(list, '1girl', [
       const TagEntry(
@@ -171,8 +175,8 @@ void main() {
         positive: 'hatsune miku',
       ),
     ], newId: _nextId);
-    expect(_names(list), ['主体', 'A12', '雨夜', '水彩厚涂', '初音']);
-    // 什么都没加进去时,没分区的照旧没分区
+    expect(_names(list), ['主体', 'A12', '雨夜', '水彩厚涂', 'A12', '重复', '初音']);
+    // 与主体完全相同的词也完整放入新分区。
     expect(
       withEntrySections(const [], 'night', [
         const TagEntry(
@@ -181,8 +185,8 @@ void main() {
           name: '夜',
           positive: 'night',
         ),
-      ], newId: _nextId),
-      isEmpty,
+      ], newId: _nextId).last.positive,
+      'night',
     );
   });
 
@@ -194,6 +198,51 @@ void main() {
     ]);
     expect(previewPieces(''), isEmpty);
   });
+
+  test(
+    'overlapping imports preserve weights, disabled drafts and repeats through generation and saving',
+    () async {
+      const raw = '<#A99: 1.3::shared artist, ask::#>, ~hidden artist~';
+      const rawNegative = '<#排除: lowres, bad hands#>, ~extra exclusion~';
+      final entry = TagEntry(
+        id: 'a99',
+        category: TagCategory.artist,
+        name: 'A99',
+        positive: raw,
+        negative: rawNegative,
+      );
+      gen.setPrompts(positive: 'shared artist, ask', negative: 'lowres');
+      gen.addEntrySections([entry, entry]);
+      final original = st();
+      expect(original.sections, hasLength(3));
+      for (final section in original.sections.skip(1)) {
+        expect(section.positive, outputOf(raw));
+        expect(section.positiveRaw, raw);
+        expect(section.negative, outputOf(rawNegative));
+        expect(section.negativeRaw, rawNegative);
+      }
+      final sent = composeSections(original);
+      expect(
+        sent.prompt,
+        'shared artist, ask, ${outputOf(raw)}, ${outputOf(raw)}',
+      );
+      expect(outputOf(sent.promptRaw), sent.prompt);
+      expect(sent.promptRaw, contains('~hidden artist~'));
+      final back = await decodeGenerateState(
+        (await encodeGenerateState(original, stores.blobs)).json,
+        stores.blobs,
+      );
+      expect(back.sections[1].positiveRaw, raw);
+      expect(back.sections[2].positiveRaw, raw);
+      expect(back.sections[1].negativeRaw, rawNegative);
+      final firstId = back.sections[1].id;
+      gen.updateSection(firstId, enabled: false);
+      expect(
+        composeSections(st()).prompt,
+        'shared artist, ask, ${outputOf(raw)}',
+      );
+    },
+  );
 
   test('加一格连主体一起建;删到只剩主体就回到没分区;撤销放回原位', () {
     gen.setPrompts(positive: '1girl');
@@ -234,14 +283,14 @@ void main() {
       expect(r.section.isMain, isTrue);
       expect(st().prompt, isEmpty);
       expect(st().negativePrompt, 'lowres');
-      expect(_names(st().sections), ['画风']);
+      expect(_names(st().sections), ['A12']);
       expect(
         stripHiddenModules(st(), const GenModuleSettings()).negativePrompt,
         'lowres, blurry',
       );
       // 读图导入写进了正向:主体那一行补回最上面,也照样进载荷
       gen.replacePrompts(positive: '2girls');
-      expect(_names(withMainRow(st().sections, st().prompt)), ['主体', '画风']);
+      expect(_names(withMainRow(st().sections, st().prompt)), ['主体', 'A12']);
       expect(
         stripHiddenModules(st(), const GenModuleSettings()).prompt,
         '2girls',
@@ -323,7 +372,7 @@ void main() {
     expect(st().prompt, '1girl');
   });
 
-  test('灵感库落地:每条自成一格、名字是分类名;角色也进分区,不进角色卡', () {
+  test('灵感库落地:每条按编号／名称建分区;角色也进分区,不进角色卡', () {
     const rain = TagEntry(
       id: 's1',
       category: TagCategory.scene,
@@ -339,7 +388,7 @@ void main() {
     );
     gen.setPrompts(positive: '1girl');
     gen.addEntrySections([_a12, rain, miku, _watercolor]);
-    expect(_names(st().sections), ['主体', '画风', '场景', '角色', '画风']);
+    expect(_names(st().sections), ['主体', 'A12', '雨夜', '初音', '水彩厚涂']);
     expect(
       [for (final s in st().sections) s.positive],
       [
@@ -365,29 +414,29 @@ void main() {
     expect(st().sections.last.name, '法典');
   });
 
-  test('正向已在提示词里不另建格子、同名格子只重新打开的,负面照样带进来', () {
-    // 正向全在主体里:不建格子,负面接到主体负面,草稿里的禁用词留着
+  test('正向已有、同名格子已有时仍完整导入,主体草稿与旧分区不变', () {
     gen.setPrompts(
       positive: '1girl, artist:wlop, artist:ask',
       negative: 'lowres',
       negativeRaw: 'lowres, ~bad hands~',
     );
     gen.addEntrySections([_a12]);
-    expect(st().sections, isEmpty);
-    expect(st().negativePrompt, 'lowres, blurry');
-    expect(st().negativePromptRaw, 'lowres, ~bad hands~, blurry');
-    // 同名同词的格子负面被清掉后再加:重新打开,缺的负面接到主体负面
-    gen.setPrompts(positive: '1girl', negative: 'bad anatomy');
-    gen.addEntrySections([_a12]);
-    gen.replacePrompts(negative: 'bad anatomy');
+    expect(st().sections.last.positive, _a12.positive);
+    expect(st().sections.last.negative, _a12.negative);
+    expect(st().negativePrompt, 'lowres');
+    expect(st().negativePromptRaw, 'lowres, ~bad hands~');
     final id = st().sections.firstWhere((s) => s.artist).id;
     gen.updateSection(id, enabled: false);
     gen.addEntrySections([_a12]);
-    expect(st().sections.where((s) => s.artist).single.enabled, isTrue);
-    expect(st().negativePrompt, 'bad anatomy, lowres, blurry');
-    // 格子里已有负面的不再往主体重复
-    gen.addEntrySections([_a12]);
-    expect(st().negativePrompt, 'bad anatomy, lowres, blurry');
+    expect(st().sections.where((s) => s.artist), hasLength(2));
+    expect(st().sections[1].enabled, isFalse);
+    expect(st().sections[2].enabled, isTrue);
+    expect(st().sections[2].negative, _a12.negative);
+    expect(st().negativePrompt, 'lowres');
+    expect(
+      composeSections(st()).prompt,
+      '1girl, artist:wlop, artist:ask, artist:wlop, artist:ask',
+    );
   });
 
   group('多选合并', () {
@@ -462,7 +511,7 @@ void main() {
     canvases.create(duplicate: true);
     expect(st().sections.firstWhere((s) => s.artist).positive, isNotEmpty);
     canvases.create();
-    expect(_names(st().sections), ['主体', '画风']);
+    expect(_names(st().sections), ['主体', 'A12']);
     expect(st().sections.last.positive, isEmpty);
     expect(st().sections.last.negative, isEmpty);
     expect(st().prompt, isEmpty);

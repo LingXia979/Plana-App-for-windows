@@ -4,10 +4,8 @@ import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/store/app_stores.dart';
-import '../editor/editor_models.dart'
-    show PromptFoldLink, draftOf, outputOf, pickEditorText;
-import '../inspiration/tag_models.dart'
-    show TagEntry, appendTagNegatives, tagCategoryDef;
+import '../editor/editor_models.dart' show PromptFoldLink, draftOf, outputOf;
+import '../inspiration/tag_models.dart' show TagEntry, tagCategoryDef;
 import '../vibe_library/naiv4vibe_codec.dart' show kModelToEncodingKey;
 import 'agent_chars.dart';
 import 'canvas_state.dart';
@@ -901,15 +899,18 @@ class GenerateNotifier extends Notifier<GenerateState> {
 
   // ---- 主提示词分区 ----
 
-  /// 灵感库条目各自成一格,不折叠(见 [withEntrySections])。格子名是分类名
-  /// (画风 / 角色 / 场景…),给了 [name] 就用它(法典词条叫「法典」)。
-  ///
-  /// 正向已全在提示词里没另建格子的、同名同词的格子只是重新打开的,条目负面里
-  /// 整张卡还没有的词接到主体负面。
+  /// 每次导入各自新建分区,按条目的编号／名称命名并完整保存正负向。
+  /// 没有名称时才退回分类名;可由调用方显式指定 [name]。
   void addEntrySections(Iterable<TagEntry> entries, {String? name}) {
     final named = [
       for (final e in entries)
-        e.copyWith(name: name ?? tagCategoryDef(e.category).label),
+        e.copyWith(
+          name:
+              name ??
+              (e.name.trim().isEmpty
+                  ? tagCategoryDef(e.category).label
+                  : e.name),
+        ),
     ];
     final sections = withEntrySections(
       _rows,
@@ -917,21 +918,7 @@ class GenerateNotifier extends Notifier<GenerateState> {
       named,
       newId: _newId,
     );
-    final negDraft = pickEditorText(
-      state.negativePromptRaw,
-      state.negativePrompt,
-    ).trim();
-    final nextDraft = appendTagNegatives(
-      negDraft,
-      named,
-      present: joinSections(sections, state.negativePrompt, positive: false),
-    );
-    final neg = nextDraft == negDraft ? null : outputOf(nextDraft);
-    state = state.copyWith(
-      sections: sections,
-      negativePrompt: neg,
-      negativePromptRaw: neg == null ? null : draftOf(nextDraft, neg),
-    );
+    state = state.copyWith(sections: sections);
   }
 
   /// 编辑器多选「提取为新分区」:这段草稿(权重、禁用、折叠照旧)成一格,
@@ -1104,6 +1091,19 @@ class GenerateNotifier extends Notifier<GenerateState> {
 
   void setLoop(LoopCount l) =>
       state = state.copyWith(params: state.params.copyWith(loop: l));
+
+  void setCustomLoopCount(int count) {
+    if (!isValidCustomLoopCount(count)) {
+      throw ArgumentError.value(
+        count,
+        'count',
+        'Expected 1–$kMaxCustomLoopCount',
+      );
+    }
+    state = state.copyWith(
+      params: state.params.copyWith(customLoopCount: count),
+    );
+  }
 
   /// 一次出几张(anima / krea)。夹在服务端上限内 —— 那边也会夹一遍,
   /// 但界面上显示的必须是真会出的数。

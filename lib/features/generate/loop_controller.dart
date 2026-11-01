@@ -53,7 +53,7 @@ class LoopNotifier extends Notifier<LoopStatus> {
   Future<void> start() async {
     // 手动生成中不再让位:并行之后手动那条只是池子里的一员,循环照常投。
     if (state.active || ref.read(genQueueProvider).active) return;
-    final total = ref.read(generateProvider).params.loop.count; // 开跑时锁档位
+    final total = ref.read(generateProvider).params.loopCount; // 开跑时锁定张数
     final canvasId = ref.read(canvasWorkspaceProvider).activeId;
     // 来源画布被删了就接着用它最后那组词和参数跑完,不半路改用别的画布的
     var prompts = CanvasPrompts.of(ref.read(generateProvider));
