@@ -144,6 +144,9 @@ Map<String, double> _center(String? pos) {
   /// 透明图的 alpha 编码约定(true=直通 Straight / false=预乘 Premultiplied)。
   /// 官方默认直通,见生成设置里的同名开关。
   bool straightAlpha = true,
+
+  /// 当前任务选中的 Key 使用第三方接口；官方云端转发仍走官方参数。
+  bool thirdParty = false,
   List<EncodedVibe> vibes = const [],
   Img2ImgRef? img2img,
   List<CharRefPayload> charRefs = const [],
@@ -207,6 +210,7 @@ Map<String, double> _center(String? pos) {
 
   // 档位提示:官方导入这张图时靠它决定「先试哪个档去把预设文本剥回去」。
   final tagHints = promptPresetTagHints(presetId);
+  final sendTagHints = !thirdParty || sendModel.startsWith('nai-diffusion-5');
 
   // 透明背景:由提示词里的 `transparent background` 触发,不是开关。
   // straight_alpha 跟官方一样「只要模型支持就无条件发」—— 它只是 alpha 的编码
@@ -226,8 +230,10 @@ Map<String, double> _center(String? pos) {
     // 预设正/负前缀已在 controller 拼进 s
     'ucPreset': p.isNaiMedium ? 0 : ucPresetValue(presetId, sendModel),
     'qualityToggle': qualityToggle ?? builtinPresetHasPositive(presetId),
-    'tag_hint_qt': tagHints.qt,
-    'tag_hint_uc_preset': p.isNaiMedium ? 0 : tagHints.ucPreset,
+    if (sendTagHints) ...{
+      'tag_hint_qt': tagHints.qt,
+      'tag_hint_uc_preset': p.isNaiMedium ? 0 : tagHints.ucPreset,
+    },
     // Max ✨ 放大重绘:只有为真时才发。非 Max 路径带一个 false 会让官方按普通
     // img2img 处理,而这字段对老模型本就无意义,干脆不发。
     if (img2img?.upscaledEnhance == true) 'upscaled_enhance': true,
@@ -343,6 +349,11 @@ Map<String, double> _center(String? pos) {
     params['image'] = base64Encode(inpaint.image);
     params['mask'] = base64Encode(inpaint.mask);
     params['strength'] = inpaint.strength;
+    // 跟随已保存的实际强度，包括 Medium；不改变桌面编辑器和蒙版。
+    params['inpaintImg2ImgStrength'] = inpaint.strength;
+    if (inpaint.strength < 1) {
+      params['img2img'] = {'strength': inpaint.strength, 'color_correct': true};
+    }
     params['noise'] = 0;
     params['extra_noise_seed'] = seed;
   } else if (img2img != null) {

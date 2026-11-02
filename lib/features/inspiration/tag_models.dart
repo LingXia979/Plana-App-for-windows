@@ -803,7 +803,7 @@ Map<String, dynamic> encodeBackupEntry(TagEntry e) {
   return base;
 }
 
-/// 云备份条目解码(容错:web 三种 shape 双读;base64 预览体积过大不落地)。
+/// 云备份条目解码(容错:web 三种 shape 双读；内嵌预览由 mergeBackup 单独落盘)。
 TagEntry? decodeBackupEntry(TagCategory cat, Map<String, dynamic> j) {
   final id = j['id'];
   if (id is! String || id.isEmpty) return null;

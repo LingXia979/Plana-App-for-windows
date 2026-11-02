@@ -343,6 +343,9 @@ void main() {
       expect(started.pasteAt, isNull);
       expect(started.preview, prepared.job.paste!.original);
       final parameters = client.request!['parameters'] as Map;
+      expect(parameters['strength'], .7);
+      expect(parameters['inpaintImg2ImgStrength'], .7);
+      expect(parameters['img2img'], {'strength': .7, 'color_correct': true});
       expect((parameters['width'], parameters['height']), (832, 1216));
       final sentMask = img.decodePng(
         base64Decode(parameters['mask'] as String),

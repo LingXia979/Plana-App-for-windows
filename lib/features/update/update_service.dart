@@ -10,6 +10,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 
@@ -29,14 +30,14 @@ class UpdateException implements Exception {
 
 const _channel = MethodChannel('plana/update');
 
-/// 已安装包的真实版本(从系统读,不信 Dart 侧手抄的常量)。
+/// 当前运行应用的版本(Windows 随构建，Android 从系统读取)。
 class InstalledInfo {
   const InstalledInfo({required this.versionName, required this.versionCode});
 
   final String versionName;
   final int versionCode;
 
-  /// 通道不可用(非 Android / 早期启动)时为空 —— 调用方据此跳过检查,
+  /// 无法取得版本时为空 —— 调用方据此跳过检查,
   /// 而不是拿空串去比出一个"有新版"。
   bool get isKnown => versionName.isNotEmpty;
 }
@@ -152,8 +153,15 @@ bool isPrerelease(String v) => _split(v).$2.isNotEmpty;
 
 // ── 检查 ─────────────────────────────────────────────────────────────────
 
-/// 读已安装版本。通道不可用时返回空 [InstalledInfo],不抛。
+/// Windows 使用随应用编译、与 pubspec 校验一致的版本；Android 读取系统通道。
+/// 版本不可用时返回空 [InstalledInfo],不抛。
 Future<InstalledInfo> installedInfo() async {
+  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.windows) {
+    return InstalledInfo(
+      versionName: kAppVersion,
+      versionCode: int.tryParse(kAppBuild) ?? 0,
+    );
+  }
   try {
     final m = await _channel.invokeMapMethod<String, dynamic>('info');
     if (m == null) return const InstalledInfo(versionName: '', versionCode: 0);
@@ -172,7 +180,7 @@ Future<InstalledInfo> installedInfo() async {
 /// 用 `/releases` 列表而**不是** `/releases/latest` —— 后者会把预发布整个排除,
 /// 而我们发的就是 `1.0.0-beta.x`,用它等于永远查不到东西。
 ///
-/// [repo] 为空(尚未开源/没填仓库)时直接返回 null,不报错。
+/// 缺少版本或仓库时不查询；非 200 响应抛出 [UpdateException]。
 Future<GithubRelease?> fetchLatestRelease(
   String current, {
   String repo = kGithubRepo,
@@ -185,13 +193,11 @@ Future<GithubRelease?> fetchLatestRelease(
           headers: const {'Accept': 'application/vnd.github+json'},
         )
         .timeout(const Duration(seconds: 15));
-    // 仓库不存在/还是私有 → 404,当作"暂无更新",不该报红
-    if (resp.statusCode == 404) return null;
-    if (resp.statusCode == 403) {
-      // 未鉴权的 API 限额是每小时 60 次/IP。有 24h 节流正常撞不到,
-      // 真撞到了也只是这次查不了,不值得吓用户。
+    if (resp.statusCode == 429 ||
+        (resp.statusCode == 403 &&
+            resp.headers['x-ratelimit-remaining'] == '0')) {
       logd('[update] GitHub API 限流');
-      return null;
+      throw const UpdateException('GitHub 查询次数已达上限,请稍后再试');
     }
     if (resp.statusCode != 200) {
       throw UpdateException('检查更新失败(HTTP ${resp.statusCode})');
@@ -202,6 +208,8 @@ Future<GithubRelease?> fetchLatestRelease(
   } on TimeoutException {
     throw const UpdateException('检查更新超时,请检查网络后重试');
   } on SocketException {
+    throw const UpdateException('连不上 GitHub,请检查网络后重试');
+  } on TlsException {
     throw const UpdateException('连不上 GitHub,请检查网络后重试');
   } on UpdateException {
     rethrow;

@@ -26,6 +26,7 @@ class _UpdateRowState extends ConsumerState<UpdateRow> {
     setState(() {
       _checking = true;
       _failed = false;
+      _result = null;
     });
     try {
       final installed = await installedInfo();
@@ -62,6 +63,10 @@ class _UpdateRowState extends ConsumerState<UpdateRow> {
       _ when r != null && r.hasUpdate => (
         '新版本 ${r.release!.display}',
         scheme.tertiary,
+      ),
+      _ when r != null && (!r.installed.isKnown || kGithubRepo.isEmpty) => (
+        '暂无更新信息',
+        null,
       ),
       _ when r != null => ('已是最新', null),
       _ => ('', null),

@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../../core/store/atomic_file.dart';
+import '../migrate/web_backup.dart' show decodeDataUrl;
 import 'inspiration_examples.dart';
 import 'tag_models.dart';
 
@@ -338,10 +339,18 @@ class TagLibrary extends AsyncNotifier<TagLibraryState> {
     final dir = Directory('${sup.path}/tag_previews');
     await dir.create(recursive: true);
     final safe = entryId.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
+    final nonce = Random().nextInt(0x100000000).toRadixString(16);
     final f = File(
-      '${dir.path}/${safe}_${index}_${DateTime.now().millisecondsSinceEpoch}.jpg',
+      '${dir.path}/${safe}_${index}_${DateTime.now().microsecondsSinceEpoch}_$nonce.jpg',
     );
-    await f.writeAsBytes(bytes);
+    try {
+      await f.writeAsBytes(bytes, flush: true);
+    } catch (_) {
+      try {
+        if (await f.exists()) await f.delete();
+      } catch (_) {}
+      rethrow;
+    }
     return f.path;
   }
 
@@ -686,29 +695,52 @@ class TagLibrary extends AsyncNotifier<TagLibraryState> {
 
   /// 恢复:按 id 合并(同 id 覆盖、新 id 追加,本地独有保留)。自定义类别的
   /// 定义同 id 以云端为准、本地独有的保留;页签排列用云端的。
+  /// 内嵌预览先写入本机；未附带图片的备份保留该条目现有的本机预览。
   /// 返回每类的 (新增, 覆盖) 明细,供结果文案与日志使用。
   Future<Map<TagCategory, ({int added, int updated})>> mergeBackup(
     Map<String, dynamic> categories, {
     Map<String, dynamic>? custom,
   }) async {
-    final byId = {for (final e in _s.entries) e.id: e};
-    final localIds = {...byId.keys};
+    await future;
+    final localIds = {for (final e in _s.entries) e.id};
+    final restored = <String, TagEntry>{};
+    final created = <String>[];
     final stat = <TagCategory, ({int added, int updated})>{};
-    for (final en in _flat(categories, custom).entries) {
-      final cat = tagCategoryByWebId(en.key);
-      if (cat == null) continue;
-      var added = 0, updated = 0;
-      for (final item in en.value as List) {
-        if (item is! Map<String, dynamic>) continue;
-        final e = decodeBackupEntry(cat, item);
-        if (e == null) continue;
-        localIds.contains(e.id) ? updated++ : added++;
-        byId[e.id] = e;
+    try {
+      for (final en in _flat(categories, custom).entries) {
+        final cat = tagCategoryByWebId(en.key);
+        if (cat == null) continue;
+        var added = 0, updated = 0;
+        for (final item in en.value as List) {
+          if (item is! Map<String, dynamic>) continue;
+          final e = decodeBackupEntry(cat, item);
+          if (e == null) continue;
+          localIds.contains(e.id) ? updated++ : added++;
+          final old =
+              restored[e.id] ??
+              _s.entries.where((entry) => entry.id == e.id).firstOrNull;
+          restored[e.id] = e.copyWith(
+            previews: await _restorePreviews(item, e.id, old, created),
+          );
+        }
+        if (added + updated > 0) {
+          stat[cat] = (added: added, updated: updated);
+        }
       }
-      if (added + updated > 0) {
-        stat[cat] = (added: added, updated: updated);
-      }
+    } catch (_) {
+      _gcPreviewFiles(
+        created,
+        keep: [for (final e in _s.entries) ...e.previews],
+      );
+      rethrow;
     }
+    // 图片写入期间允许其他条目发生编辑；合并到最新状态，不用旧快照覆盖它们。
+    final replaced = [
+      ...created,
+      for (final e in _s.entries)
+        if (restored.containsKey(e.id)) ...e.previews,
+    ];
+    final byId = {for (final e in _s.entries) e.id: e, ...restored};
     var next = _s.copyWith(entries: byId.values.toList());
     if (custom != null) {
       final cloud = _defs(custom['defs']);
@@ -726,7 +758,51 @@ class TagLibrary extends AsyncNotifier<TagLibraryState> {
         labels: {..._s.labels, ..._labelsOf(custom['defs'])},
       );
     }
-    await _set(_recoverCategories(next));
+    // 索引写入失败时保留新旧图片，明确报错，避免磁盘上的旧索引引用失效。
+    await _set(_recoverCategories(next), requirePersistence: true);
+    _gcPreviewFiles(
+      replaced,
+      keep: [for (final e in _s.entries) ...e.previews],
+    );
     return stat;
+  }
+
+  static Future<List<String>> _restorePreviews(
+    Map<String, dynamic> item,
+    String id,
+    TagEntry? local,
+    List<String> created,
+  ) async {
+    final out = <String>[];
+    final seen = <String>{};
+    var embedded = false;
+    for (final p in [
+      item['preview'],
+      if (item['previews'] case final List list) ...list,
+    ]) {
+      if (p is! String || p.isEmpty || !seen.add(p)) continue;
+      if (p.startsWith('data:')) {
+        final bytes = decodeDataUrl(p);
+        if (bytes == null || bytes.isEmpty) continue;
+        final path = await savePreviewBytes(id, out.length, bytes);
+        created.add(path);
+        out.add(path);
+        embedded = true;
+      } else {
+        final uri = Uri.tryParse(p);
+        if (uri != null &&
+            (uri.scheme == 'http' || uri.scheme == 'https') &&
+            uri.host.isNotEmpty) {
+          out.add(p);
+        }
+      }
+    }
+    if (embedded || local == null) return out;
+    // 备份不会携带另一台电脑的本地路径；本机已有预览按原顺序保留。
+    return <String>{
+      for (final p in local.previews)
+        if (!p.startsWith('http') || out.contains(p)) p,
+      ...out,
+    }.toList();
   }
 }

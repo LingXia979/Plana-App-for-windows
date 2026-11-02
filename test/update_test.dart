@@ -1,15 +1,128 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:plana_app/core/app_info.dart';
 import 'package:plana_app/core/store/prefs_store.dart';
 import 'package:plana_app/features/update/update_service.dart';
 
 /// 更新判定的纯逻辑。错了不会崩,只会"永远不提示"或"反复提示已装的版本" ——
 /// 两种都是用户不会报、你也看不见的静默故障,所以钉在这里。
 void main() {
+  final binding = TestWidgetsFlutterBinding.ensureInitialized();
+  test(
+    'Windows checks use the compiled application version without an Android channel',
+    () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      const channel = MethodChannel('plana/update');
+      var called = false;
+      binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (
+        _,
+      ) async {
+        called = true;
+        return null;
+      });
+      addTearDown(
+        () => binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          channel,
+          null,
+        ),
+      );
+      final installed = await installedInfo();
+      expect(installed.versionName, kAppVersion);
+      expect(installed.versionCode, int.parse(kAppBuild));
+      expect(installed.isKnown, isTrue);
+      expect(called, isFalse);
+    },
+  );
+
+  for (final code in [403, 404, 429, 500]) {
+    test(
+      'HTTP $code is a check failure, never a latest-version result',
+      () async {
+        final client = MockClient((_) async => http.Response('{}', code));
+        addTearDown(client.close);
+        await http.runWithClient(() async {
+          await expectLater(
+            fetchLatestRelease(kAppVersion),
+            throwsA(
+              isA<UpdateException>().having(
+                (e) => e.message,
+                'message',
+                contains(code == 429 ? '次数已达上限' : 'HTTP $code'),
+              ),
+            ),
+          );
+        }, () => client);
+      },
+    );
+  }
+
+  test('GitHub 403 rate limit is explained distinctly', () async {
+    final client = MockClient(
+      (_) async =>
+          http.Response('{}', 403, headers: {'x-ratelimit-remaining': '0'}),
+    );
+    addTearDown(client.close);
+    await http.runWithClient(() async {
+      await expectLater(
+        fetchLatestRelease(kAppVersion),
+        throwsA(
+          isA<UpdateException>().having(
+            (e) => e.message,
+            'message',
+            contains('次数已达上限'),
+          ),
+        ),
+      );
+    }, () => client);
+  });
+
+  for (final failure in [
+    (const SocketException('synthetic offline'), '连不上 GitHub'),
+    (const HandshakeException('synthetic TLS failure'), '连不上 GitHub'),
+    (TimeoutException('synthetic timeout'), '检查更新超时'),
+  ]) {
+    test('network failure ${failure.$1.runtimeType} is reported', () async {
+      final client = MockClient((_) async => throw failure.$1);
+      addTearDown(client.close);
+      await http.runWithClient(() async {
+        await expectLater(
+          fetchLatestRelease(kAppVersion),
+          throwsA(
+            isA<UpdateException>().having(
+              (e) => e.message,
+              'message',
+              contains(failure.$2),
+            ),
+          ),
+        );
+      }, () => client);
+    });
+  }
+
+  test(
+    'malformed update response is not treated as no newer release',
+    () async {
+      final client = MockClient(
+        (_) async => http.Response('{"message":"bad response"}', 200),
+      );
+      addTearDown(client.close);
+      await http.runWithClient(() async {
+        await expectLater(
+          fetchLatestRelease(kAppVersion),
+          throwsA(isA<UpdateException>()),
+        );
+      }, () => client);
+    },
+  );
+
   test(
     'Windows release checks use the Windows repository and recognize the combined update',
     () async {
