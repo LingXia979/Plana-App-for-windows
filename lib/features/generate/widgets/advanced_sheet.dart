@@ -10,6 +10,7 @@ import '../preset_manage_page.dart';
 import '../prompt_presets.dart';
 import 'common.dart';
 import '../../../core/util/haptics.dart';
+import '../../../l10n/l10n.dart';
 
 /// 高级设置 Sheet:分区滚动,底部「恢复默认 / 确认」固定。
 /// Sheet 内编辑草稿,确认才写回全局状态。
@@ -94,7 +95,7 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
             children: [
               Expanded(
                 child: Text(
-                  '高级设置',
+                  context.l10n.advancedSettings,
                   style: context.texts.titleMedium!.copyWith(
                     fontWeight: FontWeight.w700,
                   ),
@@ -136,7 +137,7 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
               if (isAnima) ...[
                 // Anima:与 NAI 两套独立采样参数,范围对齐 web animaOptions
                 ParamSlider(
-                  label: '步数 Steps',
+                  label: context.l10n.paramSteps,
                   snapInputToDivisions: true,
                   help: Help.animaSteps,
                   value: draft.animaSteps.toDouble(),
@@ -148,7 +149,7 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                 ),
                 const SizedBox(height: 8),
                 ParamSlider(
-                  label: '提示词引导 CFG',
+                  label: context.l10n.paramCfg,
                   help: Help.animaCfg,
                   value: draft.animaCfg,
                   min: animaCfgRange.min,
@@ -160,7 +161,7 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                 ),
                 const SizedBox(height: 12),
                 HelpLabel(
-                  text: '采样器 Sampler',
+                  text: context.l10n.paramSampler,
                   help: Help.animaSampler,
                   style: context.texts.bodySmall!.copyWith(
                     color: scheme.onSurfaceVariant,
@@ -185,7 +186,7 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                 ),
                 const SizedBox(height: 14),
                 HelpLabel(
-                  text: '调度器 Scheduler',
+                  text: context.l10n.paramScheduler,
                   help: Help.animaScheduler,
                   style: context.texts.bodySmall!.copyWith(
                     color: scheme.onSurfaceVariant,
@@ -213,7 +214,7 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                 // steps/cfg/batch/loras,采样器固定 er_sde + simple —— 放出
                 // 采样器/调度器选择框等于骗用户,所以连字段都不存。
                 ParamSlider(
-                  label: '步数 Steps',
+                  label: context.l10n.paramSteps,
                   snapInputToDivisions: true,
                   help: Help.kreaSteps,
                   value: draft.kreaSteps.toDouble(),
@@ -225,7 +226,7 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                 ),
                 const SizedBox(height: 8),
                 ParamSlider(
-                  label: '提示词引导 CFG',
+                  label: context.l10n.paramCfg,
                   help: Help.kreaCfg,
                   value: draft.kreaCfg,
                   min: kreaCfgRange.min,
@@ -248,7 +249,7 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                 ],
                 const SizedBox(height: 12),
                 HelpLabel(
-                  text: '采样器 Sampler',
+                  text: context.l10n.paramSampler,
                   help: Help.kreaSampler,
                   style: context.texts.bodySmall!.copyWith(
                     color: scheme.onSurfaceVariant,
@@ -273,7 +274,7 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                 ),
                 const SizedBox(height: 14),
                 HelpLabel(
-                  text: '调度器 Scheduler',
+                  text: context.l10n.paramScheduler,
                   help: Help.kreaScheduler,
                   style: context.texts.bodySmall!.copyWith(
                     color: scheme.onSurfaceVariant,
@@ -308,7 +309,7 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                 _Locked(
                   hint: isMedium ? 'Medium 步数固定为 ${draft.activeSteps}' : null,
                   child: ParamSlider(
-                    label: '步数 Steps',
+                    label: context.l10n.paramSteps,
                     snapInputToDivisions: true,
                     help: Help.steps,
                     value: draft.activeSteps.toDouble(),
@@ -326,7 +327,7 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                 ),
                 const SizedBox(height: 8),
                 ParamSlider(
-                  label: '提示词引导 CFG',
+                  label: context.l10n.paramCfg,
                   help: Help.cfg,
                   value: draft.cfg,
                   min: 0,
@@ -378,7 +379,7 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       HelpLabel(
-                        text: '采样器 Sampler',
+                        text: context.l10n.paramSampler,
                         help: Help.sampler,
                         style: context.texts.bodySmall!.copyWith(
                           color: scheme.onSurfaceVariant,
@@ -411,7 +412,7 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       HelpLabel(
-                        text: '噪声调度 Noise Schedule',
+                        text: context.l10n.paramNoiseSchedule,
                         help: Help.noiseSchedule,
                         style: context.texts.bodySmall!.copyWith(
                           color: scheme.onSurfaceVariant,
@@ -460,8 +461,8 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                       keyboardType: TextInputType.number,
                       style: mono(context, size: 13),
                       decoration: InputDecoration(
-                        labelText: '种子 Seed',
-                        hintText: '每次随机',
+                        labelText: context.l10n.paramSeed,
+                        hintText: context.l10n.seedRandom,
                         // 标签常驻浮起,框里才腾得出「每次随机」这行灰字 ——
                         // 否则锁死状态下框里空空一片,只剩个灰标签
                         floatingLabelBehavior: FloatingLabelBehavior.always,
@@ -518,7 +519,7 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                 _Locked(
                   hint: isMedium ? 'Medium 不支持 CFG Rescale' : null,
                   child: ParamSlider(
-                    label: 'CFG Rescale',
+                    label: context.l10n.cfgRescale,
                     help: Help.cfgRescale,
                     value: draft.activeNaiCfgRescale,
                     divisions: 100, // step 0.01(对齐 web)
@@ -583,7 +584,7 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                       borderRadius: BorderRadius.circular(24),
                     ),
                   ),
-                  child: const Text('恢复默认'),
+                  child: Text(context.l10n.resetSettings),
                 ),
               ),
               const SizedBox(width: 10),
@@ -605,9 +606,9 @@ class _AdvancedSheetState extends ConsumerState<_AdvancedSheet> {
                       borderRadius: BorderRadius.circular(24),
                     ),
                   ),
-                  child: const Text(
-                    '确认',
-                    style: TextStyle(fontWeight: FontWeight.w700),
+                  child: Text(
+                    context.l10n.confirm,
+                    style: const TextStyle(fontWeight: FontWeight.w700),
                   ),
                 ),
               ),
@@ -765,7 +766,7 @@ class _PresetRow extends ConsumerWidget {
                   DropdownMenuItem(
                     value: p.id,
                     child: Text(
-                      p.name,
+                      presetDisplayName(context.l10n, p),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),

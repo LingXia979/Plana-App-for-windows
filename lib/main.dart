@@ -1,3 +1,4 @@
+import 'l10n/l10n.dart';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -102,9 +103,18 @@ class PlanaApp extends ConsumerWidget {
     return MaterialApp(
       title: kAppName,
       debugShowCheckedModeBanner: false,
-      theme: adapt(AppTheme.light(ts.seed.color)),
-      darkTheme: adapt(AppTheme.dark(ts.seed.color)),
+      theme: adapt(switch (ts.floatAccent) {
+        final accent? => AppTheme.float(Brightness.light, accent),
+        null => AppTheme.light(ts.seed.color),
+      }),
+      darkTheme: adapt(switch (ts.floatAccent) {
+        final accent? => AppTheme.float(Brightness.dark, accent),
+        null => AppTheme.dark(ts.seed.color),
+      }),
       themeMode: ts.mode,
+      locale: ts.locale,
+      supportedLocales: kSupportedLocales,
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
       navigatorObservers: [_inputFocusGuard],
       builder: (context, child) => desktop
           ? AppTextScale(

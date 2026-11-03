@@ -1,3 +1,4 @@
+import '../../../l10n/l10n.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -343,7 +344,7 @@ class _ModelSheetState extends State<_ModelSheet>
               child: Row(
                 children: [
                   Text(
-                    '模型',
+                    context.l10n.model,
                     style: context.texts.titleMedium!.copyWith(
                       fontWeight: FontWeight.w700,
                     ),

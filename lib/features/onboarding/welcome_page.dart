@@ -16,6 +16,7 @@ import '../../core/net/nai_proxy.dart';
 import '../../core/platform/desktop.dart';
 import '../../core/store/gen_settings.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/ui/theme_swatches.dart';
 import '../../core/theme/theme_settings.dart';
 import '../profile/widgets/credential_login_sheet.dart';
 import '../profile/widgets/token_status.dart';
@@ -573,7 +574,6 @@ class _AppearanceStep extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final ts = ref.watch(themeSettingsProvider);
     final notifier = ref.read(themeSettingsProvider.notifier);
-    final scheme = context.scheme;
     final desktop = ref.watch(desktopModeProvider);
     return _Step(
       active: active,
@@ -598,55 +598,9 @@ class _AppearanceStep extends ConsumerWidget {
             ),
           ),
           const SizedBox(height: 24),
-          Wrap(
-            spacing: 12,
-            runSpacing: 12,
+          ThemeSwatches(
+            size: 42,
             alignment: desktop ? WrapAlignment.start : WrapAlignment.center,
-            children: [
-              for (final s in themeSeeds)
-                Tooltip(
-                  message: s.label,
-                  child: InkWell(
-                    onTap: () =>
-                        notifier.patch((x) => x.copyWith(seedKey: s.key)),
-                    customBorder: const CircleBorder(),
-                    child: AnimatedContainer(
-                      duration: Motion.fast,
-                      width: 42,
-                      height: 42,
-                      padding: const EdgeInsets.all(3),
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        border: Border.all(
-                          width: 2,
-                          color: s.key == ts.seed.key
-                              ? scheme.onSurface
-                              : Colors.transparent,
-                        ),
-                      ),
-                      child: DecoratedBox(
-                        decoration: BoxDecoration(
-                          color: s.color,
-                          shape: BoxShape.circle,
-                        ),
-                        child: s.key == ts.seed.key
-                            ? Icon(
-                                Icons.check,
-                                size: 17,
-                                color:
-                                    ThemeData.estimateBrightnessForColor(
-                                          s.color,
-                                        ) ==
-                                        Brightness.dark
-                                    ? Colors.white
-                                    : Colors.black87,
-                              )
-                            : null,
-                      ),
-                    ),
-                  ),
-                ),
-            ],
           ),
         ],
       ),
@@ -676,6 +630,8 @@ class _AccessStepState extends ConsumerState<_AccessStep>
   /// 它不是第三种**接入方式** —— 接入方式仍是直连,只是不打官方那台机器,
   /// 所以做成卡内的分段而不是第三张卡。
   bool _third = false;
+
+  NaiApiFormat _format = NaiApiFormat.nai;
 
   /// 第三方地址填得不成形时的当场提示(官方那一路没有这一栏)。
   String? _urlError;
@@ -797,7 +753,7 @@ class _AccessStepState extends ConsumerState<_AccessStep>
     if (t.isEmpty) return;
     // 第三方:地址跟这把 key 绑成一把存下。形态不对当场挡下;通不通不在这里探
     // —— 中转站多半没开 GET,探测失败反而拦住能用的地址。
-    final url = _third ? normalizeNaiBase(_urlCtrl.text) : '';
+    final url = _third ? naiEndpointFor(_urlCtrl.text, _format) : '';
     if (_third && (url.isEmpty || !naiBaseLooksValid(url))) {
       setState(() => _urlError = '请填 http:// 或 https:// 开头的接口地址');
       return;
@@ -893,11 +849,31 @@ class _AccessStepState extends ConsumerState<_AccessStep>
                   child: _third
                       ? Padding(
                           padding: const EdgeInsets.fromLTRB(0, 9, 0, 9),
-                          child: Text(
-                            '兼容 NovelAI 接口的中转站或自建反代',
-                            style: context.texts.labelSmall!.copyWith(
-                              color: scheme.outline,
-                            ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              SegmentedButton<NaiApiFormat>(
+                                segments: [
+                                  for (final f in NaiApiFormat.values)
+                                    ButtonSegment(
+                                      value: f,
+                                      label: Text(f.label),
+                                    ),
+                                ],
+                                selected: {_format},
+                                showSelectedIcon: false,
+                                onSelectionChanged: _saving
+                                    ? null
+                                    : (v) => setState(() => _format = v.first),
+                              ),
+                              const SizedBox(height: 6),
+                              Text(
+                                _format.hint,
+                                style: context.texts.labelSmall!.copyWith(
+                                  color: scheme.outline,
+                                ),
+                              ),
+                            ],
                           ),
                         )
                       : Padding(
@@ -952,7 +928,9 @@ class _AccessStepState extends ConsumerState<_AccessStep>
                             style: mono(context, size: 12),
                             decoration: _fieldDec(
                               scheme,
-                              'https://example.com',
+                              _format == NaiApiFormat.openai
+                                  ? 'https://example.com/v1'
+                                  : 'https://example.com',
                               suffix: IconButton(
                                 onPressed: () => _paste(_urlCtrl),
                                 icon: const Icon(Icons.content_paste, size: 18),

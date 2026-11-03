@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/store/app_stores.dart';
+import '../../l10n/l10n.dart';
 import '../../core/ui/image_drop.dart';
 import '../../core/theme/app_theme.dart';
 import '../assistant/assistant_page.dart';

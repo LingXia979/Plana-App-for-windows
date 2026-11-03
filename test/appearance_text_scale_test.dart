@@ -207,7 +207,16 @@ void main() {
       await mount(tester);
       tester.view.physicalSize = const Size(360, 650);
       await tester.pumpAndSettle();
-      await tester.ensureVisible(key('appearance-text-scale'));
+      await tester.scrollUntilVisible(
+        key('appearance-text-scale'),
+        250,
+        scrollable: find
+            .descendant(
+              of: find.byType(AppearancePage),
+              matching: find.byType(Scrollable),
+            )
+            .first,
+      );
       await tester.pumpAndSettle();
       expect(key('appearance-text-scale').hitTestable(), findsOneWidget);
       await tester.ensureVisible(key('appearance-text-scale-reset'));

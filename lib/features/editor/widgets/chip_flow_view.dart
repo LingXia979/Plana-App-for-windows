@@ -1,3 +1,4 @@
+import '../../../core/theme/app_skin.dart';
 import 'dart:async';
 import 'dart:math' as math;
 
@@ -1358,25 +1359,32 @@ class _TagChip extends StatelessWidget {
         : null;
     final effectiveWash = pal.weightWash(tok.effMult);
     // 标签底色包含所在组的权重，角标仍只报告本标签独有的倍率。
-    var chipBg = scheme.surfaceContainerHigh;
+    // 浮卡样式:芯片用卡片色(深色再提亮一档),禁用的沉到页面底色。
+    final float = context.skin.float;
+    final base = !float
+        ? scheme.surfaceContainerHigh
+        : Theme.of(context).brightness == Brightness.dark
+        ? Color.alphaBlend(
+            scheme.onSurface.withValues(alpha: .06),
+            scheme.surfaceContainerLow,
+          )
+        : scheme.surfaceContainerLow;
+    var chipBg = base;
     var chipBorder = scheme.outlineVariant;
     if (tok.disabled) {
       // 禁用要一眼看得出来。原先只是「正常 chip + 灰字 + 一道细划线」,
       // 底和边框和旁边的普通 chip 一模一样,扫过去根本分不出来(实测反馈)。
       // 改成往下沉一档的底 + 淡到几乎没有的边:整颗 chip 从这一片里退出去。
-      chipBg = scheme.surfaceContainerLowest;
+      chipBg = float ? scheme.surface : scheme.surfaceContainerLowest;
       chipBorder = scheme.outlineVariant.withValues(alpha: .4);
     } else if (sd && !tok.disabled) {
-      chipBg = Color.alphaBlend(
-        scheme.tertiary.withValues(alpha: .14),
-        scheme.surfaceContainerHigh,
-      );
+      chipBg = Color.alphaBlend(scheme.tertiary.withValues(alpha: .14), base);
       chipBorder = scheme.tertiary.withValues(alpha: .55);
     } else if (effectiveWash != null && !tok.disabled) {
       // 与正文色带同源:EditorPalette.weightWash 统一色相与强度曲线
       final up = tok.effMult > 1;
       final i = pal.weightIntensity(tok.effMult);
-      chipBg = Color.alphaBlend(effectiveWash, scheme.surfaceContainerHigh);
+      chipBg = Color.alphaBlend(effectiveWash, base);
       chipBorder = (up ? pal.weightUpBorder : pal.weightDownBorder).withValues(
         alpha: .45 + i * .35,
       );

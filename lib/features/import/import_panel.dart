@@ -1,3 +1,4 @@
+import '../../l10n/l10n.dart';
 import '../gallery/albums/album_models.dart';
 import '../gallery/albums/album_state.dart';
 import '../gallery/albums/import_album_options.dart';
@@ -1247,7 +1248,9 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
           icon: const Icon(Icons.close),
           onPressed: () => Navigator.of(context).pop(),
         ),
-        title: Text(_reverseTags != null ? 'AI 反推结果' : '导入图片'),
+        title: Text(
+          _reverseTags != null ? 'AI 反推结果' : context.l10n.importImage,
+        ),
         centerTitle: true,
       ),
       body: body,
@@ -1318,7 +1321,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   Widget _desktopReferences(ColorScheme scheme, {required bool reverse}) {
     final actions = [
       (
-        label: '图生图',
+        label: context.l10n.img2img,
         icon: Icons.image_outlined,
         action: _useAsImg2img,
         blocked: _moduleBlocked(GenModule.img2img),
@@ -1400,7 +1403,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
         _fixedRow(
           scheme,
           icon: Icons.notes,
-          title: '正向提示词',
+          title: context.l10n.positivePrompt,
           preview: tags,
           checked: _useReverse,
           onTap: () => setState(() => _useReverse = !_useReverse),
@@ -1498,7 +1501,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
           _fixedRow(
             scheme,
             icon: Icons.notes,
-            title: '正向提示词',
+            title: context.l10n.positivePrompt,
             preview: m.prompt,
             checked: _usePrompt,
             onTap: () => setState(() => _usePrompt = !_usePrompt),
@@ -1510,7 +1513,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
           _fixedRow(
             scheme,
             icon: Icons.block,
-            title: '负向提示词',
+            title: context.l10n.negativePrompt,
             preview: m.negativePrompt,
             checked: _useNegative,
             onTap: () => setState(() => _useNegative = !_useNegative),
@@ -2314,7 +2317,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
       scheme,
       icon: Icons.group,
       iconColor: scheme.tertiary,
-      title: '角色提示词',
+      title: context.l10n.characterPrompts,
       count: '${_charChecked.length}/$total',
       allOn: allOn,
       onToggleAll: () => setState(() {
@@ -2561,7 +2564,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      e.label,
+                      _settingLabel(context.l10n, e.label),
                       style: TextStyle(fontSize: 10, color: scheme.outline),
                     ),
                     const SizedBox(height: 2),
@@ -2860,7 +2863,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
         _useAsBtn(
           scheme,
           Icons.image_outlined,
-          '图生图',
+          context.l10n.img2img,
           _useAsImg2img,
           blocked: _moduleBlocked(GenModule.img2img),
         ),
@@ -2981,6 +2984,20 @@ class _RawEntry extends StatelessWidget {
     );
   }
 }
+
+/// 设置项的显示名。label 同时是记勾选的存档键,只在显示时换成译文。
+String _settingLabel(AppLocalizations l, String label) => switch (label) {
+  '模型' => l.model,
+  '分辨率' => l.resolution,
+  'Steps' => l.importSteps,
+  'CFG' => l.importCfg,
+  'CFG Rescale' => l.cfgRescale,
+  'Variety+' => l.varietyPlus,
+  'Sampler' => l.importSampler,
+  'Scheduler' => l.importScheduler,
+  'Seed' => l.importSeed,
+  _ => label,
+};
 
 class _SettingSpec {
   _SettingSpec(

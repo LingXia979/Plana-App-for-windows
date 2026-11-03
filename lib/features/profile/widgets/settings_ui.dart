@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../../core/theme/app_skin.dart';
 import '../../../core/theme/app_theme.dart';
 
 /// 设置类页面共用版式:分组卡 + 单行条目。
@@ -11,22 +12,25 @@ class SettingsCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
-    return Material(
-      color: scheme.surfaceContainerLow,
-      borderRadius: BorderRadius.circular(16),
-      clipBehavior: Clip.antiAlias,
-      child: Column(
-        children: [
-          for (var i = 0; i < children.length; i++) ...[
-            if (i > 0)
-              Divider(
-                height: 1,
-                indent: 48,
-                color: scheme.outlineVariant.withValues(alpha: .35),
-              ),
-            children[i],
+    return Lifted(
+      radius: BorderRadius.circular(16),
+      child: Material(
+        color: scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(16),
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          children: [
+            for (var i = 0; i < children.length; i++) ...[
+              if (i > 0)
+                Divider(
+                  height: 1,
+                  indent: 48,
+                  color: scheme.outlineVariant.withValues(alpha: .35),
+                ),
+              children[i],
+            ],
           ],
-        ],
+        ),
       ),
     );
   }
@@ -62,6 +66,7 @@ class SettingsRow extends StatelessWidget {
     this.value,
     this.valueColor,
     this.onTap,
+    this.dropdown = false,
   });
 
   final IconData icon;
@@ -70,9 +75,16 @@ class SettingsRow extends StatelessWidget {
   final Color? valueColor;
   final VoidCallback? onTap;
 
+  /// 外面包着下拉菜单:箭头换成朝下,点击交给菜单。
+  final bool dropdown;
+
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
+    final label = Text(
+      title,
+      style: context.texts.bodyMedium!.copyWith(fontWeight: FontWeight.w600),
+    );
     return InkWell(
       onTap: onTap,
       child: Padding(
@@ -81,12 +93,7 @@ class SettingsRow extends StatelessWidget {
           children: [
             Icon(icon, size: 20, color: scheme.onSurfaceVariant),
             const SizedBox(width: 12),
-            Text(
-              title,
-              style: context.texts.bodyMedium!.copyWith(
-                fontWeight: FontWeight.w600,
-              ),
-            ),
+            if (dropdown) Expanded(flex: 3, child: label) else label,
             const SizedBox(width: 12),
             Expanded(
               child: Text(
@@ -99,9 +106,13 @@ class SettingsRow extends StatelessWidget {
                 ),
               ),
             ),
-            if (onTap != null) ...[
+            if (onTap != null || dropdown) ...[
               const SizedBox(width: 4),
-              Icon(Icons.chevron_right, size: 18, color: scheme.outline),
+              Icon(
+                dropdown ? Icons.expand_more : Icons.chevron_right,
+                size: 18,
+                color: scheme.outline,
+              ),
             ],
           ],
         ),

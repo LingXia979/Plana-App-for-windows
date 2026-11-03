@@ -155,7 +155,7 @@ source-code.zip 包含本版本 Windows 构建源码，测试使用时无需解�
                 Copy-Item -LiteralPath $_.FullName -Destination $destination
             }
     }
-    foreach ($file in @('pubspec.yaml', 'pubspec.lock', 'analysis_options.yaml', '.gitignore', '.metadata', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'README.md', 'WINDOWS-README.md')) {
+    foreach ($file in @('pubspec.yaml', 'pubspec.lock', 'l10n.yaml', 'analysis_options.yaml', '.gitignore', '.metadata', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'README.md', 'WINDOWS-README.md')) {
         Copy-Item -LiteralPath (Join-Path $projectRoot $file) -Destination $sourceStage
     }
     $sourceLicenses = Join-Path $sourceStage 'docs/runtime-licenses'

@@ -7,6 +7,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'support/pump_until.dart';
 import 'package:image/image.dart' as img;
 import 'package:plana_app/core/net/anlas_provider.dart';
 import 'package:plana_app/core/net/nai_client.dart';
@@ -528,10 +529,8 @@ void main() {
           red,
         );
         expect(balance.refreshes, 1);
-        await tester.runAsync(() async {
-          await stores.gallery.flushIndex();
-          await stores.gallery.load();
-        });
+        await pumpUntilComplete(tester, stores.gallery.flushIndex());
+        await tester.runAsync(stores.gallery.load);
         expect(
           stores.gallery.initialResults
               .singleWhere((image) => image.id == result.id)

@@ -45,7 +45,7 @@ function Get-InputsHash([switch]$DependenciesOnly) {
                 $path = Join-Path $projectRoot $name
                 if (Test-Path -LiteralPath $path) { Get-ChildItem -LiteralPath $path -File -Recurse }
             }
-            foreach ($name in @('windows/CMakeLists.txt', 'windows/flutter/CMakeLists.txt')) {
+            foreach ($name in @('l10n.yaml', 'windows/CMakeLists.txt', 'windows/flutter/CMakeLists.txt')) {
                 $path = Join-Path $projectRoot $name
                 if (Test-Path -LiteralPath $path) { Get-Item -LiteralPath $path }
             }

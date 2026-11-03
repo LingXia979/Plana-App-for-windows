@@ -1,3 +1,4 @@
+import '../../../l10n/l10n.dart';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
@@ -116,7 +117,7 @@ class _CharRefCardState extends ConsumerState<CharRefCard> {
 
     final card = SectionCard(
       icon: Icons.face_retouching_natural,
-      title: '角色参考',
+      title: context.l10n.preciseReference,
       reorderIndex: widget.reorderIndex,
       badge: refs.isEmpty ? null : CountBadge('${refs.length}'),
       actions: [
@@ -218,10 +219,11 @@ class _CharRefDetail extends ConsumerWidget {
                 for (final mode in CharRefMode.values)
                   DropdownMenuItem(
                     value: mode,
-                    child: Text(
-                      mode.label,
-                      style: const TextStyle(fontSize: 13),
-                    ),
+                    child: Text(switch (mode) {
+                      CharRefMode.character => context.l10n.refCharacter,
+                      CharRefMode.style => context.l10n.refStyle,
+                      CharRefMode.both => context.l10n.refCharacterStyle,
+                    }, style: const TextStyle(fontSize: 13)),
                   ),
               ],
               onChanged: (mode) {
@@ -233,7 +235,7 @@ class _CharRefDetail extends ConsumerWidget {
         const SizedBox(height: 14),
         // 保持最低 0(非负,不采用 web 的 −10..+1);step 0.01。
         LiveParamSlider(
-          label: 'Strength 参考强度',
+          label: context.l10n.referenceStrength,
           help: Help.charRefStrength,
           value: item.strength,
           divisions: 100,
@@ -241,7 +243,7 @@ class _CharRefDetail extends ConsumerWidget {
         ),
         const SizedBox(height: 6),
         LiveParamSlider(
-          label: 'Fidelity 保真度',
+          label: context.l10n.fidelity,
           help: Help.fidelity,
           value: item.infoExtracted,
           divisions: 100,

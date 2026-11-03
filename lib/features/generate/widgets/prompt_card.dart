@@ -1,3 +1,4 @@
+import '../../../l10n/l10n.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -173,7 +174,7 @@ class _PromptCardState extends ConsumerState<PromptCard> {
                         child: PromptHeaderTarget(
                           identifier: 'prompt-section-header-main',
                           label: !collapsible
-                              ? '提示词'
+                              ? context.l10n.prompt
                               : mainCollapsed
                               ? '展开提示词'
                               : '收起提示词',
@@ -196,7 +197,7 @@ class _PromptCardState extends ConsumerState<PromptCard> {
                               ),
                               const SizedBox(width: 9),
                               Text(
-                                '提示词',
+                                context.l10n.prompt,
                                 style: context.texts.bodyLarge!.copyWith(
                                   fontWeight: FontWeight.w600,
                                 ),
@@ -221,7 +222,7 @@ class _PromptCardState extends ConsumerState<PromptCard> {
                       ),
                       const SizedBox(width: 9),
                       Text(
-                        '提示词',
+                        context.l10n.prompt,
                         style: context.texts.bodyLarge!.copyWith(
                           fontWeight: FontWeight.w600,
                         ),

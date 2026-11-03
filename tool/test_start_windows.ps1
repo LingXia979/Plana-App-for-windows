@@ -98,6 +98,12 @@ exit /b 0
     Invoke-Launcher -Flags @('-BuildOnly')
     Assert-That (@(Get-Content -LiteralPath $trace | Where-Object { $_ -eq 'pub' }).Count -eq 2) 'dependency edit resolves packages again'
 
+    $beforeLocaleBuilds = Count-Builds
+    Set-Content -LiteralPath "$project/l10n.yaml" -Value 'arb-dir: lib/l10n'
+    Invoke-Launcher -Flags @('-BuildOnly')
+    Assert-That ((Count-Builds) -eq ($beforeLocaleBuilds + 1)) 'localization configuration edit rebuilds'
+    Assert-That (@(Get-Content -LiteralPath $trace | Where-Object { $_ -eq 'pub' }).Count -eq 2) 'localization configuration does not re-resolve dependencies'
+
     $stamp = Join-Path $project 'build/launcher/build.json'
     $stampHash = (Get-FileHash -LiteralPath $stamp).Hash
     Add-Content -LiteralPath "$project/lib/main.dart" -Value 'fixture v3'

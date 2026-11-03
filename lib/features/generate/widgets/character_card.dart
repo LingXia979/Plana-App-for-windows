@@ -1,3 +1,4 @@
+import '../../../l10n/l10n.dart';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -91,7 +92,9 @@ class CharacterCard extends ConsumerWidget {
 
     final card = SectionCard(
       icon: Icons.group_outlined,
-      title: ref.watch(desktopModeProvider) ? '角色提示词' : '角色',
+      title: ref.watch(desktopModeProvider)
+          ? context.l10n.characterPrompts
+          : context.l10n.characters,
       reorderIndex: reorderIndex,
       badge: CountBadge('$active / $cap', error: active > cap),
       actions: [
@@ -113,7 +116,7 @@ class CharacterCard extends ConsumerWidget {
         RoundIconBtn(
           Icons.add,
           size: actionSize,
-          tooltip: '添加角色',
+          tooltip: context.l10n.addCharacter,
           color: canAdd ? null : scheme.outline,
           onTap: canAdd ? notifier.addCharacter : null,
         ),
@@ -1032,7 +1035,9 @@ class _CharacterTileState extends ConsumerState<_CharacterTile> {
                               const SizedBox(width: 4),
                               Expanded(
                                 child: Text(
-                                  autoPos ? '自动定位' : positionLabel,
+                                  autoPos
+                                      ? context.l10n.aiChoicePosition
+                                      : positionLabel,
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: context.texts.bodySmall!.copyWith(
@@ -1090,7 +1095,7 @@ class _PositionChip extends StatelessWidget {
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
           child: Text(
-            auto ? '自动' : label,
+            auto ? context.l10n.aiChoice : label,
             maxLines: 1,
             style: context.texts.labelMedium!.copyWith(
               fontWeight: FontWeight.w600,

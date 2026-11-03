@@ -1,3 +1,4 @@
+import '../../l10n/l10n.dart';
 import 'dart:convert';
 import 'dart:io';
 
@@ -375,7 +376,7 @@ class _PresetTile extends StatelessWidget {
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
             Text(
-              preset.name,
+              presetDisplayName(context.l10n, preset),
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
               style: context.texts.bodyMedium!.copyWith(

@@ -82,8 +82,10 @@ void main() {
     } else {
       unawaited(client.stream.close());
     }
-    await stores.flushForExit();
     c.dispose();
+    // Disposing providers may enqueue their final workspace save. Drain it
+    // before removing the fixture, particularly on Windows with file locks.
+    await stores.flushForExit();
     await root.delete(recursive: true);
   });
   Future<void> complete() async {

@@ -1,3 +1,4 @@
+import '../../../l10n/l10n.dart';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -112,7 +113,7 @@ class _Img2ImgCardState extends ConsumerState<Img2ImgCard> {
 
     final card = SectionCard(
       icon: Icons.image_outlined,
-      title: '图生图',
+      title: context.l10n.img2img,
       reorderIndex: widget.reorderIndex,
       badge: hasImage ? const CountBadge('1') : null,
       actions: [
@@ -192,7 +193,7 @@ class _Img2ImgCardState extends ConsumerState<Img2ImgCard> {
                       child: Column(
                         children: [
                           ParamSlider(
-                            label: '强度 Strength',
+                            label: context.l10n.paramStrength,
                             help: Help.img2imgStrength,
                             value: cfg.strength,
                             min: 0.01, // 对齐 web:0 对 img2img 无效
@@ -203,7 +204,7 @@ class _Img2ImgCardState extends ConsumerState<Img2ImgCard> {
                           ),
                           const SizedBox(height: 6),
                           ParamSlider(
-                            label: '噪声 Noise',
+                            label: context.l10n.paramNoise,
                             help: Help.img2imgNoise,
                             value: cfg.noise,
                             max: 0.99, // 对齐 web(min 0 可)
@@ -246,13 +247,13 @@ class _Img2ImgCardState extends ConsumerState<Img2ImgCard> {
     final scheme = context.scheme;
     return SectionCard(
       icon: Icons.brush_outlined,
-      title: '重绘',
+      title: context.l10n.inpaint,
       reorderIndex: widget.reorderIndex,
       badge: CountBadge('${state.params.width}×${state.params.height}'),
       actions: [
         RoundIconBtn(
           Icons.delete_outline,
-          tooltip: '移除遮罩',
+          tooltip: context.l10n.removeMask,
           color: scheme.error,
           onTap: notifier.clearInpaint,
         ),
@@ -323,7 +324,7 @@ class _Img2ImgCardState extends ConsumerState<Img2ImgCard> {
               const SizedBox(width: 12),
               Expanded(
                 child: ParamSlider(
-                  label: '强度 Strength',
+                  label: context.l10n.paramStrength,
                   help: Help.img2imgStrength,
                   value: job.strength,
                   min: 0.01,

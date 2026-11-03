@@ -9,9 +9,24 @@ import '../models.dart';
 import '../res_presets.dart';
 import '../res_rules.dart';
 import 'common.dart';
+import '../../../l10n/l10n.dart';
 
 const _customTab = '自定义';
 const _mineTab = '我的';
+
+/// 内置档位与默认预设名按界面语言显示;自定义名原样。
+String _sizeLabel(AppLocalizations l, String name) => switch (name) {
+  '小图' => l.sizeNormal,
+  '大图' => l.sizeLarge,
+  '壁纸' => l.sizeWallpaper,
+  '竖图' => l.sizePortrait,
+  '横图' => l.sizeLandscape,
+  '方形' => l.sizeSquare,
+  '竖屏' => l.sizePortraitScreen,
+  '横屏' => l.sizeLandscapeScreen,
+  _ => name,
+};
+
 SizePreset _asSize(ResPreset p) =>
     SizePreset(p.name, formatAspectRatio(p.width, p.height), p.width, p.height);
 
@@ -211,7 +226,7 @@ class _ResolutionSheetState extends ConsumerState<_ResolutionSheet> {
       textInputAction: TextInputAction.done,
       style: mono(context, size: 16).copyWith(fontWeight: FontWeight.w700),
       decoration: InputDecoration(
-        labelText: width ? '宽' : '高',
+        labelText: width ? context.l10n.width : context.l10n.height,
         suffixText: 'px',
         isDense: true,
         contentPadding: widget.desktop
@@ -253,7 +268,7 @@ class _ResolutionSheetState extends ConsumerState<_ResolutionSheet> {
             children: [
               Expanded(
                 child: Text(
-                  '选择比例',
+                  context.l10n.chooseRatio,
                   style: context.texts.titleMedium!.copyWith(
                     fontWeight: FontWeight.w700,
                   ),
@@ -304,7 +319,11 @@ class _ResolutionSheetState extends ConsumerState<_ResolutionSheet> {
                           borderRadius: BorderRadius.circular(8),
                         ),
                       ),
-                      child: Text(t),
+                      child: Text(
+                        t == _customTab
+                            ? context.l10n.sizeCustom
+                            : _sizeLabel(context.l10n, t),
+                      ),
                     ),
                   ),
                 ),
@@ -403,7 +422,7 @@ class _ResolutionSheetState extends ConsumerState<_ResolutionSheet> {
             children: [
               Expanded(
                 child: Text(
-                  '分辨率',
+                  context.l10n.resolution,
                   style: context.texts.titleMedium!.copyWith(
                     fontWeight: FontWeight.w700,
                   ),
@@ -420,10 +439,16 @@ class _ResolutionSheetState extends ConsumerState<_ResolutionSheet> {
           SegmentedButton<String>(
             segments: [
               for (final t in sizeTabs.keys)
-                ButtonSegment(value: t, label: Text(t)),
+                ButtonSegment(
+                  value: t,
+                  label: Text(_sizeLabel(context.l10n, t)),
+                ),
               if (mine.isNotEmpty)
                 const ButtonSegment(value: _mineTab, label: Text(_mineTab)),
-              const ButtonSegment(value: _customTab, label: Text(_customTab)),
+              ButtonSegment(
+                value: _customTab,
+                label: Text(context.l10n.sizeCustom),
+              ),
             ],
             selected: {tab},
             onSelectionChanged: (s) => setState(() {
@@ -871,7 +896,7 @@ class _SwapBtn extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = context.scheme;
     return Tooltip(
-      message: '交换宽高',
+      message: context.l10n.swapDimensions,
       child: Material(
         color: scheme.surfaceContainerHigh,
         shape: const CircleBorder(),
@@ -999,7 +1024,7 @@ class _PresetCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  preset.name,
+                  _sizeLabel(context.l10n, preset.name),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: context.texts.bodySmall!.copyWith(

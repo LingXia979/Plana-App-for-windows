@@ -1,17 +1,14 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_localizations/flutter_localizations.dart';
+import '../../../l10n/l10n.dart';
+
 import '../gallery_date_filter.dart';
 import 'gallery_range_picker.dart';
 
 Widget _calendarLocale(BuildContext context, Widget? child) =>
     Localizations.override(
       context: context,
-      locale: const Locale('zh', 'CN'),
-      delegates: const [
-        GlobalMaterialLocalizations.delegate,
-        GlobalWidgetsLocalizations.delegate,
-        GlobalCupertinoLocalizations.delegate,
-      ],
+      locale: Locale(context.l10n.localeName),
+      delegates: AppLocalizations.localizationsDelegates,
       child: child,
     );
 
@@ -52,6 +49,7 @@ Future<GalleryDateFilter?> showGalleryDateFilter(
     final day = await showDatePicker(
       context: context,
       builder: _calendarLocale,
+
       firstDate: first,
       lastDate: last,
       initialDate: initial,

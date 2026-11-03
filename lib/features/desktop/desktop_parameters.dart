@@ -145,10 +145,10 @@ class _DesktopParametersState extends ConsumerState<_DesktopParameters> {
                 children: [
                   const Icon(Icons.tune_rounded, size: 18),
                   const SizedBox(width: 9),
-                  const Expanded(
+                  Expanded(
                     child: Text(
-                      '生成设置',
-                      style: TextStyle(
+                      context.l10n.generationSettings,
+                      style: const TextStyle(
                         fontSize: 14,
                         fontWeight: FontWeight.w600,
                       ),
@@ -173,7 +173,7 @@ class _DesktopParametersState extends ConsumerState<_DesktopParameters> {
                       ParamSlider(
                         key: const ValueKey('desktop-steps'),
                         snapInputToDivisions: true,
-                        label: '步数',
+                        label: context.l10n.steps,
                         value: p.activeSteps.toDouble().clamp(
                           minSteps.toDouble(),
                           maxSteps.toDouble(),
@@ -192,7 +192,7 @@ class _DesktopParametersState extends ConsumerState<_DesktopParameters> {
                     GenerationSettingTarget.guidance,
                     ParamSlider(
                       key: const ValueKey('desktop-guidance'),
-                      label: '提示词引导',
+                      label: context.l10n.desktopPromptGuidance,
                       value: cfg.clamp(cfgMin, cfgMax),
                       min: cfgMin,
                       max: cfgMax,
@@ -217,11 +217,11 @@ class _DesktopParametersState extends ConsumerState<_DesktopParameters> {
                       style: const TextStyle(fontSize: 12),
                       inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                       decoration: InputDecoration(
-                        labelText: '种子',
-                        hintText: '留空为随机',
+                        labelText: context.l10n.desktopSeed,
+                        hintText: context.l10n.seedEmptyRandom,
                         isDense: true,
                         suffixIcon: IconButton(
-                          tooltip: '随机种子',
+                          tooltip: context.l10n.randomSeed,
                           onPressed: () => apply(p.copyWith(seed: '')),
                           icon: const Icon(Icons.casino_outlined, size: 18),
                         ),
@@ -236,10 +236,10 @@ class _DesktopParametersState extends ConsumerState<_DesktopParameters> {
                       key: ValueKey('desktop-sampler-${p.model}-$sampler'),
                       initialValue: sampler,
                       isExpanded: true,
-                      decoration: const InputDecoration(
-                        labelText: '采样器',
+                      decoration: InputDecoration(
+                        labelText: context.l10n.desktopSampler,
                         isDense: true,
-                        border: OutlineInputBorder(),
+                        border: const OutlineInputBorder(),
                       ),
                       items: options == null
                           ? [
@@ -283,10 +283,10 @@ class _DesktopParametersState extends ConsumerState<_DesktopParameters> {
                       ),
                       initialValue: anima ? p.animaScheduler : p.kreaScheduler,
                       isExpanded: true,
-                      decoration: const InputDecoration(
-                        labelText: '调度器',
+                      decoration: InputDecoration(
+                        labelText: context.l10n.desktopScheduler,
                         isDense: true,
-                        border: OutlineInputBorder(),
+                        border: const OutlineInputBorder(),
                       ),
                       items: [
                         for (final s
@@ -314,7 +314,7 @@ class _DesktopParametersState extends ConsumerState<_DesktopParameters> {
                     const SizedBox(height: 14),
                     ParamSlider(
                       key: const ValueKey('desktop-rescale'),
-                      label: '引导重缩放',
+                      label: context.l10n.desktopGuidanceRescale,
                       value: p.cfgRescale,
                       dense: true,
                       divisions: 100,
@@ -326,10 +326,10 @@ class _DesktopParametersState extends ConsumerState<_DesktopParameters> {
                         key: ValueKey('desktop-noise-${p.noiseSchedule}'),
                         initialValue: p.noiseSchedule,
                         isExpanded: true,
-                        decoration: const InputDecoration(
-                          labelText: '噪声调度',
+                        decoration: InputDecoration(
+                          labelText: context.l10n.desktopNoiseSchedule,
                           isDense: true,
-                          border: OutlineInputBorder(),
+                          border: const OutlineInputBorder(),
                         ),
                         items: [
                           for (final n in noiseSchedules)
@@ -361,7 +361,7 @@ class _DesktopParametersState extends ConsumerState<_DesktopParameters> {
                   if (p.batchable) ...[
                     const SizedBox(height: 12),
                     ParamSlider(
-                      label: '每次张数',
+                      label: context.l10n.batchCount,
                       value: p.batchCount.toDouble(),
                       min: 1,
                       max: kBatchMax.toDouble(),
