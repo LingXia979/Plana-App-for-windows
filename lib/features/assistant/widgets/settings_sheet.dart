@@ -14,6 +14,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/platform/desktop.dart';
 import '../../../core/ui/setting_row.dart';
+import '../../../core/util/haptics.dart';
 import '../../generate/prompt_sections.dart' show SectionImport;
 import '../../generate/widgets/common.dart' show dropFocusSoon, hintSnack;
 import '../agent_model.dart'
@@ -334,14 +335,9 @@ class _DesktopSettingsPanel extends ConsumerWidget {
                                           (o) => o.copyWith(noDraw: v),
                                         ),
                                       ),
-                                      SettingChoiceRow<SectionImport>(
-                                        icon: Icons.splitscreen_outlined,
-                                        title: '导入方式',
-                                        desc: '提示词写入主提示词的位置；直接生成采用相同方式',
+                                      _DesktopImportChoice(
                                         enabled: !s.noDraw,
                                         value: s.importTo,
-                                        options: SectionImport.values,
-                                        labelOf: sectionImportLabel,
                                         onChanged: (v) => n.patch(
                                           (o) => o.copyWith(importTo: v),
                                         ),
@@ -504,6 +500,71 @@ class _DesktopSettingsPanel extends ConsumerWidget {
               ),
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 桌面端在当前行选择导入方式，沿用同一份设置和导入逻辑。
+class _DesktopImportChoice extends StatelessWidget {
+  const _DesktopImportChoice({
+    required this.value,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  final SectionImport value;
+  final bool enabled;
+  final ValueChanged<SectionImport> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Opacity(
+      opacity: enabled ? 1 : .42,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 8, 14, 8),
+        child: Row(
+          children: [
+            Icon(Icons.splitscreen_outlined, size: 20, color: scheme.primary),
+            const SizedBox(width: 14),
+            const Expanded(
+              child: SettingRowTexts(
+                title: '导入方式',
+                desc: '提示词写入主提示词的位置；直接生成采用相同方式',
+              ),
+            ),
+            const SizedBox(width: 8),
+            DropdownButton<SectionImport>(
+              key: const ValueKey('assistant-import-dropdown'),
+              value: value,
+              isDense: true,
+              menuMaxHeight: 300,
+              borderRadius: BorderRadius.circular(12),
+              underline: const SizedBox.shrink(),
+              icon: Icon(Icons.expand_more, size: 18, color: scheme.outline),
+              style: theme.textTheme.labelLarge!.copyWith(
+                color: scheme.primary,
+                fontWeight: FontWeight.w700,
+              ),
+              items: [
+                for (final mode in SectionImport.values)
+                  DropdownMenuItem(
+                    value: mode,
+                    child: Text(sectionImportLabel(mode)),
+                  ),
+              ],
+              onChanged: enabled
+                  ? (next) {
+                      if (next == null || next == value) return;
+                      Haptics.selection();
+                      onChanged(next);
+                    }
+                  : null,
+            ),
+          ],
         ),
       ),
     );

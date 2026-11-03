@@ -6,11 +6,18 @@ import 'package:plana_app/core/store/app_stores.dart';
 import 'package:plana_app/core/theme/app_theme.dart';
 import 'package:plana_app/core/ui/setting_row.dart';
 import 'package:plana_app/features/assistant/agent_model.dart';
+import 'package:plana_app/features/assistant/assistant_models.dart';
 import 'package:plana_app/features/assistant/assistant_settings.dart';
+import 'package:plana_app/features/assistant/assistant_state.dart';
 import 'package:plana_app/features/assistant/custom_endpoint.dart';
 import 'package:plana_app/features/assistant/preset_rules.dart';
 import 'package:plana_app/features/assistant/rules_page.dart';
 import 'package:plana_app/features/assistant/widgets/settings_sheet.dart';
+import 'package:plana_app/features/generate/canvas_state.dart';
+import 'package:plana_app/features/generate/generate_state.dart';
+import 'package:plana_app/features/generate/models.dart';
+import 'package:plana_app/features/generate/prompt_sections.dart';
+import 'package:flutter/services.dart';
 
 import 'support/desktop_capture.dart';
 
@@ -54,11 +61,18 @@ void main() {
     stores.flushNow();
   });
 
-  Future<void> mount(WidgetTester tester, Widget page, double scale) async {
-    tester.view.physicalSize = const Size(1000, 780);
+  Future<void> mount(
+    WidgetTester tester,
+    Widget page,
+    double scale, {
+    Size size = const Size(1000, 780),
+    bool dark = false,
+  }) async {
+    tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
+    final theme = dark ? AppTheme.dark() : AppTheme.light();
     await tester.pumpWidget(
       UncontrolledProviderScope(
         container: c,
@@ -66,8 +80,8 @@ void main() {
           key: capture,
           child: MaterialApp(
             debugShowCheckedModeBanner: false,
-            theme: AppTheme.light().copyWith(
-              textTheme: AppTheme.light().textTheme.apply(
+            theme: theme.copyWith(
+              textTheme: theme.textTheme.apply(
                 fontFamily: 'Microsoft YaHei',
                 fontFamilyFallback: const ['Microsoft YaHei'],
               ),
@@ -90,6 +104,137 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     await tester.pump(const Duration(seconds: 1));
     expect(tester.takeException(), isNull);
+  }
+
+  for (final (name, scale, size, dark) in [
+    ('normal', 1.0, const Size(1000, 780), false),
+    ('large-dark', 1.4, const Size(880, 540), true),
+    ('narrow', 1.4, const Size(440, 640), false),
+  ]) {
+    testWidgets('desktop import dropdown applies all three modes: $name', (
+      tester,
+    ) async {
+      stores.assistant.initialCurrent = const [
+        AssistantMsg(
+          id: 'import-reply',
+          role: MsgRole.ai,
+          text: '',
+          at: 1,
+          draw: DrawProposal(positive: 'new scene', negative: 'new negative'),
+        ),
+      ];
+      final original = GenerateState.initial().copyWith(
+        prompt: 'old scene',
+        promptRaw: '<#scene: old scene#>',
+        negativePrompt: 'old negative',
+        sections: const [
+          PromptSection.main(),
+          PromptSection(id: 'style', name: '画风', positive: 'watercolor'),
+        ],
+      );
+      c
+          .read(generateProvider.notifier)
+          .applyCanvas(CanvasPrompts.of(original), force: true);
+      final before = PromptSnapshot.of(c.read(generateProvider));
+      final assistant = c.read(assistantProvider.notifier);
+      await mount(
+        tester,
+        Builder(
+          builder: (context) => Scaffold(
+            body: Center(
+              child: FilledButton(
+                onPressed: () => showAssistantSettings(context),
+                child: const Text('助手设置'),
+              ),
+            ),
+          ),
+        ),
+        scale,
+        size: size,
+        dark: dark,
+      );
+      await tester.tap(find.text('助手设置'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('生成'));
+      await tester.pumpAndSettle();
+      final dropdown = find.byType(DropdownButton<SectionImport>);
+      await tester.ensureVisible(dropdown);
+      await tester.pumpAndSettle();
+      await tester.tap(dropdown);
+      await tester.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsNothing);
+      await captureDesktop(tester, capture, 'assistant-import-$name-menu');
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(
+        c.read(assistantSettingsProvider).value!.importTo,
+        SectionImport.main,
+      );
+      expect(
+        find.byKey(const ValueKey('desktop-assistant-settings')),
+        findsOneWidget,
+      );
+
+      for (final mode in SectionImport.values) {
+        await tester.tap(dropdown);
+        await tester.pumpAndSettle();
+        await tester.tap(find.text(sectionImportLabel(mode)).last);
+        await tester.pumpAndSettle();
+        expect(c.read(assistantSettingsProvider).value!.importTo, mode);
+        expect(
+          tester.widget<DropdownButton<SectionImport>>(dropdown).value,
+          mode,
+        );
+        expect(
+          PromptSnapshot.of(c.read(generateProvider)).sameAs(before),
+          isTrue,
+        );
+        final preview = assistant.previewSendState('import-reply')!;
+        expect(assistant.applyProposal('import-reply'), isTrue);
+        final imported = c.read(generateProvider);
+        expect(
+          imported.prompt,
+          mode == SectionImport.newSection ? 'old scene' : 'new scene',
+        );
+        expect(
+          imported.negativePrompt,
+          mode == SectionImport.newSection ? 'old negative' : 'new negative',
+        );
+        expect(imported.sections.length, switch (mode) {
+          SectionImport.main => 2,
+          SectionImport.newSection => 3,
+          SectionImport.clear => 0,
+        });
+        if (mode != SectionImport.clear) {
+          expect(imported.sections[1].positive, 'watercolor');
+        }
+        if (mode == SectionImport.newSection) {
+          expect(imported.sections.last.positive, 'new scene');
+          expect(imported.sections.last.name, 'AI');
+        }
+        expect(composeSections(imported).prompt, preview.prompt);
+        expect(
+          composeSections(imported).negativePrompt,
+          preview.negativePrompt,
+        );
+        expect(assistant.undo('import-reply'), isTrue);
+        expect(
+          PromptSnapshot.of(c.read(generateProvider)).sameAs(before),
+          isTrue,
+        );
+      }
+
+      await captureDesktop(tester, capture, 'assistant-import-$name-selected');
+      await tester.tap(find.byTooltip('关闭助手设置'));
+      await tester.pumpAndSettle();
+      c.invalidate(assistantSettingsProvider);
+      await tester.runAsync(() => c.read(assistantSettingsProvider.future));
+      expect(
+        c.read(assistantSettingsProvider).value!.importTo,
+        SectionImport.clear,
+      );
+      await finish(tester);
+    });
   }
 
   for (final scale in [1.0, 1.4]) {

@@ -378,9 +378,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('生成'));
       await tester.pumpAndSettle();
-      final choice = find.byWidgetPredicate(
-        (w) => w is SettingChoiceRow<SectionImport>,
-      );
+      final choice = find.byType(DropdownButton<SectionImport>);
       await tester.tap(choice);
       await tester.pumpAndSettle();
       await tester.tap(find.text(sectionImportLabel(SectionImport.newSection)));
@@ -392,8 +390,8 @@ void main() {
       await tester.tap(find.widgetWithText(SettingRow, '纯文本格式'));
       await tester.pumpAndSettle();
       expect(
-        tester.widget<SettingChoiceRow<SectionImport>>(choice).enabled,
-        isFalse,
+        tester.widget<DropdownButton<SectionImport>>(choice).onChanged,
+        isNull,
       );
       await tester.tap(find.byTooltip('关闭助手设置'));
       await tester.pumpAndSettle();
