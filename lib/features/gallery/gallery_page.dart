@@ -74,6 +74,7 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
   /// 避免空窗期露占位;新图解码完由 gaplessPlayback 无缝换掉。
   Uint8List? _lastShown;
   String? _viewKey;
+  String? _viewSelectedId;
 
   /// 冷启动直接停在上次选中的那一页(索引查不到就落到最新一张)。
   late final int _initialPage = () {
@@ -326,6 +327,8 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
     final gen = ref.watch(genStatusProvider);
     final inpaint = ref.watch(inpaintSessionProvider);
     final selected = state.selected;
+    final changedSelection = _viewSelectedId != selected?.id;
+    _viewSelectedId = selected?.id;
 
     // 重绘会话开/关时更新 keep-alive(仅编辑期间常驻,平时随 PageView 回收)
     final keep = inpaint != null;
@@ -398,7 +401,12 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
 
     // 选中项被外面改了(点胶片条/网格跳选、新图前插、删图平移)→ 排一次跳页。
     final desynced = selIdx >= 0 && selIdx != _pageAt;
-    if (desynced || changedScope) _requestPage(selIdx < 0 ? 0 : selIdx);
+    // 相册首图生成后，新旧选中项都可能位于第 0 页。操作栏随图片换 key 时，
+    // PageView 可能重建并回到控制器的 initialPage，而 _pageAt 仍是 0。
+    // 图片身份变化也要在布局完成后核对实际页码，不能只比较旧的页码记录。
+    if (desynced || changedScope || (changedSelection && !_userDrag)) {
+      _requestPage(selIdx < 0 ? 0 : selIdx);
+    }
 
     // 顶图层:页码还没跟上的那一两帧、或老图字节还没读上来时,拿一张盖在
     // 分页画布上顶住 —— 优先当前选中的真身,退而求其次是上一张已显示的。
