@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -118,6 +119,19 @@ void main() {
         tester.widget<TextField>(key('resolution-width')).controller!.text,
         '832',
       );
+      await tester.tap(key('resolution-width'));
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await tester.pump();
+      expect(
+        tester.widget<TextField>(key('resolution-width')).controller!.text,
+        '896',
+      );
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pump();
+      expect(
+        tester.widget<TextField>(key('resolution-width')).controller!.text,
+        '832',
+      );
       await tester.enterText(key('resolution-height'), '1024.8');
       // Confirm without submitting the text field must still use the draft.
       await tester.tap(key('resolution-confirm'));
@@ -159,6 +173,66 @@ void main() {
     },
   );
 
+  testWidgets(
+    'wheel steps the hovered dimension without scrolling or applying the panel',
+    (tester) async {
+      await mount(tester);
+      await tester.tap(find.text('自定义'));
+      await tester.pumpAndSettle();
+      await tester.tap(key('resolution-width'));
+      final panel = tester
+          .state<ScrollableState>(
+            find
+                .descendant(
+                  of: key('resolution-panel'),
+                  matching: find.byType(Scrollable),
+                )
+                .first,
+          )
+          .position;
+      final scrollOffset = panel.pixels;
+      await tester.sendEventToBinding(
+        PointerScrollEvent(
+          position: tester.getCenter(key('resolution-height')),
+          scrollDelta: const Offset(0, -120),
+        ),
+      );
+      await tester.pump();
+      expect(
+        tester.widget<TextField>(key('resolution-width')).controller!.text,
+        '832',
+      );
+      expect(
+        tester.widget<TextField>(key('resolution-height')).controller!.text,
+        '1280',
+      );
+      expect(panel.pixels, scrollOffset);
+      expect(containerSize(c), (832, 1216));
+      await tester.enterText(key('resolution-width'), '64');
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pump();
+      expect(
+        tester.widget<TextField>(key('resolution-width')).controller!.text,
+        '64',
+      );
+      await tester.enterText(key('resolution-width'), '3072');
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await tester.pump();
+      expect(
+        tester.widget<TextField>(key('resolution-width')).controller!.text,
+        '3072',
+      );
+      expect(
+        tester.widget<FilledButton>(key('resolution-confirm')).onPressed,
+        isNull,
+      );
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(containerSize(c), (832, 1216));
+      await finish(tester);
+    },
+  );
+
   testWidgets('Escape and outside click discard unconfirmed dimensions', (
     tester,
   ) async {
@@ -179,4 +253,9 @@ void main() {
     expect(c.read(generateProvider).params.width, 832);
     await finish(tester);
   });
+}
+
+(int, int) containerSize(ProviderContainer container) {
+  final p = container.read(generateProvider).params;
+  return (p.width, p.height);
 }

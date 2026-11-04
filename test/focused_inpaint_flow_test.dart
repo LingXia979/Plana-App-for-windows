@@ -22,6 +22,7 @@ import 'package:plana_app/features/generate/gen_jobs.dart';
 import 'package:plana_app/features/generate/generate_state.dart';
 import 'package:plana_app/features/generate/generation_controller.dart';
 import 'package:plana_app/features/generate/models.dart';
+import 'package:plana_app/features/generate/canvas_state.dart';
 import 'package:plana_app/features/generate/widgets/img2img_card.dart';
 import 'package:plana_app/features/inpaint/inpaint_comparison.dart';
 import 'package:plana_app/features/inpaint/inpaint_ops.dart';
@@ -208,6 +209,8 @@ void main() {
             .read(inpaintPrefsProvider.notifier)
             .save(const InpaintPrefs(mode: 'expand', strength: .7));
         _expectOriginalGeometry(initial.read(generateProvider).inpaint!);
+        final size = initial.read(generateProvider).params;
+        expect((size.width, size.height), (512, 768));
         first.flushNow();
         await _workspaceWritten(root, .83);
         initial.dispose();
@@ -227,6 +230,8 @@ void main() {
       });
       _expectOriginalGeometry(saved);
       expect(saved.strength, .83);
+      final restoredParams = container.read(generateProvider).params;
+      expect((restoredParams.width, restoredParams.height), (512, 768));
       tester.view.physicalSize = const Size(1100, 900);
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.resetPhysicalSize);
@@ -279,6 +284,8 @@ void main() {
       _expectOriginalGeometry(resaved);
       expect(resaved.grid, saved.grid);
       expect(resaved.strength, .83);
+      final resavedParams = container.read(generateProvider).params;
+      expect((resavedParams.width, resavedParams.height), (512, 768));
       await tester.pumpAndSettle();
       await tester.runAsync(() async {
         stores.flushNow();
@@ -323,19 +330,18 @@ void main() {
       container.read(albumsProvider);
       final albumId = await albums.create('Focused flow');
       final prepared = await _prepared();
-      final state = GenerateState.initial().copyWith(
-        inpaint: prepared.job,
-        params: GenerateState.initial().params.copyWith(
-          width: prepared.width,
-          height: prepared.height,
-        ),
-      );
+      container
+          .read(generateProvider.notifier)
+          .setInpaint(
+            prepared.job,
+            width: prepared.width,
+            height: prepared.height,
+          );
+      final params = container.read(generateProvider).params;
+      expect((params.width, params.height), (512, 768));
       final generation = container
           .read(generationProvider.notifier)
-          .generate(
-            using: state,
-            galleryTarget: GallerySaveTarget.album(albumId),
-          );
+          .generate(galleryTarget: GallerySaveTarget.album(albumId));
       await client.started.future.timeout(const Duration(seconds: 10));
       final started = container.read(generationProvider).jobs.single;
       expect((started.width, started.height), (512, 768));
@@ -347,6 +353,8 @@ void main() {
       expect(parameters['inpaintImg2ImgStrength'], .7);
       expect(parameters['img2img'], {'strength': .7, 'color_correct': true});
       expect((parameters['width'], parameters['height']), (832, 1216));
+      final unchanged = container.read(generateProvider).params;
+      expect((unchanged.width, unchanged.height), (512, 768));
       final sentMask = img.decodePng(
         base64Decode(parameters['mask'] as String),
       )!;
@@ -404,6 +412,44 @@ void main() {
         reopened.gallery.initialResults.any((r) => r.id == _sourceId),
         isFalse,
       );
+    },
+  );
+
+  test(
+    'focused save and undo keep each canvas output size independent',
+    () async {
+      final stores = AppStores.ephemeral();
+      final container = ProviderContainer(
+        overrides: [appStoresProvider.overrideWithValue(stores)],
+      );
+      addTearDown(() {
+        container.dispose();
+        stores.flushNow();
+      });
+      final editor = container.read(generateProvider.notifier);
+      final canvases = container.read(canvasWorkspaceProvider.notifier);
+      final first = container.read(canvasWorkspaceProvider).activeId;
+      editor.setSize(1024, 1024);
+      final before = container.read(generateProvider);
+      final second = canvases.create();
+      editor.setSize(1216, 832);
+      final prepared = await _prepared();
+      editor.setInpaint(
+        prepared.job,
+        width: prepared.width,
+        height: prepared.height,
+        canvasId: first,
+      );
+      expect(container.read(canvasWorkspaceProvider).activeId, second);
+      final active = container.read(generateProvider).params;
+      expect((active.width, active.height), (1216, 832));
+      canvases.select(first);
+      final restored = container.read(generateProvider).params;
+      expect((restored.width, restored.height), (512, 768));
+      canvases.undoWrite(before, first);
+      final undone = container.read(generateProvider);
+      expect((undone.params.width, undone.params.height), (1024, 1024));
+      expect(undone.inpaint, isNull);
     },
   );
 }

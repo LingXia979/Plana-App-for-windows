@@ -1072,23 +1072,21 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
   // ---- 用作 ----
   Future<void> _useAsImg2img() async {
     final before = _before();
-    final bytes = widget.bytes;
-    final (rw, rh) = await decodeImageSize(bytes);
+    final base = await prepareImg2ImgBase(widget.bytes);
     if (!mounted) return;
-    final res = img2imgResolution(rw, rh);
     if (ref.read(canvasWorkspaceProvider).find(before.canvasId) == null) return;
     ref
         .read(generateProvider.notifier)
         .setImg2ImgImage(
-          image: bytes,
-          width: res.w,
-          height: res.h,
+          image: base.image,
+          width: base.w,
+          height: base.h,
           canvasId: before.canvasId,
         );
     final p = before.state.params;
-    final changed = p.width != res.w || p.height != res.h;
+    final changed = p.width != base.w || p.height != base.h;
     _finish(
-      changed ? '已设为图生图底图 · 分辨率 ${res.w}×${res.h}' : '已设为图生图底图',
+      changed ? '已设为图生图底图 · 分辨率 ${base.w}×${base.h}' : '已设为图生图底图',
       Icons.image_outlined,
       before,
     );

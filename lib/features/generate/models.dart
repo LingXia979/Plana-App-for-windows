@@ -319,6 +319,10 @@ class InpaintJob {
   /// 发送尺寸(宽, 高):遮罩与底图同尺寸,读遮罩的 PNG 头即得。重绘只能按这个
   /// 尺寸发 —— 声明的宽高和图对不上,服务端拒单,贴回也对不上框。读不出 null。
   (int, int)? get sendSize => pngSizeOf(mask);
+
+  /// 创作页与成图尺寸。框选请求可放大裁切区，但拼回后仍是完整底图。
+  (int, int)? get outputSize =>
+      paste != null ? (paste!.outW, paste!.outH) : sendSize;
 }
 
 /// 只读 PNG 头拿宽高(IHDR 在 offset 16 / 20),不解码整图;不是 PNG 给 null。
@@ -394,7 +398,7 @@ class Img2ImgConfig {
   final double strength;
   final double noise;
 
-  /// 原始底图字节;生成时 cover 到目标分辨率再编码发送。
+  /// 底图字节；导入时按 64 对齐及像素上限准备，生成时 cover 到当前目标分辨率。
   final Uint8List? image;
 
   /// 官方 Max ✨ 放大重绘:发**原图尺寸** + 此标志,由服务端放大到总像素上限。

@@ -8,6 +8,7 @@ import '../../../core/platform/desktop.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/ui/param_help.dart';
 import '../../../core/ui/param_input.dart';
+import '../../../core/ui/cover_thumbnail.dart';
 import '../../../core/util/haptics.dart';
 
 // ExpandBody 已挪到 core/ui(多选底栏等非 generate 的地方也在用)。
@@ -378,17 +379,21 @@ class StripeThumb extends StatelessWidget {
           ClipRRect(
             borderRadius: BorderRadius.circular(radius),
             child: image != null
-                ? Image.memory(
-                    image!,
+                ? Image(
+                    image: CoverThumbnailProvider(
+                      image!,
+                      width:
+                          (width * MediaQuery.devicePixelRatioOf(context) * 2)
+                              .ceil(),
+                      height:
+                          (height * MediaQuery.devicePixelRatioOf(context) * 2)
+                              .ceil(),
+                    ),
                     width: width,
                     height: height,
                     fit: BoxFit.cover,
                     gaplessPlayback: true,
-                    // 只给 cacheWidth(保比例):图像缓存存的是**解码后的位图**,
-                    // 不限制的话一张 1536×1024 原图要占 6.3MB,而这里只画 72dp。
-                    // 参考图条同屏可有 6 vibe + 6 CR,不限就是几十 MB 白烧。
-                    cacheWidth: (width * MediaQuery.devicePixelRatioOf(context))
-                        .round(),
+                    filterQuality: FilterQuality.high,
                   )
                 : CustomPaint(
                     size: Size(width, height),

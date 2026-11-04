@@ -838,11 +838,10 @@ class _ActionRailState extends ConsumerState<ResultActions> {
         return;
       }
       if (bytes == null) throw StateError('图片尚未就绪');
-      final (width, height) = await decodeImageSize(bytes);
+      final base = await prepareImg2ImgBase(bytes);
       if (!mounted || ref.read(canvasWorkspaceProvider).activeId != canvasId) {
         return;
       }
-      final resolution = img2imgResolution(width, height);
       await ref.read(genModulesProvider.future);
       if (!mounted || ref.read(canvasWorkspaceProvider).activeId != canvasId) {
         return;
@@ -864,11 +863,7 @@ class _ActionRailState extends ConsumerState<ResultActions> {
       );
       ref.read(generateProvider.notifier)
         ..clearInpaint()
-        ..setImg2ImgImage(
-          image: bytes,
-          width: resolution.w,
-          height: resolution.h,
-        );
+        ..setImg2ImgImage(image: base.image, width: base.w, height: base.h);
       ref.read(shellIndexProvider.notifier).select(kTabCreate);
       ref.read(desktopImg2ImgRevealProvider.notifier).request();
       hintSnack(context, '已将当前图片用作基础图像', icon: Icons.image_outlined);

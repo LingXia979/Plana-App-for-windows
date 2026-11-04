@@ -702,7 +702,7 @@ class GenerateNotifier extends Notifier<GenerateState> {
   }
 
   // ---- 图生图 ----
-  /// 选定底图:存原图 + 自动把生成分辨率设成图片尺寸(64 对齐/像素封顶,调用方已算好)。
+  /// 选定底图：保存调用方准备的像素与尺寸（64 对齐／像素封顶），同步主分辨率。
   void setImg2ImgImage({
     required Uint8List image,
     required int width,
@@ -755,9 +755,8 @@ class GenerateNotifier extends Notifier<GenerateState> {
   /// 遮罩编辑器存盘:底图 + 遮罩 + 强度(+ 局部重绘的回贴信息)一起落进创作页
   /// 状态,发车交给主生成按钮。
   ///
-  /// 顺带把生成分辨率设成**发送尺寸** —— 局部重绘发的是裁切区、扩图发的是垫大
-  /// 之后的画布,两者都不是原图尺寸。不设的话下一次生成会按创作页那个旧尺寸发,
-  /// 服务端收到的图和声明的尺寸对不上。
+  /// 创作页显示完整成图尺寸：框选保留底图，扩图使用扩大后的画布。
+  /// 发送尺寸由 stripHiddenModules 从遮罩读取，不把局部请求尺寸写回主分辨率。
   ///
   /// 与 img2img 互斥:带遮罩的图生图就是重绘,留着另一份底图只会让发送层二选一。
   void setInpaint(
@@ -766,6 +765,9 @@ class GenerateNotifier extends Notifier<GenerateState> {
     required int height,
     String? canvasId,
   }) {
+    final output = job.outputSize;
+    width = output?.$1 ?? width;
+    height = output?.$2 ?? height;
     final workspace = ref.read(canvasWorkspaceProvider);
     if (canvasId != null && workspace.find(canvasId) == null) return;
     if (canvasId != null && canvasId != workspace.activeId) {

@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/platform/desktop.dart';
@@ -217,32 +219,71 @@ class _ResolutionSheetState extends ConsumerState<_ResolutionSheet> {
     return w != null && h != null;
   }
 
-  Widget _dimensionInput({required bool width}) => SizedBox(
-    width: widget.desktop ? 96 : 108,
-    child: TextField(
-      key: ValueKey(width ? 'resolution-width' : 'resolution-height'),
-      controller: width ? _width : _height,
-      keyboardType: const TextInputType.numberWithOptions(decimal: true),
-      textInputAction: TextInputAction.done,
-      style: mono(context, size: 16).copyWith(fontWeight: FontWeight.w700),
-      decoration: InputDecoration(
-        labelText: width ? context.l10n.width : context.l10n.height,
-        suffixText: 'px',
-        isDense: true,
-        contentPadding: widget.desktop
-            ? const EdgeInsets.symmetric(horizontal: 10, vertical: 12)
-            : null,
-        errorText: width ? _widthError : _heightError,
-        border: const OutlineInputBorder(),
+  void _stepDimension(bool width, int direction) {
+    final controller = width ? _width : _height;
+    final current = _dimension(controller.text) ?? (width ? customW : customH);
+    final value = (current + direction * kResSnapStep).clamp(kMinDim, kMaxDim);
+    setState(() {
+      if (width) {
+        customW = value;
+        _widthError = null;
+      } else {
+        customH = value;
+        _heightError = null;
+      }
+      controller.value = TextEditingValue(
+        text: '$value',
+        selection: TextSelection.collapsed(offset: '$value'.length),
+      );
+    });
+  }
+
+  Widget _dimensionInput({required bool width}) {
+    final field = SizedBox(
+      width: widget.desktop ? 96 : 108,
+      child: TextField(
+        key: ValueKey(width ? 'resolution-width' : 'resolution-height'),
+        controller: width ? _width : _height,
+        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+        textInputAction: TextInputAction.done,
+        style: mono(context, size: 16).copyWith(fontWeight: FontWeight.w700),
+        decoration: InputDecoration(
+          labelText: width ? context.l10n.width : context.l10n.height,
+          suffixText: 'px',
+          isDense: true,
+          contentPadding: widget.desktop
+              ? const EdgeInsets.symmetric(horizontal: 10, vertical: 12)
+              : null,
+          errorText: width ? _widthError : _heightError,
+          border: const OutlineInputBorder(),
+        ),
+        onChanged: (_) => _commitDimensions(normalize: false),
+        onSubmitted: (_) => _commitDimensions(),
+        onTapOutside: (_) {
+          _commitDimensions();
+          FocusManager.instance.primaryFocus?.unfocus();
+        },
       ),
-      onChanged: (_) => _commitDimensions(normalize: false),
-      onSubmitted: (_) => _commitDimensions(),
-      onTapOutside: (_) {
-        _commitDimensions();
-        FocusManager.instance.primaryFocus?.unfocus();
+    );
+    if (!widget.desktop) return field;
+    return Listener(
+      onPointerSignal: (event) {
+        if (event is! PointerScrollEvent || event.scrollDelta.dy == 0) return;
+        GestureBinding.instance.pointerSignalResolver.register(event, (_) {
+          _stepDimension(width, event.scrollDelta.dy < 0 ? 1 : -1);
+        });
       },
-    ),
-  );
+      child: CallbackShortcuts(
+        bindings: {
+          const SingleActivator(LogicalKeyboardKey.arrowUp): () =>
+              _stepDimension(width, 1),
+          const SingleActivator(LogicalKeyboardKey.arrowDown): () =>
+              _stepDimension(width, -1),
+        },
+        child: field,
+      ),
+    );
+  }
 
   void _apply() {
     if (_isCustom && !_commitDimensions()) return;
@@ -388,7 +429,7 @@ class _ResolutionSheetState extends ConsumerState<_ResolutionSheet> {
             ),
             const SizedBox(height: 10),
             Text(
-              over ? '超出像素上限' : '小数取整数部分，尺寸自动对齐 64 像素。',
+              over ? '超出像素上限' : '↑ / ↓ 或在输入框上滚轮：每次增减 64。小数取整后对齐 64 像素。',
               style: context.texts.bodySmall!.copyWith(
                 fontSize: 11,
                 color: over ? scheme.error : scheme.onSurfaceVariant,

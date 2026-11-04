@@ -438,6 +438,8 @@ void main() {
       }
       final job = container.read(generateProvider).inpaint!;
       expect(job.strength, .43);
+      final params = container.read(generateProvider).params;
+      expect((params.width, params.height), (512, 768));
       expect(job.paste!.sendX, crop.x);
       expect(job.paste!.sendY, crop.y);
       final image = img.decodePng(job.mask)!;

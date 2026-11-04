@@ -1348,6 +1348,9 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
     required int height,
     required String canvasId,
   }) {
+    final output = job.outputSize;
+    width = output?.$1 ?? width;
+    height = output?.$2 ?? height;
     // 存入会顶掉图生图底图、改分辨率:提示条上给「撤销」,整份放回存入之前
     final source = ref.read(canvasWorkspaceProvider).find(canvasId);
     if (source == null) return;
@@ -1357,13 +1360,12 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
         .read(generateProvider.notifier)
         .setInpaint(job, width: width, height: height, canvasId: canvasId);
     Haptics.medium();
-    // 遮罩会改写生成分辨率(局部发裁切区、扩图发垫大后的画布),和图生图选底图
-    // 一个道理 —— 变了就说一声,免得回到创作页看见分辨率莫名其妙换了。
+    // 主分辨率跟随完整底图／扩图画布，局部请求仍使用遮罩自身的尺寸。
     final resized =
         before.params.width != width || before.params.height != height;
     hintSnack(
       context,
-      resized ? '分辨率已按重绘范围调整为 $width×$height' : '已存入重绘',
+      resized ? '分辨率已按重绘底图调整为 $width×$height' : '已存入重绘',
       icon: resized ? Icons.aspect_ratio : Icons.brush,
       actionLabel: '撤销',
       onAction: () => canvases.undoWrite(before, canvasId),

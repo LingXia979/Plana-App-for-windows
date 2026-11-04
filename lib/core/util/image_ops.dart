@@ -35,6 +35,19 @@ Future<(int, int)> decodeImageSize(Uint8List bytes) async {
   return (w: w, h: h);
 }
 
+/// 导入底图时同步处理像素与声明尺寸，避免进入重绘后又回到未缩放的原图。
+/// 合法尺寸直接复用原字节；否则沿用图生图的居中填充规则，保留透明度。
+Future<({Uint8List image, int w, int h})> prepareImg2ImgBase(
+  Uint8List bytes,
+) async {
+  final (width, height) = await decodeImageSize(bytes);
+  final size = img2imgResolution(width, height);
+  final image = width == size.w && height == size.h
+      ? bytes
+      : await coverResizePng(bytes, size.w, size.h, keepAlpha: true);
+  return (image: image, w: size.w, h: size.h);
+}
+
 /// 把图 cover(填满,居中裁切)到目标尺寸、黑底兜底,输出 PNG 字节。
 /// 复刻 web `processImg2ImgImage` 的 canvas.drawImage 行为。
 Future<Uint8List> coverResizePng(
