@@ -35,6 +35,7 @@ const _stripPadH = 12.0; // ListView 水平 padding
 /// (实际占位 70),结果 ListView 给的紧约束把每张图压到 60 —— 常数说 62、
 /// 屏幕上是 60,还没人发现。
 const _thumbSlotH = _thumbH + (_thumbPad + _thumbBorder) * 2;
+const _desktopScrollbarSpace = 14.0;
 
 // 「›」是纯悬浮层:滚动区铺满全宽,缩略图从它底下直接穿过去,一寸不让。
 const _moreSize = 44.0; // 圆钮直径
@@ -564,6 +565,34 @@ class _FilmStripState extends State<FilmStrip>
     );
   }
 
+  Widget _withScrollbar(BuildContext context, Widget child) {
+    if (!widget.desktop) return child;
+    return ScrollbarTheme(
+      data: ScrollbarTheme.of(context).copyWith(
+        mainAxisMargin: _stripPadH,
+        crossAxisMargin: 2,
+        minThumbLength: 36,
+      ),
+      child: Scrollbar(
+        key: const ValueKey('desktop-history-scrollbar'),
+        controller: _sc,
+        thumbVisibility: true,
+        trackVisibility: true,
+        interactive: true,
+        thickness: 8,
+        radius: const Radius.circular(4),
+        scrollbarOrientation: ScrollbarOrientation.bottom,
+        child: ScrollConfiguration(
+          behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
+          child: Padding(
+            padding: const EdgeInsets.only(bottom: _desktopScrollbarSpace),
+            child: child,
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = context.scheme;
@@ -574,66 +603,70 @@ class _FilmStripState extends State<FilmStrip>
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 10),
         child: SizedBox(
-          height: _thumbSlotH,
+          height: _thumbSlotH + (widget.desktop ? _desktopScrollbarSpace : 0),
           child: Stack(
             children: [
               Positioned.fill(
                 // 每条宽度按公式给定(不靠量):进出后位置立刻是对的,
                 // 补回滚动位置的位移和 _reveal 算的落点才对得上实际布局
-                child: ListView.builder(
-                  controller: _sc,
-                  scrollDirection: Axis.horizontal,
-                  // 每条的宽里带着后面那道分隔,右边距相应减掉
-                  padding: const EdgeInsets.only(
-                    left: _stripPadH,
-                    right: _stripPadH - _thumbGap,
-                  ),
-                  itemCount: display.length,
-                  itemExtentBuilder: (i, _) =>
-                      i < display.length ? _extentOf(display[i]) : null,
-                  findChildIndexCallback: (key) =>
-                      index[(key as ValueKey<String>).value],
-                  itemBuilder: (context, i) {
-                    final e = display[i];
-                    final job = e.job;
-                    final Widget thumb = job != null
-                        ? _GenThumb(
-                            job: job,
-                            active: !e.ghost && job.id == widget.selectedJobId,
-                            onTap: () => widget.onSelectJob?.call(job.id),
-                          )
-                        : _resultThumb(e, scheme);
-                    // 进出时按比例裁宽、淡入淡出。结构不随状态变,影子与原条目
-                    // 同一个键,条目内部状态(选中环过渡、拖拽)不会被重建打断
-                    return ClipRect(
-                      key: ValueKey(e.key),
-                      child: Align(
-                        alignment: Alignment.centerLeft,
-                        child: Opacity(
-                          opacity: _factor(e.key).clamp(0.0, 1.0),
-                          child: IgnorePointer(
-                            ignoring: e.ghost,
-                            child: ExcludeFocus(
-                              excluding: e.ghost,
-                              child: Padding(
-                                padding: const EdgeInsets.only(
-                                  right: _thumbGap,
+                child: _withScrollbar(
+                  context,
+                  ListView.builder(
+                    controller: _sc,
+                    scrollDirection: Axis.horizontal,
+                    // 每条的宽里带着后面那道分隔,右边距相应减掉
+                    padding: const EdgeInsets.only(
+                      left: _stripPadH,
+                      right: _stripPadH - _thumbGap,
+                    ),
+                    itemCount: display.length,
+                    itemExtentBuilder: (i, _) =>
+                        i < display.length ? _extentOf(display[i]) : null,
+                    findChildIndexCallback: (key) =>
+                        index[(key as ValueKey<String>).value],
+                    itemBuilder: (context, i) {
+                      final e = display[i];
+                      final job = e.job;
+                      final Widget thumb = job != null
+                          ? _GenThumb(
+                              job: job,
+                              active:
+                                  !e.ghost && job.id == widget.selectedJobId,
+                              onTap: () => widget.onSelectJob?.call(job.id),
+                            )
+                          : _resultThumb(e, scheme);
+                      // 进出时按比例裁宽、淡入淡出。结构不随状态变,影子与原条目
+                      // 同一个键,条目内部状态(选中环过渡、拖拽)不会被重建打断
+                      return ClipRect(
+                        key: ValueKey(e.key),
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: Opacity(
+                            opacity: _factor(e.key).clamp(0.0, 1.0),
+                            child: IgnorePointer(
+                              ignoring: e.ghost,
+                              child: ExcludeFocus(
+                                excluding: e.ghost,
+                                child: Padding(
+                                  padding: const EdgeInsets.only(
+                                    right: _thumbGap,
+                                  ),
+                                  child: thumb,
                                 ),
-                                child: thumb,
                               ),
                             ),
                           ),
                         ),
-                      ),
-                    );
-                  },
+                      );
+                    },
+                  ),
                 ),
               ),
               // 悬浮「›」展开全部:压在缩略图之上,靠投影拉开层次
               if (widget.showMore)
                 Positioned(
                   top: 0,
-                  bottom: 0,
+                  bottom: widget.desktop ? _desktopScrollbarSpace : 0,
                   right: _moreRight,
                   child: Center(
                     child: Material(
