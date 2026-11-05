@@ -193,8 +193,6 @@ class _Img2ImgCardState extends ConsumerState<Img2ImgCard> {
                     ),
                   ],
                 ),
-                const SizedBox(height: 8),
-                const InfoNote('底图按当前分辨率裁剪填充;强度越低越接近原图。点缩略图可涂遮罩改成重绘。'),
               ],
             ),
     );
@@ -267,8 +265,6 @@ class _Img2ImgCardState extends ConsumerState<Img2ImgCard> {
               ),
             ],
           ),
-          const SizedBox(height: 8),
-          const InfoNote('遮罩已存好,点下方「生成」开始重绘;点缩略图回编辑器改涂抹范围。'),
         ],
       ),
     );

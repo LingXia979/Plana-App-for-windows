@@ -27,7 +27,7 @@ import 'censor_detect.dart';
 import 'censor_infer.dart';
 import 'censor_ops.dart';
 import 'inpaint_ops.dart';
-import 'expand_canvas_dialog.dart';
+import 'expand_edge_input.dart';
 import '../../core/util/haptics.dart';
 import '../../core/util/image_resources.dart';
 
@@ -729,6 +729,15 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
       case _ExpandHandle.right:
         _padR = v;
     }
+  }
+
+  int _editPad(_ExpandHandle side, int value) {
+    final next = _limitPad(side, alignExpandMargin(value));
+    if (next != _padOf(side)) {
+      _pushUndo();
+      setState(() => _setPadOf(side, next));
+    }
+    return next;
   }
 
   /// 扩图边把手命中(屏幕坐标):整条边外侧条带都可拖(web 拖拽条同款),
@@ -2336,13 +2345,36 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
           mainAxisSize: MainAxisSize.min,
           children: [
             _buildExpandControls([
-              _ParamChip(
-                icon: Icons.aspect_ratio,
-                label: context.l10n.size,
-                value: '$tw×$th',
-                active: _hasExpand,
-                onTap: _editExpandSize,
-              ),
+              if (_desktop) ...[
+                const Text('扩展边缘'),
+                for (final side in _ExpandHandle.values)
+                  ExpandEdgeInput(
+                    key: ValueKey('expand-edge-${side.name}'),
+                    side: side.name,
+                    label: switch (side) {
+                      _ExpandHandle.top => '上',
+                      _ExpandHandle.bottom => '下',
+                      _ExpandHandle.left => '左',
+                      _ExpandHandle.right => '右',
+                    },
+                    value: _padOf(side),
+                    onChanged: (value) => _editPad(side, value),
+                  ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  child: Text(
+                    '尺寸 $tw×$th',
+                    key: const ValueKey('expand-result-size'),
+                  ),
+                ),
+              ] else
+                _ParamChip(
+                  icon: Icons.aspect_ratio,
+                  label: context.l10n.size,
+                  value: '$tw×$th',
+                  active: _hasExpand,
+                  onTap: _editExpandSize,
+                ),
               if (!_desktop) ...[
                 const SizedBox(width: 8),
                 _ParamChip(
@@ -2497,32 +2529,6 @@ class _InpaintOverlayState extends ConsumerState<InpaintOverlay>
   Future<void> _editExpandSize() async {
     final img = _img;
     if (img == null) return;
-    if (_desktop) {
-      final added = await showDialog<ExpandMargins>(
-        context: context,
-        builder: (_) => ExpandCanvasDialog(
-          width: img.width + _padL + _padR,
-          height: img.height + _padT + _padB,
-          image: img,
-          existing: _margins,
-        ),
-      );
-      if (added == null || !mounted) return;
-      final next = (
-        left: _padL + added.left,
-        top: _padT + added.top,
-        right: _padR + added.right,
-        bottom: _padB + added.bottom,
-      );
-      final error = expansionError(img.width, img.height, next);
-      if (error != null) {
-        hintSnack(context, error, icon: Icons.straighten);
-        return;
-      }
-      _pushUndo();
-      setState(() => _applyMargins(next));
-      return;
-    }
     final res = await showDialog<({int w, int h})>(
       context: context,
       builder: (_) => _ExpandSizeDialog(

@@ -2,8 +2,34 @@ import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plana_app/features/import/import_prefs.dart';
+import 'package:plana_app/features/import/image_prompt_import.dart';
 
 void main() {
+  test(
+    'prompt mode defaults to preserve sections and tolerates old or invalid preferences',
+    () {
+      for (final json in <Map<String, dynamic>>[
+        {},
+        {'promptMode': 42},
+        {'promptMode': 'unknown'},
+      ]) {
+        expect(
+          ImportPrefs.fromJson(json).promptMode,
+          ImagePromptImportMode.replaceMain,
+        );
+      }
+      for (final mode in ImagePromptImportMode.values) {
+        final prefs = const ImportPrefs().copyWith(promptMode: mode);
+        expect(
+          ImportPrefs.fromJson(
+            jsonDecode(jsonEncode(prefs.toJson())),
+          ).promptMode,
+          mode,
+        );
+        expect(prefs.copyWith(useSeed: true).promptMode, mode);
+      }
+    },
+  );
   test('默认值与「记住上次设置」之前的行为逐项一致', () {
     const p = ImportPrefs();
     // 这几条是改动前 _initSelections 里硬编码的默认,变了就是老用户的行为被改了

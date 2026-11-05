@@ -8,9 +8,12 @@ import 'package:plana_app/core/store/app_stores.dart';
 import 'package:plana_app/core/theme/app_theme.dart';
 import 'package:plana_app/core/util/png_meta.dart';
 import 'package:plana_app/features/generate/generate_state.dart';
+import 'package:plana_app/features/generate/canvas_state.dart';
 import 'package:plana_app/features/generate/models.dart';
 import 'package:plana_app/features/generate/prompt_presets.dart';
 import 'package:plana_app/features/import/import_panel.dart';
+import 'package:plana_app/features/import/import_prefs.dart';
+import 'package:plana_app/features/import/image_prompt_import.dart';
 
 class _Presets extends PromptPresetsNotifier {
   @override
@@ -135,6 +138,170 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.byType(ImportImagePanel), findsNothing);
       expect(container.read(generateProvider), same(before));
+      await finish(tester);
+    },
+  );
+
+  for (final mode in ImagePromptImportMode.values) {
+    testWidgets(
+      'image prompt import ${mode.name} keeps its promised section behavior and can undo',
+      (tester) async {
+        await mount(tester);
+        const section = PromptSection(
+          id: 'kept',
+          name: '原有分区',
+          positive: 'cat girl',
+          positiveRaw: 'cat girl, ~hidden~',
+          negative: 'section negative',
+          enabled: false,
+        );
+        container.read(generateProvider.notifier).replaceSections([
+          const PromptSection.main(),
+          section,
+        ]);
+        final before = container.read(generateProvider);
+        await tester.tap(key('import-select-负向提示词'));
+        final option = find.descendant(
+          of: key('image-prompt-import-mode'),
+          matching: find.text(mode.label),
+        );
+        await tester.ensureVisible(option);
+        await tester.tap(option);
+        await tester.pumpAndSettle();
+        await tester.tap(key('desktop-import-confirm'));
+        await drain(
+          tester,
+          () => find.byType(ImportImagePanel).evaluate().isEmpty,
+        );
+        final after = container.read(generateProvider);
+        expect(after.negativePrompt, 'keep negative');
+        if (mode == ImagePromptImportMode.addSection) {
+          expect(after.prompt, 'original');
+          expect(after.sections[1], same(section));
+          expect(after.sections.last.name, '图片导入1');
+          expect(after.sections.last.positive, 'cat girl, cherry blossoms');
+          expect(after.sections.last.negative, isEmpty);
+        } else {
+          expect(after.prompt, 'cat girl, cherry blossoms');
+          if (mode == ImagePromptImportMode.replaceAll) {
+            expect(after.sections, isEmpty);
+          } else {
+            expect(after.sections, before.sections);
+          }
+        }
+        expect(
+          container.read(importPrefsProvider).requireValue.promptMode,
+          mode,
+        );
+        await tester.tap(find.text('撤销'));
+        await tester.pumpAndSettle();
+        expect(container.read(generateProvider).prompt, before.prompt);
+        expect(container.read(generateProvider).sections, before.sections);
+        await finish(tester);
+      },
+    );
+  }
+
+  testWidgets(
+    'repeat image imports remember additional mode and allocate the next named section',
+    (tester) async {
+      await mount(tester);
+      final option = find.descendant(
+        of: key('image-prompt-import-mode'),
+        matching: find.text('额外添加'),
+      );
+      await tester.ensureVisible(option);
+      await tester.tap(option);
+      await tester.pumpAndSettle();
+      await tester.tap(key('desktop-import-confirm'));
+      await drain(
+        tester,
+        () => find.byType(ImportImagePanel).evaluate().isEmpty,
+      );
+      await tester.tap(find.text('open'));
+      await tester.pump();
+      await drain(
+        tester,
+        () => find.byType(CircularProgressIndicator).evaluate().isEmpty,
+      );
+      await tester.tap(key('desktop-import-confirm'));
+      await drain(
+        tester,
+        () => find.byType(ImportImagePanel).evaluate().isEmpty,
+      );
+      final after = container.read(generateProvider);
+      expect(after.prompt, 'original');
+      expect(after.sections.map((s) => s.name), ['主体', '图片导入1', '图片导入2']);
+      expect(after.sections[1].positive, after.sections[2].positive);
+      expect(after.sections[1].negative, after.sections[2].negative);
+      await finish(tester);
+    },
+  );
+
+  testWidgets('cancelling mode selection does not persist it or edit prompts', (
+    tester,
+  ) async {
+    await mount(tester);
+    final before = container.read(generateProvider);
+    final option = find.descendant(
+      of: key('image-prompt-import-mode'),
+      matching: find.text('完全覆盖'),
+    );
+    await tester.ensureVisible(option);
+    await tester.tap(option);
+    await tester.pumpAndSettle();
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(container.read(generateProvider), same(before));
+    expect(
+      container.read(importPrefsProvider).requireValue.promptMode,
+      ImagePromptImportMode.replaceMain,
+    );
+    await finish(tester);
+  });
+
+  testWidgets(
+    'reverse result uses the selected mode on its original canvas after switching',
+    (tester) async {
+      await mount(tester, hasMetadata: false);
+      final canvases = container.read(canvasWorkspaceProvider.notifier);
+      final originalId = container.read(canvasWorkspaceProvider).activeId;
+      await tester.tap(find.text('反推提示词'));
+      await tester.pumpAndSettle();
+      final secondId = canvases.create();
+      container
+          .read(generateProvider.notifier)
+          .setPrompts(positive: 'second canvas');
+      // Supply the completed tagger result without calling the live Bot service.
+      Navigator.of(
+        tester.element(find.byType(AlertDialog)),
+      ).pop('original, new tags');
+      await tester.pumpAndSettle();
+      final option = find.descendant(
+        of: key('image-prompt-import-mode'),
+        matching: find.text('额外添加'),
+      );
+      await tester.ensureVisible(option);
+      await tester.tap(option);
+      await tester.pumpAndSettle();
+      await tester.tap(key('desktop-import-confirm'));
+      await drain(
+        tester,
+        () => find.byType(ImportImagePanel).evaluate().isEmpty,
+      );
+      var workspace = container.read(canvasWorkspaceProvider);
+      expect(workspace.activeId, secondId);
+      expect(container.read(generateProvider).prompt, 'second canvas');
+      final original = workspace.find(originalId)!.prompts;
+      expect(original.prompt, 'original');
+      expect(original.negativePrompt, 'keep negative');
+      expect(original.sections.last.name, '图片导入1');
+      expect(original.sections.last.positive, 'original, new tags');
+      await tester.tap(find.text('撤销'));
+      await tester.pumpAndSettle();
+      workspace = container.read(canvasWorkspaceProvider);
+      expect(workspace.find(originalId)!.prompts.sections, isEmpty);
+      expect(container.read(generateProvider).prompt, 'second canvas');
       await finish(tester);
     },
   );

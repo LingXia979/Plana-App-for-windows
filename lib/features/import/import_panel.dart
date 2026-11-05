@@ -39,6 +39,7 @@ import '../shell/shell_state.dart';
 import '../vibe_library/naiv4vibe_codec.dart' show kModelToEncodingKey;
 import '../vibe_library/vibe_library.dart';
 import 'image_metadata.dart';
+import 'image_prompt_import.dart';
 import 'import_category.dart';
 import 'import_prefs.dart';
 import 'metadata_detail_page.dart';
@@ -843,7 +844,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     final notifier = ref.read(generateProvider.notifier);
     final msgs = <String>[];
 
-    // 提示词(替换)。见 _prep / _preparedPositive。
+    // 提示词。见 _prep / _preparedPositive，写入方式独立于角色和参数。
     String? pos, neg;
     if (_usePrompt && m.prompt.isNotEmpty) pos = _preparedPositive(m);
     if (_useNegative && m.negativePrompt.isNotEmpty) {
@@ -889,10 +890,7 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
       }
     }
 
-    // 整串替换:分区里同一侧的词一并清掉(这串本身就是一张图的全部)
-    if (pos != null || neg != null) {
-      notifier.replacePrompts(positive: pos, negative: neg);
-    }
+    _writeImagePrompts(before.canvasId, positive: pos, negative: neg);
 
     // 角色(站位跟着角色勾选一起走,不单独设开关)
     if (_inNai && _charChecked.isNotEmpty) {
@@ -1203,25 +1201,33 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
     });
   }
 
-  /// 导入反推结果:把标签串写为正向提示词(替换)。
+  void _writeImagePrompts(
+    String canvasId, {
+    String? positive,
+    String? negative,
+  }) {
+    ref
+        .read(canvasWorkspaceProvider.notifier)
+        .updatePrompts(
+          canvasId,
+          (current) => importImagePromptsInto(
+            current,
+            _prefs.promptMode,
+            positive: positive,
+            negative: negative,
+            newId: ref.read(generateProvider.notifier).allocateItemId,
+          ),
+        );
+  }
+
+  /// 反推和元数据导入采用同一套提示词写入方式。
   void _importReverse() {
     final tags = _reverseTags;
     if (tags == null || !_useReverse) return;
     final before = _before(canvasId: _reverseCanvasId);
     if (ref.read(canvasWorkspaceProvider).find(before.canvasId) == null) return;
-    ref
-        .read(canvasWorkspaceProvider.notifier)
-        .updatePrompts(
-          before.canvasId,
-          (p) => p.copyWith(
-            prompt: tags,
-            promptRaw: '',
-            sections: [
-              for (final s in p.sections)
-                s.isMain ? s : s.copyWith(positive: '', positiveRaw: ''),
-            ],
-          ),
-        );
+    unawaited(ref.read(importPrefsProvider.notifier).save(_prefs));
+    _writeImagePrompts(before.canvasId, positive: tags);
     _finish('已导入反推结果到正向提示词', Icons.download_done, before);
   }
 
@@ -1406,6 +1412,8 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
           checked: _useReverse,
           onTap: () => setState(() => _useReverse = !_useReverse),
         ),
+        const SizedBox(height: 9),
+        _promptImportMode(scheme, enabled: _useReverse),
       ],
     );
   }
@@ -1517,6 +1525,10 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
             onTap: () => setState(() => _useNegative = !_useNegative),
             danger: true,
           ),
+          const SizedBox(height: 9),
+        ],
+        if (m.prompt.isNotEmpty || m.negativePrompt.isNotEmpty) ...[
+          _promptImportMode(scheme, enabled: _usePrompt || _useNegative),
           const SizedBox(height: 9),
         ],
         // 权重语法转换:只在「源是 a1111、目标是 NovelAI」时出现
@@ -2654,6 +2666,47 @@ class _ImportImagePanelState extends ConsumerState<ImportImagePanel> {
       child: on
           ? Icon(Icons.check, size: size * 0.7, color: scheme.onPrimary)
           : null,
+    );
+  }
+
+  Widget _promptImportMode(ColorScheme scheme, {required bool enabled}) {
+    return Container(
+      key: const ValueKey('image-prompt-import-mode'),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainer,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Wrap(
+            spacing: 12,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              const Text('提示词导入方式'),
+              _SlideSeg(
+                enabled: enabled,
+                options: [
+                  for (final mode in ImagePromptImportMode.values) mode.label,
+                ],
+                index: _prefs.promptMode.index,
+                onChanged: (i) => setState(() {
+                  _prefs = _prefs.copyWith(
+                    promptMode: ImagePromptImportMode.values[i],
+                  );
+                }),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            _prefs.promptMode.description,
+            style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+          ),
+        ],
+      ),
     );
   }
 

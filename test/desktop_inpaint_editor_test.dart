@@ -1,8 +1,8 @@
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
@@ -555,7 +555,7 @@ void main() {
   );
 
   testWidgets(
-    'expansion increments accumulate, undo and redo restore margins, narrow tools fit',
+    'inline expansion edits each edge, undo and redo sync fields, narrow tools fit',
     (tester) async {
       final originalJob = InpaintJob(
         image: source,
@@ -574,20 +574,22 @@ void main() {
       expect(find.textContaining('强度'), findsNothing);
       expect(key('inpaint-inline-slider'), findsNothing);
       Future<void> expand(String side, String amount) async {
-        await tester.tap(find.textContaining('尺寸 ').first);
-        await tester.pumpAndSettle();
         await tester.enterText(key('expand-$side'), amount);
-        await tester.pump();
-        await tester.tap(key('expand-apply'));
+        await tester.testTextInput.receiveAction(TextInputAction.done);
         await tester.pumpAndSettle();
       }
 
       await expand('left', '1');
       expect(painter(tester).padL, 64);
+      expect(
+        tester.widget<TextField>(key('expand-left')).controller!.text,
+        '64',
+      );
       await expand('top', '65');
       expect((painter(tester).padL, painter(tester).padT), (64, 128));
       await tap(tester, 'inpaint-undo');
       expect((painter(tester).padL, painter(tester).padT), (64, 0));
+      expect(tester.widget<TextField>(key('expand-top')).controller!.text, '0');
       await tap(tester, 'inpaint-redo');
       expect((painter(tester).padL, painter(tester).padT), (64, 128));
       tester.view.physicalSize = const Size(360, 700);
@@ -618,8 +620,73 @@ void main() {
       final expanded = container.read(generateProvider).inpaint!;
       expect(expanded, isNot(same(originalJob)));
       expect(expanded.strength, .39);
+      expect(expanded.outputSize, (576, 896));
       stores.flushNow();
       await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'inline expansion arrows and wheel step 64 and respect the pixel budget',
+    (tester) async {
+      await mount(tester);
+      await tester.tap(find.text('扩图'));
+      await tester.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsNothing);
+      final right = key('expand-right');
+      await tester.tap(right);
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await tester.pumpAndSettle();
+      expect(painter(tester).padR, 64);
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await tester.pumpAndSettle();
+      expect(painter(tester).padR, 128);
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pumpAndSettle();
+      expect(painter(tester).padR, 64);
+      final scale = painter(tester).scale;
+      await scroll(tester, tester.getCenter(right), -120);
+      expect(painter(tester).padR, 128);
+      expect(
+        painter(tester).scale,
+        scale,
+        reason: 'scroll edits the field, not canvas zoom',
+      );
+      await scroll(tester, tester.getCenter(right), 120);
+      expect(painter(tester).padR, 64);
+      await tester.tap(key('expand-right-decrease'));
+      await tester.pumpAndSettle();
+      expect(painter(tester).padR, 0);
+      await tester.tap(key('expand-right-decrease'));
+      await tester.pumpAndSettle();
+      expect(painter(tester).padR, 0);
+      await tester.enterText(right, '999999');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pumpAndSettle();
+      expect(painter(tester).padR, 3584);
+      expect(tester.widget<TextField>(right).controller!.text, '3584');
+      await tester.tap(key('expand-top-increase'));
+      await tester.pumpAndSettle();
+      expect(
+        painter(tester).padT,
+        0,
+        reason: '4096 × 768 already fills the pixel budget',
+      );
+      await tap(tester, 'inpaint-undo');
+      expect(
+        painter(tester).padR,
+        0,
+        reason: 'a clamped no-op must not consume undo',
+      );
+      expect(tester.widget<TextField>(right).controller!.text, '0');
+      await drag(tester, const Offset(512, 384), const Offset(64, 0));
+      expect(painter(tester).padR, 64);
+      expect(tester.widget<TextField>(right).controller!.text, '64');
+      await tester.tap(find.byIcon(Icons.restart_alt));
+      await tester.pumpAndSettle();
+      expect(painter(tester).padR, 0);
+      expect(tester.widget<TextField>(right).controller!.text, '0');
       expect(tester.takeException(), isNull);
     },
   );
