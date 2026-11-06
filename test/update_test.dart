@@ -135,9 +135,9 @@ void main() {
         return http.Response(
           jsonEncode([
             {
-              'tag_name': 'v1.2.2-windows.59',
+              'tag_name': 'v1.2.3-windows.60',
               'html_url':
-                  'https://github.com/LingXia979/Plana-App-for-windows/releases/tag/v1.2.2-windows.59',
+                  'https://github.com/LingXia979/Plana-App-for-windows/releases/tag/v1.2.3-windows.60',
               'prerelease': false,
               'draft': false,
             },
@@ -149,13 +149,13 @@ void main() {
       await http.runWithClient(() async {
         expect(
           (await fetchLatestRelease('1.2.1-windows.57'))?.tag,
-          'v1.2.2-windows.59',
+          'v1.2.3-windows.60',
         );
         expect(
-          (await fetchLatestRelease('1.2.2-windows.58'))?.tag,
-          'v1.2.2-windows.59',
+          (await fetchLatestRelease('1.2.2-windows.59'))?.tag,
+          'v1.2.3-windows.60',
         );
-        expect(await fetchLatestRelease('1.2.2-windows.59'), isNull);
+        expect(await fetchLatestRelease('1.2.3-windows.60'), isNull);
       }, () => client);
     },
   );
