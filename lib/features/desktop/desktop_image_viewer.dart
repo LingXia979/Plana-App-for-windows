@@ -12,6 +12,7 @@ import '../gallery/result_clipboard.dart';
 import '../gallery/widgets/result_canvas.dart';
 import '../generate/models.dart';
 import '../shell/shell_state.dart';
+import '../import/desktop_image_drop.dart';
 
 typedef _ViewerFrame = ({MemoryImage? image, GenerateState? input});
 
@@ -302,12 +303,15 @@ class _DesktopImageViewerState extends ConsumerState<_DesktopImageViewer> {
                         ),
                       ),
                       // 图片复制与种子复制放在同一行，底部保留作品操作。
-                      IconButton(
-                        key: const ValueKey('desktop-image-copy-image'),
-                        tooltip: '复制图片到剪贴板',
-                        icon: const Icon(Icons.content_copy, size: 16),
-                        onPressed: () =>
-                            copyResultToClipboard(context, ref, result),
+                      GalleryImageDrag(
+                        result: result,
+                        child: IconButton(
+                          key: const ValueKey('desktop-image-copy-image'),
+                          tooltip: '点击复制图片；按住拖到其他应用',
+                          icon: const Icon(Icons.content_copy, size: 16),
+                          onPressed: () =>
+                              copyResultToClipboard(context, ref, result),
+                        ),
                       ),
                     ],
                   ),
@@ -397,6 +401,24 @@ class _DesktopImageViewerState extends ConsumerState<_DesktopImageViewer> {
                 },
                 child: Focus(
                   autofocus: true,
+                  onKeyEvent: (_, event) {
+                    if (event is! KeyDownEvent ||
+                        event.logicalKey != LogicalKeyboardKey.keyC ||
+                        !HardwareKeyboard.instance.isControlPressed ||
+                        HardwareKeyboard.instance.isAltPressed ||
+                        HardwareKeyboard.instance.isShiftPressed ||
+                        HardwareKeyboard.instance.isMetaPressed) {
+                      return KeyEventResult.ignored;
+                    }
+                    final focused = FocusManager.instance.primaryFocus?.context;
+                    if (focused?.widget is EditableText ||
+                        focused?.findAncestorStateOfType<EditableTextState>() !=
+                            null) {
+                      return KeyEventResult.ignored;
+                    }
+                    unawaited(copyResultToClipboard(context, ref, result));
+                    return KeyEventResult.handled;
+                  },
                   child: Padding(
                     padding: const EdgeInsets.all(20),
                     child: Column(

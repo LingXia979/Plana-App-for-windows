@@ -1,5 +1,6 @@
 #include "clipboard_channel.h"
 #include "image_clipboard.h"
+#include "image_transfer.h"
 
 #include <flutter/standard_method_codec.h>
 #include <windows.h>
@@ -9,35 +10,25 @@
 
 namespace {
 
-// PNG 那个自定义剪贴板格式(浏览器、截图工具、Office 都会放这一份)。
-UINT PngClipboardFormat() {
-  static const UINT format = RegisterClipboardFormat(L"PNG");
-  return format;
+std::string StringOf(const flutter::EncodableMap& args, const char* key) {
+  const auto it = args.find(flutter::EncodableValue(key));
+  if (it == args.end()) return {};
+  const auto* value = std::get_if<std::string>(&it->second);
+  return value ? *value : std::string();
 }
 
-// 别的程序正在写剪贴板时,OpenClipboard 会直接失败。等一小会儿再试几次:
-// 按一次 Ctrl+V 不该因为后台刚有个程序复制完东西就什么都不发生。
-bool OpenClipboardWithRetry(HWND owner) {
-  for (int attempt = 0; attempt < 10; ++attempt) {
-    if (OpenClipboard(owner)) return true;
-    Sleep(5);
-  }
-  return false;
-}
-
-// 交给剪贴板一份内存。SetClipboardData 成功之后这块内存归系统管,不能再动;
-// 失败则还在自己手里,得自己释放。
-HGLOBAL CopyToGlobal(const std::vector<uint8_t>& bytes) {
-  HGLOBAL handle = GlobalAlloc(GMEM_MOVEABLE, bytes.size());
-  if (!handle) return nullptr;
-  void* data = GlobalLock(handle);
-  if (!data) {
-    GlobalFree(handle);
-    return nullptr;
-  }
-  memcpy(data, bytes.data(), bytes.size());
-  GlobalUnlock(handle);
-  return handle;
+std::wstring FilePathOf(const flutter::EncodableMap& args) {
+  const auto path = StringOf(args, "filePath");
+  if (path.empty() || path.size() > 32768 || path.find('\0') != std::string::npos) return {};
+  const int count = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path.data(),
+      static_cast<int>(path.size()), nullptr, 0);
+  if (!count) return {};
+  std::wstring wide(count, L'\0');
+  MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path.data(),
+      static_cast<int>(path.size()), wide.data(), count);
+  const auto attributes = GetFileAttributesW(wide.c_str());
+  return attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY)
+      ? std::wstring() : wide;
 }
 
 // Both the explicit image button and the keyboard hook use the same reader.
@@ -75,37 +66,16 @@ std::vector<uint8_t> BytesOf(const flutter::EncodableMap& args,
 }
 
 bool WriteClipboard(HWND owner, const flutter::EncodableValue* arguments) {
+  if (!arguments) return false;
   const auto* args = std::get_if<flutter::EncodableMap>(arguments);
   if (!args) return false;
   const std::vector<uint8_t> image = BytesOf(*args, "image");
   const std::vector<uint8_t> dib = BytesOf(*args, "dib");
   if (image.empty() && dib.empty()) return false;
 
-  if (!OpenClipboardWithRetry(owner)) return false;
-  EmptyClipboard();
-  bool written = false;
-  if (!dib.empty()) {
-    // CF_DIB 是给老程序(画图、Word)的:它们不认 PNG 那个自定义格式。
-    if (HGLOBAL handle = CopyToGlobal(dib)) {
-      if (SetClipboardData(CF_DIB, handle)) {
-        written = true;
-      } else {
-        GlobalFree(handle);
-      }
-    }
-  }
-  const UINT png_format = PngClipboardFormat();
-  if (!image.empty() && png_format != 0) {
-    if (HGLOBAL handle = CopyToGlobal(image)) {
-      if (SetClipboardData(png_format, handle)) {
-        written = true;
-      } else {
-        GlobalFree(handle);
-      }
-    }
-  }
-  CloseClipboard();
-  return written;
+  const auto file_path = FilePathOf(*args);
+  if (!StringOf(*args, "filePath").empty() && file_path.empty()) return false;
+  return WriteImageTransferClipboard(owner, ImageTransferFormats(file_path, image, dib));
 }
 
 }  // namespace
@@ -122,6 +92,7 @@ ClipboardChannel::ClipboardChannel(HWND owner, flutter::BinaryMessenger* messeng
 }
 
 ClipboardChannel::~ClipboardChannel() {
+  *alive_ = false;
   channel_->SetMethodCallHandler(nullptr);
 }
 
@@ -135,6 +106,35 @@ void ClipboardChannel::HandleMethodCall(
   if (call.method_name() == "write") {
     result->Success(
         flutter::EncodableValue(WriteClipboard(owner_, call.arguments())));
+    return;
+  }
+  if (call.method_name() == "startDrag") {
+    const auto* args = call.arguments()
+        ? std::get_if<flutter::EncodableMap>(call.arguments()) : nullptr;
+    const auto path = args ? FilePathOf(*args) : std::wstring();
+    if (path.empty()) {
+      result->Error("invalid_image", "无法读取要拖出的图片");
+      return;
+    }
+    // OLE runs a nested message loop: the window may close or another method
+    // call may arrive before it returns. Do not dereference this afterwards.
+    static bool dragging = false;
+    if (dragging) {
+      result->Error("drag_busy", "已有图片正在拖动");
+      return;
+    }
+    const auto alive = alive_;
+    dragging = true;
+    DWORD effect = DROPEFFECT_NONE;
+    const auto status = DragImageFile(owner_, path, StringOf(*args, "internalToken"), &effect);
+    dragging = false;
+    if (!*alive) return;
+    if (FAILED(status)) {
+      result->Error("drag_failed", "Windows 无法开始图片拖动");
+    } else {
+      result->Success(flutter::EncodableValue(
+          status == DRAGDROP_S_DROP && effect == DROPEFFECT_COPY ? "copied" : "cancelled"));
+    }
     return;
   }
   result->NotImplemented();

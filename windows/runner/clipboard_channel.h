@@ -28,6 +28,7 @@ class ClipboardChannel {
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
 
   HWND owner_;
+  std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> channel_;
 };
 

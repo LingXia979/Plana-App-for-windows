@@ -128,7 +128,11 @@ class DesktopClipboard {
   /// [bytes] 是任意格式的原图字节(库里的作品、参考图都行),原生侧需要的容器
   /// 格式在这里统一备好:PNG 各端都认,Windows 另外要一份 DIB —— 老程序
   /// (画图、Word)不认 PNG 格式,只认 CF_DIB。
-  static Future<bool> writeImage(Uint8List bytes) async {
+  static Future<bool> writeImage(
+    Uint8List bytes, {
+    String? filePath,
+    bool Function()? stillCurrent,
+  }) async {
     if (bytes.isEmpty) return false;
     try {
       final png = await ensurePng(bytes);
@@ -136,7 +140,10 @@ class DesktopClipboard {
         'image': png,
         if (defaultTargetPlatform == TargetPlatform.windows)
           'dib': await _dibOf(png),
+        if (defaultTargetPlatform == TargetPlatform.windows && filePath != null)
+          'filePath': filePath,
       };
+      if (stillCurrent != null && !stillCurrent()) return false;
       return await channel.invokeMethod<bool>('write', args) ?? false;
     } catch (e) {
       logd('[clipboard] 写入剪贴板失败: $e');

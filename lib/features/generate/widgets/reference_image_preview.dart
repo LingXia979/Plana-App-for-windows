@@ -1,8 +1,8 @@
-import 'dart:typed_data';
-
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 
 import '../../../core/theme/app_theme.dart';
+import '../../gallery/image_transfer_button.dart';
 
 /// Views the original reference bytes without changing generation parameters.
 Future<void> showReferenceImagePreview(
@@ -103,6 +103,11 @@ class _ReferenceImagePreviewState extends State<_ReferenceImagePreview> {
                   onPressed: _reset,
                   icon: const Icon(Icons.fit_screen),
                 ),
+                if (defaultTargetPlatform == TargetPlatform.windows)
+                  if (widget.image case final MemoryImage image)
+                    ImageTransferButton(load: () async => image.bytes)
+                  else if (widget.image case final FileImage image)
+                    ImageTransferButton(load: () => image.file.readAsBytes()),
                 IconButton(
                   tooltip: '关闭预览',
                   onPressed: () => Navigator.pop(context),

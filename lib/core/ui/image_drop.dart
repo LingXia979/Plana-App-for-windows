@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart';
@@ -435,7 +436,11 @@ class _DesktopImageDropHostState extends State<DesktopImageDropHost> {
       );
       return;
     }
-    final target = _receiving ? null : _at(point);
+    final internal = NativeImageDragRegistry.lookup(
+      args['internalToken'] as String?,
+    );
+    var target = _receiving ? null : _at(point);
+    if (internal != null && target?._accepts(internal) != true) target = null;
     if (_hovered != target) {
       _hovered?._hover(false);
       _hovered = target;
@@ -448,7 +453,7 @@ class _DesktopImageDropHostState extends State<DesktopImageDropHost> {
       final paths = (args['paths'] as List).cast<String>();
       _receiving = true;
       try {
-        await target._receive(ImageDropPayload.files(paths));
+        await target._receive(internal ?? ImageDropPayload.files(paths));
       } finally {
         _receiving = false;
       }
@@ -473,6 +478,7 @@ class DesktopImageDraggable extends Draggable<ImageDropPayload> {
     required super.child,
     required super.feedback,
     super.onDragStarted,
+    super.onDragUpdate,
     super.onDragEnd,
     super.maxSimultaneousDrags = 1,
   }) : super(dragAnchorStrategy: pointerDragAnchorStrategy);
@@ -481,6 +487,49 @@ class DesktopImageDraggable extends Draggable<ImageDropPayload> {
   MultiDragGestureRecognizer createRecognizer(
     GestureMultiDragStartCallback onStart,
   ) => _ImageMouseDragRecognizer()..onStart = onStart;
+}
+
+/// Keeps original identity when an OLE drag leaves Plana and returns. Tokens
+/// are opaque and short-lived; incoming external file paths never imply an ID.
+class NativeImageDragRegistry {
+  static final _random = math.Random.secure();
+  static final _items =
+      <String, ({ImageDropPayload payload, DateTime expires})>{};
+
+  static String register(ImageDropPayload payload) {
+    _prune();
+    if (_items.length >= 32) _items.remove(_items.keys.first);
+    final token = List.generate(
+      16,
+      (_) => _random.nextInt(256).toRadixString(16).padLeft(2, '0'),
+    ).join();
+    _items[token] = (
+      payload: payload,
+      expires: DateTime.now().add(const Duration(hours: 1)),
+    );
+    return token;
+  }
+
+  static ImageDropPayload? lookup(String? token) {
+    _prune();
+    return _items[token]?.payload;
+  }
+
+  static void finish(String token) {
+    final entry = _items[token];
+    if (entry != null) {
+      // Platform responses and the incoming drop use different method channels.
+      _items[token] = (
+        payload: entry.payload,
+        expires: DateTime.now().add(const Duration(seconds: 30)),
+      );
+    }
+  }
+
+  static void _prune() {
+    final now = DateTime.now();
+    _items.removeWhere((_, value) => value.expires.isBefore(now));
+  }
 }
 
 class _ImageMouseDragRecognizer extends ImmediateMultiDragGestureRecognizer {

@@ -332,6 +332,8 @@ class _SaveDefaultsCard extends ConsumerWidget {
                   ),
                 ),
               ],
+              const SizedBox(height: 8),
+              Text('保存、复制图片和拖到其他应用共用此设置。', style: context.texts.bodySmall),
             ],
           ),
         ),

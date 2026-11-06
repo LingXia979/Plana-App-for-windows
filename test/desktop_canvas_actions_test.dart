@@ -349,7 +349,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(clipboardWrites, [result.bytes]);
-    expect(find.text('图片已复制到剪贴板'), findsOneWidget);
+    expect(find.text('图片已按图库默认保存设置复制'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -360,7 +360,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(clipboardWrites, [result.bytes]);
-    expect(find.text('图片已复制到剪贴板'), findsNothing);
+    expect(find.text('图片已按图库默认保存设置复制'), findsNothing);
     expect(find.textContaining('复制失败'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });

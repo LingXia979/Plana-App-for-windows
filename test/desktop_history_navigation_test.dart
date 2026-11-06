@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 import 'package:plana_app/core/platform/desktop.dart';
+import 'package:plana_app/core/platform/clipboard_image.dart';
 import 'package:plana_app/core/store/app_stores.dart';
 import 'package:plana_app/core/theme/app_theme.dart';
 import 'package:plana_app/features/desktop/desktop_gallery_page.dart';
@@ -303,6 +304,47 @@ void main() {
         reason: 'Zoomed canvas retains its pan controls',
       );
       expect(tester.takeException(), isNull);
+      await finish(tester);
+    },
+  );
+
+  testWidgets(
+    'Ctrl+C copies the selected canvas image and leaves text inputs alone',
+    (tester) async {
+      var copies = 0;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(DesktopClipboard.channel, (call) async {
+            if (call.method == 'write') {
+              copies++;
+              return true;
+            }
+            return null;
+          });
+      addTearDown(
+        () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(DesktopClipboard.channel, null),
+      );
+      await mount(tester);
+      await tester.tap(key('history-thumb-image-1'));
+      await tester.pump();
+      Future<void> copy() async {
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+        await tester.sendKeyEvent(LogicalKeyboardKey.keyC);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+        for (var i = 0; i < 12; i++) {
+          await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 10)),
+          );
+          await tester.pump();
+        }
+      }
+
+      await copy();
+      expect(copies, 1);
+      await tester.tap(key('outside-prompt'));
+      await tester.enterText(key('outside-prompt'), 'do not copy image here');
+      await copy();
+      expect(copies, 1);
       await finish(tester);
     },
   );

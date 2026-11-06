@@ -1,4 +1,5 @@
 #include "image_drop_target.h"
+#include "image_transfer.h"
 
 #include <shellapi.h>
 #include <flutter/standard_method_codec.h>
@@ -49,6 +50,9 @@ void ImageDropTarget::SendPosition(const char* method, POINTL point,
   args[flutter::EncodableValue("x")] = flutter::EncodableValue(static_cast<double>(local.x));
   args[flutter::EncodableValue("y")] = flutter::EncodableValue(static_cast<double>(local.y));
   args[flutter::EncodableValue("paths")] = flutter::EncodableValue(paths);
+  if (!internal_token_.empty()) {
+    args[flutter::EncodableValue("internalToken")] = flutter::EncodableValue(internal_token_);
+  }
   channel_->InvokeMethod(method, std::make_unique<flutter::EncodableValue>(args));
 }
 
@@ -56,6 +60,7 @@ HRESULT ImageDropTarget::DragEnter(IDataObject* data, DWORD, POINTL point, DWORD
   if (!effect) return E_POINTER;
   auto format = FileFormat();
   accepts_ = data && data->QueryGetData(&format) == S_OK && (*effect & DROPEFFECT_COPY);
+  internal_token_ = accepts_ ? ReadImageTransferToken(data) : std::string();
   *effect = accepts_ ? DROPEFFECT_COPY : DROPEFFECT_NONE;
   if (accepts_) SendPosition("over", point);
   return S_OK;
@@ -68,6 +73,7 @@ HRESULT ImageDropTarget::DragOver(DWORD, POINTL point, DWORD* effect) {
 }
 HRESULT ImageDropTarget::DragLeave() {
   accepts_ = false;
+  internal_token_.clear();
   channel_->InvokeMethod("leave", nullptr);
   return S_OK;
 }
@@ -94,6 +100,7 @@ HRESULT ImageDropTarget::Drop(IDataObject* data, DWORD, POINTL point, DWORD* eff
   ReleaseStgMedium(&medium);
   if (!paths.empty()) {
     SendPosition("drop", point, std::move(paths));
+    internal_token_.clear();
     *effect = DROPEFFECT_COPY;
   } else {
     DragLeave();

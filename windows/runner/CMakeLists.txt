@@ -11,6 +11,7 @@ add_executable(${BINARY_NAME} WIN32
   "flutter_window.cpp"
   "image_drop_target.cpp"
   "image_clipboard.cpp"
+  "image_transfer.cpp"
   "proxy_assist.cpp"
   "proxy_assist_channel.cpp"
   "main.cpp"

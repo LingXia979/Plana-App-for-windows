@@ -408,6 +408,44 @@ void main() {
     },
   );
 
+  testWidgets(
+    'Ctrl+C copies the focused image but preserves prompt text copying',
+    (tester) async {
+      var imageCopies = 0;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(DesktopClipboard.channel, (call) async {
+            if (call.method == 'write') {
+              imageCopies++;
+              return true;
+            }
+            return null;
+          });
+      addTearDown(
+        () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(DesktopClipboard.channel, null),
+      );
+      await mount(tester, comparison: true);
+      Future<void> control(LogicalKeyboardKey key) async {
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+        await tester.sendKeyEvent(key);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+        await advance(tester);
+      }
+
+      await control(LogicalKeyboardKey.keyC);
+      expect(imageCopies, 1);
+      await tester.tap(find.text('prompt-0'));
+      await control(LogicalKeyboardKey.keyA);
+      await control(LogicalKeyboardKey.keyC);
+      expect(
+        imageCopies,
+        1,
+        reason: 'EditableText must consume its own copy shortcut',
+      );
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
   testWidgets('看图浮层能把当前这张复制到系统剪贴板', (tester) async {
     final writes = <Uint8List>[];
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
@@ -433,7 +471,7 @@ void main() {
 
     // 内存里本来就有字节:交出去的就是原样那份,不重新编码。
     expect(writes, [pixels[0]]);
-    expect(find.text('图片已复制到剪贴板'), findsOneWidget);
+    expect(find.text('图片已按图库默认保存设置复制'), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
   });

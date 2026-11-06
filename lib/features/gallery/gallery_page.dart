@@ -19,6 +19,7 @@ import '../generate/widgets/common.dart' show hintSnack;
 import '../inpaint/inpaint_overlay.dart';
 import 'gallery_state.dart';
 import 'models.dart';
+import 'result_clipboard.dart';
 import 'save_settings.dart';
 import 'share_pipeline.dart';
 import 'widgets/film_strip.dart';
@@ -153,12 +154,10 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
   KeyEventResult _onHistoryKey(FocusNode node, KeyEvent event) {
     if (!widget.desktop ||
         event is KeyUpEvent ||
-        HardwareKeyboard.instance.isControlPressed ||
         HardwareKeyboard.instance.isAltPressed ||
         HardwareKeyboard.instance.isShiftPressed ||
         HardwareKeyboard.instance.isMetaPressed ||
-        ref.read(inpaintSessionProvider) != null ||
-        ref.read(galleryZoomedProvider)) {
+        ref.read(inpaintSessionProvider) != null) {
       return KeyEventResult.ignored;
     }
     final focused = FocusManager.instance.primaryFocus?.context;
@@ -166,6 +165,21 @@ class _GalleryPageState extends ConsumerState<GalleryPage>
         focused?.findAncestorStateOfType<EditableTextState>() != null) {
       return KeyEventResult.ignored;
     }
+    if (HardwareKeyboard.instance.isControlPressed) {
+      if (event is KeyDownEvent &&
+          event.logicalKey == LogicalKeyboardKey.keyC) {
+        final history = ref.read(galleryViewProvider);
+        final result = history.results
+            .where((r) => r.id == history.selectedId)
+            .firstOrNull;
+        if (result != null) {
+          copyResultToClipboard(context, ref, result);
+          return KeyEventResult.handled;
+        }
+      }
+      return KeyEventResult.ignored;
+    }
+    if (ref.read(galleryZoomedProvider)) return KeyEventResult.ignored;
     final delta = event.logicalKey == LogicalKeyboardKey.arrowLeft
         ? -1
         : event.logicalKey == LogicalKeyboardKey.arrowRight

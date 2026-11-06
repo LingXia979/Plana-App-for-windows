@@ -30,6 +30,7 @@ import '../../generate/generation_controller.dart' show generationProvider;
 import '../../generate/widgets/common.dart' show StripeThumb, hintSnack;
 import '../../generate/widgets/reference_image_preview.dart';
 import '../../shell/shell_state.dart';
+import '../../import/desktop_image_drop.dart';
 import '../assistant_models.dart';
 import '../assistant_state.dart';
 
@@ -216,25 +217,29 @@ class _DoneState extends ConsumerState<_Done> {
     final result = widget.result;
     final size = _box(result.width, result.height, widget.maxW);
     final bytes = _bytesOf(ref, result);
-    return GestureDetector(
-      key: ValueKey('assistant-inline-image-${result.id}'),
-      onTap: _openImage,
-      onSecondaryTapUp: ref.watch(desktopModeProvider)
-          ? (details) => _menu(details.globalPosition)
-          : null,
-      child: _frame(context, size, [
-        if (bytes != null)
-          _Bitmap(bytes: bytes, size: size)
-        else
-          StripeThumb(width: size.width, height: size.height, radius: 0),
-        // 跑着的时候框里换成了进度,这颗跟着一起不在 —— 同一条消息连投两单,
-        // 进度条只跟得住一单。
-        Positioned(
-          right: 10,
-          bottom: 10,
-          child: _AgainButton(msgId: widget.msgId),
-        ),
-      ]),
+    return GalleryImageDrag(
+      result: result,
+      enabled: ref.watch(desktopModeProvider),
+      child: GestureDetector(
+        key: ValueKey('assistant-inline-image-${result.id}'),
+        onTap: _openImage,
+        onSecondaryTapUp: ref.watch(desktopModeProvider)
+            ? (details) => _menu(details.globalPosition)
+            : null,
+        child: _frame(context, size, [
+          if (bytes != null)
+            _Bitmap(bytes: bytes, size: size)
+          else
+            StripeThumb(width: size.width, height: size.height, radius: 0),
+          // 跑着的时候框里换成了进度,这颗跟着一起不在 —— 同一条消息连投两单,
+          // 进度条只跟得住一单。
+          Positioned(
+            right: 10,
+            bottom: 10,
+            child: _AgainButton(msgId: widget.msgId),
+          ),
+        ]),
+      ),
     );
   }
 }

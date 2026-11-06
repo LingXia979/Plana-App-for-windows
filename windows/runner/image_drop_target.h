@@ -31,6 +31,7 @@ class ImageDropTarget final : public IDropTarget {
   ULONG references_ = 1;
   HWND window_;
   bool accepts_ = false;
+  std::string internal_token_;
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> channel_;
 };
 

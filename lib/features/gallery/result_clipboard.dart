@@ -1,45 +1,100 @@
-/// 把作品写进系统剪贴板(桌面端专有)。
-///
-/// Flutter 自带的 [Clipboard] 只有文本,图片那半截在原生侧,见
-/// [DesktopClipboard]。这里只管「取字节 → 交付 → 报回执」这一段:取字节的路子
-/// 与保存/分享一致(内存里有就直接用,没有才去库里读),回执也跟保存一个格式。
-library;
-
-import 'dart:typed_data';
-
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/platform/clipboard_image.dart';
+import '../../core/platform/image_transfer.dart';
 import '../../core/store/app_stores.dart';
 import '../generate/widgets/common.dart' show hintSnack;
 import 'models.dart';
+import 'save_pipeline.dart';
+import 'save_settings.dart';
 
-/// 复制一张图库作品。
+Future<PreparedImageTransfer> prepareResultTransfer(
+  WidgetRef ref,
+  ResultImage result,
+) {
+  // Snapshot preferences and source before any await or widget unmount.
+  final settings = ref.read(saveSettingsProvider.future);
+  final store = result.bytes == null
+      ? ref.read(appStoresProvider).gallery
+      : null;
+  return prepareImageTransfer(
+    load: () async => result.bytes ?? await store?.readImage(result.id),
+    settings: settings,
+    name: 'plana_${result.seed}',
+  );
+}
+
+Future<PreparedImageTransfer> prepareImageTransfer({
+  required Future<Uint8List?> Function() load,
+  required Future<SaveSettings> settings,
+  String name = 'plana_image',
+}) async {
+  final options = await settings;
+  final source = await load();
+  if (source == null || source.isEmpty) {
+    throw const FormatException('图片还没读出来，稍后再试');
+  }
+  final input = options.format == SaveFormat.png
+      ? await DesktopClipboard.ensurePng(source)
+      : source;
+  final bytes = await processForSave(input, options);
+  final safeName = name.replaceAll(RegExp(r'[^\w\u4e00-\u9fff-]'), '_');
+  return PreparedImageTransfer(
+    bytes: bytes,
+    name:
+        '${safeName.isEmpty ? 'plana_image' : safeName}.${options.format.name}',
+  );
+}
+
+/// Copy and drag-out share the gallery's save settings and processing.
 Future<void> copyResultToClipboard(
   BuildContext context,
   WidgetRef ref,
   ResultImage result,
-) async {
-  final bytes =
-      result.bytes ??
-      await ref.read(appStoresProvider).gallery.readImage(result.id);
-  if (!context.mounted) return;
-  if (bytes == null || bytes.isEmpty) {
-    hintSnack(context, '图片还没读出来，稍后再试', icon: Icons.error_outline);
-    return;
-  }
-  await copyBytesToClipboard(context, bytes);
-}
+) => copyPreparedImage(context, prepareResultTransfer(ref, result));
 
-/// 复制一段现成的图片字节(对话里那张图、参考图预览等)。
-Future<void> copyBytesToClipboard(BuildContext context, Uint8List bytes) async {
-  final ok = await DesktopClipboard.writeImage(bytes);
-  if (!context.mounted) return;
-  if (ok) {
-    hintSnack(context, '图片已复制到剪贴板', icon: Icons.check_circle_outline);
-    return;
+Future<void> copyBytesToClipboard(
+  BuildContext context,
+  WidgetRef ref,
+  Uint8List bytes,
+) => copyPreparedImage(
+  context,
+  prepareImageTransfer(
+    load: () async => bytes,
+    settings: ref.read(saveSettingsProvider.future),
+  ),
+);
+
+int _copySequence = 0;
+
+Future<void> copyPreparedImage(
+  BuildContext context,
+  Future<PreparedImageTransfer> preparation,
+) async {
+  final sequence = ++_copySequence;
+  try {
+    final export = await preparation;
+    if (!context.mounted || sequence != _copySequence) return;
+    final file = defaultTargetPlatform == TargetPlatform.windows
+        ? await export.file()
+        : null;
+    if (!context.mounted || sequence != _copySequence) return;
+    final ok = await DesktopClipboard.writeImage(
+      export.bytes,
+      filePath: file?.path,
+      stillCurrent: () => context.mounted && sequence == _copySequence,
+    );
+    if (!context.mounted || sequence != _copySequence) return;
+    hintSnack(
+      context,
+      ok ? '图片已按图库默认保存设置复制' : '复制失败：剪贴板暂时不可用，请重试',
+      icon: ok ? Icons.check_circle_outline : Icons.error_outline,
+    );
+  } catch (_) {
+    if (context.mounted && sequence == _copySequence) {
+      hintSnack(context, '无法准备要复制的图片，请重试', icon: Icons.error_outline);
+    }
   }
-  // 说清楚是哪一种失败:Linux 上还没接原生侧,移动端压根不该走到这儿。
-  hintSnack(context, '复制失败：当前系统不支持图片剪贴板', icon: Icons.error_outline);
 }
